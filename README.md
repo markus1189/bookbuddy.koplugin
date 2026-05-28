@@ -1,8 +1,15 @@
 # BookBuddy
 
-A [KOReader](https://github.com/koreader/koreader) plugin that lets you chat with
-Claude about whatever you're reading. Highlight a passage, ask a question, and the
-model answers using tools that read the actual book rather than guessing.
+A [KOReader](https://github.com/koreader/koreader) plugin that puts a tool-using
+Claude agent inside your e-reader. Highlight a passage, ask a question, and the
+model doesn't answer from the snippet alone — it searches the full text, reads the
+pages around your highlight, checks the table of contents, and pulls up your own
+notes before it replies. The answer is grounded in what the book actually says.
+
+It's a conversation, not a one-shot lookup: ask follow-ups and it keeps the whole
+thread in context. It can flip you to a relevant page (and back), keep per-book
+notes that persist between sessions, and check the web for outside facts without
+spoiling what lies ahead.
 
 > ## Warning: this project was entirely vibecoded by Claude Opus
 >
@@ -21,12 +28,37 @@ model answers using tools that read the actual book rather than guessing.
 >
 > If that doesn't bother you, read on. If it does, also read on, but more slowly.
 
+## What a conversation looks like
+
+You watch the agent work. Each tool call shows up as its own line, with a short
+summary of what came back, before the answer streams in:
+
+```
+You: Who is Septimus and why does he matter here?
+
+  → Checked the book details — page 142 of 318
+  → Searched book for "Septimus" — 11 match(es)
+  → Read pages 88–95 — ~2400 words
+
+BookBuddy: Septimus is the shell-shocked veteran whose day runs in parallel to
+Clarissa's. He matters here because the novel keeps cutting between them to set
+his unraveling against her party-planning… (plain prose, nothing past page 142)
+
+[tokens — input 9120, output 274, cached 7680]
+```
+
 ## What it does
+
+Every question starts a multi-turn loop: Claude requests a tool, BookBuddy runs it
+against the live document, hands back the result, and Claude decides what to do
+next — search, read more, navigate, or answer. Nothing is hidden; you see each step.
 
 - Adds an **"Ask BookBuddy"** button to KOReader's text-highlight menu (and an
   "Ask BookBuddy about selection" action you can bind to a gesture or shortcut).
-- Streams Claude's reply into a chat view while it works.
-- Gives the model tools so its answers are grounded in the real text:
+- **Streams the reply live** into a chat view, coalesced so it stays readable on
+  e-ink, with each tool call shown as a line you can follow.
+- **Grounds answers in the real text** with tools that read the book instead of
+  guessing:
   - `search_book` — full-text search within the book
   - `read_page_range` / `read_chapter` — read specific pages or a chapter
   - `get_toc` — inspect the table of contents
@@ -35,9 +67,14 @@ model answers using tools that read the actual book rather than guessing.
   - `navigate` — move the reader to a page, percent, or chapter (your spot is saved
     first, so Back returns you)
   - `web_search` — for outside facts only; it's told not to spoil what lies ahead
-- Optional **per-book memory**, stored in the book's `.sdr` sidecar so notes travel
-  with the book.
-- Optional **extended (adaptive) thinking**, with a summarized view shown above the reply.
+- **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
+  sidecar, so they travel with the book, stay isolated to it, and are still there
+  next session — ask it to remember who a character is and it won't forget.
+- **Extended (adaptive) thinking** (optional): a summarized view of the model's
+  reasoning, shown above the reply.
+- **Spoiler-aware throughout** — it avoids revealing anything past your current
+  position unless you explicitly ask.
+- A **token-usage footer** tracks what each conversation cost.
 
 ## Requirements
 
