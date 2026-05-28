@@ -12,6 +12,7 @@ local InputDialog = require("ui/widget/inputdialog")
 local NetworkMgr = require("ui/network/manager")
 local Trapper = require("ui/trapper")
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -24,6 +25,26 @@ local Tools = require("bbtools")
 -- Repaint the live transcript at most this often while text streams in. The
 -- transport wakes every 0.125s; coalescing to ~2.5 fps keeps e-ink usable.
 local FLUSH_INTERVAL_SEC = 0.4
+
+-- The viewer is plain text, so drop the markdown markers the model emits rather
+-- than show them literally. Applied on every render (streaming and final) so the
+-- text reads the same throughout; safe on the partial markdown seen mid-stream.
+-- We deliberately skip "_"/"__" emphasis: it collides with snake_case and URLs.
+local function stripMarkdown(text)
+    if not text or text == "" then
+        return text
+    end
+    text = text:gsub("```[%w%-]*\n?", "")          -- fenced code markers
+    text = text:gsub("%*%*(.-)%*%*", "%1")          -- **bold**
+    text = text:gsub("%*(%S.-%S)%*", "%1")          -- *italic* (multi-char)
+    text = text:gsub("%*(%S)%*", "%1")              -- *i* (single char)
+    text = text:gsub("~~(.-)~~", "%1")              -- ~~strike~~
+    text = text:gsub("`(.-)`", "%1")                -- `inline code`
+    text = text:gsub("%[(.-)%]%((.-)%)", "%1 (%2)") -- [text](url) -> text (url)
+    text = text:gsub("^#+%s*", "")                  -- heading on the first line
+    text = text:gsub("(\n)#+%s*", "%1")             -- headings on later lines
+    return text
+end
 
 local Conversation = {}
 Conversation.__index = Conversation
@@ -92,6 +113,8 @@ function Conversation:_loop()
         local tools = (not last_round) and self.tool_specs or nil
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
+        logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages,
+            "tools:", tools and #tools or 0)
         self:_ensureStreamingViewer()
 
         -- The assistant entry is created on the first text delta so a pure tool
@@ -121,6 +144,7 @@ function Conversation:_loop()
             return
         end
         if r.read_error then
+            logger.warn("BookBuddy: streaming connection failed")
             self:_closeViewer()
             UIManager:show(InfoMessage:new{ text = _("BookBuddy: the streaming connection failed.") })
             return
@@ -128,6 +152,7 @@ function Conversation:_loop()
 
         local res = parser:result()
         if not res.ok then
+            logger.warn("BookBuddy: API error", res.code, res.error_message)
             self:_closeViewer()
             self:_showError(res)
             return
@@ -141,6 +166,23 @@ function Conversation:_loop()
             self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
         end
 
+        -- A reply with no content blocks serializes as an empty JSON object, which
+        -- the API rejects ("content should be a valid list") when the history is
+        -- resent on a follow-up. We can't just skip the turn either: that would put
+        -- two user messages in a row and break role alternation. Store a valid
+        -- placeholder block so history stays resendable, and surface the gap.
+        if type(res.content) ~= "table" or #res.content == 0 then
+            logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder")
+            self.messages[#self.messages + 1] = {
+                role = "assistant",
+                content = { { type = "text", text = "(no response)" } },
+            }
+            self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
+            self:_render()
+            return
+        end
+
+        logger.dbg("BookBuddy: reply", res.stop_reason, "blocks:", #res.content)
         self.messages[#self.messages + 1] = { role = "assistant", content = res.content }
         local text_parts, tool_uses = self:_split(res.content)
         if #text_parts > 0 then
@@ -225,7 +267,7 @@ function Conversation:_transcriptText()
         if turn.role == "user" then
             out[#out + 1] = T(_("You: %1"), turn.text)
         elseif turn.role == "assistant" then
-            out[#out + 1] = T(_("BookBuddy: %1"), turn.text)
+            out[#out + 1] = T(_("BookBuddy: %1"), stripMarkdown(turn.text))
         else
             out[#out + 1] = turn.text
         end
