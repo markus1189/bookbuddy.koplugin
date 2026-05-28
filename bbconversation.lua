@@ -247,6 +247,7 @@ function Conversation:_render()
         title = _("BookBuddy"),
         text = self:_transcriptText(),
         on_followup = function() self:_promptFollowup() end,
+        scroll_to_bottom = true,
     }
     UIManager:show(self.viewer)
 end

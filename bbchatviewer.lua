@@ -8,7 +8,7 @@ local _ = require("gettext")
 
 local ChatViewer = {}
 
--- opts: { title, text, on_followup }
+-- opts: { title, text, on_followup, scroll_to_bottom }
 function ChatViewer.build(opts)
     local viewer
     local first_row = {
@@ -44,6 +44,12 @@ function ChatViewer.build(opts)
         buttons_table = { first_row },
         add_default_buttons = false,
     }
+    -- Land on the newest turn. The text widget is fully laid out at construction,
+    -- so this is safe before the viewer is shown: the first paint renders at the
+    -- bottom rather than flashing the top first.
+    if opts.scroll_to_bottom then
+        viewer.scroll_text_w:scrollToBottom()
+    end
     return viewer
 end
 
