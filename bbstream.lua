@@ -1,0 +1,117 @@
+-- Generic streaming transport: runs a child function in a forked subprocess and
+-- feeds whatever it writes to the pipe back to the parent line by line, while
+-- the UI stays responsive. Knows nothing about HTTP or SSE — line classification
+-- is the caller's job (see bbanthropic.newStreamParser).
+--
+-- It must run inside a coroutine (LuaJIT's main thread can't yield); BookBuddy
+-- provides one via Trapper:wrap. The loop mirrors Trapper:dismissableRunInSubprocess
+-- but reads incrementally instead of blocking on readAllFromFD until EOF.
+local UIManager = require("ui/uimanager")
+local logger = require("logger")
+local ffi = require("ffi")
+local ffiutil = require("ffi/util")
+
+local Stream = {}
+
+local CHECK_INTERVAL_SEC = 0.125
+local CHUNK_SIZE = 1024 * 16
+local COLLECT_INTERVAL_SEC = 5
+
+-- opts: { child_fn, on_line, register_cancel }
+--   child_fn(pid, child_write_fd): runs in the subprocess, writes bytes to the fd.
+--   on_line(line): called per complete line (newline stripped) as data arrives.
+--   register_cancel(fn|nil): receives an interrupt closure for the duration of the
+--       stream (and nil once it ends) so a Stop button can cancel mid-flight.
+-- Returns { completed, cancelled, read_error }.
+function Stream.run(opts)
+    local pid, parent_read_fd = ffiutil.runInSubProcess(opts.child_fn, true)
+    if not pid then
+        logger.warn("BookBuddy: failed to start streaming subprocess")
+        return { completed = false, cancelled = false, read_error = true }
+    end
+
+    local _coroutine = coroutine.running()
+    local cancelled, read_error, completed = false, false, false
+
+    if opts.register_cancel then
+        opts.register_cancel(function()
+            coroutine.resume(_coroutine, false)
+        end)
+    end
+
+    local buffer = ffi.new("char[?]", CHUNK_SIZE)
+    local buffer_ptr = ffi.cast("void*", buffer)
+    local partial_data = ""
+
+    local function process_lines()
+        while true do
+            local line_end = partial_data:find("[\r\n]")
+            if not line_end then break end
+            local line = partial_data:sub(1, line_end - 1)
+            partial_data = partial_data:sub(line_end + 1)
+            if opts.on_line then opts.on_line(line) end
+        end
+    end
+
+    while not completed do
+        -- Hand control back to the UI, then resume on the next tick (true) unless
+        -- the cancel closure resumes us first (false).
+        local go_on_func = function() coroutine.resume(_coroutine, true) end
+        UIManager:scheduleIn(CHECK_INTERVAL_SEC, go_on_func)
+        if not coroutine.yield() then
+            cancelled = true
+            UIManager:unschedule(go_on_func)
+            break
+        end
+
+        local readsize = ffiutil.getNonBlockingReadSize(parent_read_fd)
+        if readsize and readsize > 0 then
+            local bytes_read = tonumber(ffi.C.read(parent_read_fd, buffer_ptr, CHUNK_SIZE))
+            if bytes_read < 0 then
+                logger.warn("BookBuddy: stream read error:", ffi.string(ffi.C.strerror(ffi.errno())))
+                read_error = true
+                break
+            elseif bytes_read == 0 then
+                completed = true
+            else
+                partial_data = partial_data .. ffi.string(buffer, bytes_read)
+                process_lines()
+            end
+        elseif ffiutil.isSubProcessDone(pid) then
+            -- Nothing buffered and the child has exited: we've drained the pipe.
+            completed = true
+        end
+    end
+
+    -- A final line without a trailing newline only matters on a clean finish.
+    if completed and #partial_data > 0 and opts.on_line then
+        opts.on_line(partial_data)
+    end
+
+    if opts.register_cancel then opts.register_cancel(nil) end
+
+    -- Kill the child (no-op if it already exited) and reap it lazily so a
+    -- cancelled or write-blocked subprocess can't linger as a zombie.
+    ffiutil.terminateSubProcess(pid)
+    local collect_and_clean
+    collect_and_clean = function()
+        if ffiutil.isSubProcessDone(pid) then
+            if parent_read_fd then
+                ffiutil.readAllFromFD(parent_read_fd)
+                parent_read_fd = nil
+            end
+        else
+            if parent_read_fd and (ffiutil.getNonBlockingReadSize(parent_read_fd) or 0) ~= 0 then
+                -- Drain so the child's write() unblocks and it can exit.
+                ffiutil.readAllFromFD(parent_read_fd)
+                parent_read_fd = nil
+            end
+            UIManager:scheduleIn(COLLECT_INTERVAL_SEC, collect_and_clean)
+        end
+    end
+    UIManager:scheduleIn(COLLECT_INTERVAL_SEC, collect_and_clean)
+
+    return { completed = completed, cancelled = cancelled, read_error = read_error }
+end
+
+return Stream
