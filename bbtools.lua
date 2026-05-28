@@ -2,6 +2,7 @@
 -- main process and call straight into KOReader's document API. They never run in
 -- the network subprocess. Every executor returns a plain string for tool_result.
 
+local Event = require("ui/event")
 local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
@@ -42,6 +43,27 @@ local function currentPage(ui)
         return ui.document:getCurrentPage()
     end
     return ui.view and ui.view.state and ui.view.state.page
+end
+
+local function currentChapter(ui)
+    if not ui.toc then
+        return nil
+    end
+    local ok, title = pcall(function() return ui.toc:getTocTitleOfCurrentPage() end)
+    if ok and title and title ~= "" then
+        return title
+    end
+    return nil
+end
+
+-- Plain-English "page N (Chapter)" for the model-facing tool_result.
+local function locationLabel(ui)
+    local page = tostring(currentPage(ui) or "?")
+    local chapter = currentChapter(ui)
+    if chapter then
+        return string.format("page %s (%s)", page, chapter)
+    end
+    return "page " .. page
 end
 
 local function pageOfResult(ui, item)
@@ -224,6 +246,83 @@ local function tool_get_highlights(ui, input)
     return truncate(header .. "\n" .. table.concat(out, "\n")), T(_("%1 found"), total)
 end
 
+-- Move the reader within the book. Mirrors KOReader's own jump idiom
+-- (readertoc.lua:984-990): push the current spot onto ReaderLink's location
+-- stack first, so the reader's Back gesture and the menu's forward arrow return
+-- here -- then fire the navigation event. The result reports where the reader
+-- was so the model can narrate it. Non-destructive, so no confirmation.
+local function tool_navigate(ui, input)
+    local targets = {}
+    if input.page ~= nil then targets[#targets + 1] = "page" end
+    if input.percent ~= nil then targets[#targets + 1] = "percent" end
+    if input.chapter_index ~= nil then targets[#targets + 1] = "chapter_index" end
+    if input.back then targets[#targets + 1] = "back" end
+    if #targets == 0 then
+        return "Error: provide exactly one of page, percent, chapter_index, or back."
+    end
+    if #targets > 1 then
+        return "Error: provide only one of page, percent, chapter_index, or back (got "
+            .. table.concat(targets, ", ") .. ")."
+    end
+    if not ui.link then
+        return "Error: navigation is unavailable for this document."
+    end
+
+    if input.back then
+        -- ReaderLink itself gates its Back menu item on a non-empty stack
+        -- (readerlink.lua:474); do the same check so we can answer gracefully
+        -- instead of triggering an empty-history notification.
+        local stack = ui.link.location_stack
+        if type(stack) == "table" and #stack == 0 then
+            return "There is no previous location to go back to.", _("nothing to go back to")
+        end
+        local from = locationLabel(ui)
+        ui.link:onGoBackLink()
+        return string.format("Went back from %s to %s.", from, locationLabel(ui)), _("went back")
+    end
+
+    local from = locationLabel(ui)
+
+    if input.page ~= nil then
+        local page = tonumber(input.page)
+        if not page then
+            return "Error: 'page' must be a number."
+        end
+        local count = ui.document:getPageCount() or page
+        page = math.max(1, math.min(math.floor(page), count))
+        ui.link:addCurrentLocationToStack()
+        ui:handleEvent(Event:new("GotoPage", page))
+    elseif input.percent ~= nil then
+        local percent = tonumber(input.percent)
+        if not percent then
+            return "Error: 'percent' must be a number between 0 and 100."
+        end
+        percent = math.max(0, math.min(percent, 100))
+        ui.link:addCurrentLocationToStack()
+        ui:handleEvent(Event:new("GotoPercent", percent))
+    else -- chapter_index
+        local toc = ui.document:getToc()
+        if not toc or #toc == 0 then
+            return "This book has no table of contents to navigate by chapter."
+        end
+        local idx = tonumber(input.chapter_index)
+        if not idx or idx < 1 or idx > #toc then
+            return string.format("Error: 'chapter_index' must be between 1 and %d (see get_toc).", #toc)
+        end
+        local entry = toc[idx]
+        ui.link:addCurrentLocationToStack()
+        if entry.xpointer then
+            ui:handleEvent(Event:new("GotoXPointer", entry.xpointer, entry.xpointer))
+        else
+            ui:handleEvent(Event:new("GotoPage", entry.page))
+        end
+    end
+
+    local to = locationLabel(ui)
+    return string.format("Moved from %s to %s. The reader can tap Back to return here.", from, to),
+        T(_("→ %1"), to)
+end
+
 local DISPATCH = {
     search_book = tool_search_book,
     read_page_range = tool_read_page_range,
@@ -231,6 +330,7 @@ local DISPATCH = {
     read_chapter = tool_read_chapter,
     book_context = tool_book_context,
     get_highlights = tool_get_highlights,
+    navigate = tool_navigate,
 }
 
 function Tools.getSpecs()
@@ -291,6 +391,23 @@ function Tools.getSpecs()
                 type = "object",
                 properties = {
                     max_results = { type = "integer", description = "Maximum highlights/notes to return (default 100, max 500)." },
+                },
+            },
+        },
+        {
+            name = "navigate",
+            description = "Move the reader to a location in the book. Provide exactly one of: "
+                .. "page, percent, chapter_index, or back. The reader's current spot is pushed onto "
+                .. "the book's history first, so the result reports where they were and the reader can "
+                .. "tap Back (or call this again with back=true) to return. Use get_toc to find chapter "
+                .. "numbers. After navigating, tell the reader where you took them.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    page = { type = "integer", description = "Absolute page number to jump to (1-based)." },
+                    percent = { type = "number", description = "Position in the book as a percentage, 0 to 100." },
+                    chapter_index = { type = "integer", description = "1-based chapter number as listed by get_toc." },
+                    back = { type = "boolean", description = "Set true to return to the reader's previous location." },
                 },
             },
         },

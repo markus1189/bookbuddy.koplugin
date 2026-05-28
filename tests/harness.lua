@@ -574,5 +574,117 @@ do
         "  → Renamed memory note a.md to b.md")
 end
 
+print("\n=== Unit: navigate tool phrases ===")
+do
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "x" }
+    local function phrase(input) return conv:_toolActionPhrase({ name = "navigate", input = input }) end
+    checkPhrase("nav page", phrase{ page = 88 }, "  → Went to page 88")
+    checkPhrase("nav percent", phrase{ percent = 50 }, "  → Went to 50%")
+    checkPhrase("nav chapter", phrase{ chapter_index = 3 }, "  → Went to chapter 3")
+    checkPhrase("nav back", phrase{ back = true }, "  → Went back")
+end
+
+-- Exercise the real navigate executor (the bbtools stub above is only for the
+-- conversation loop). Load the real module fresh with ui/event stubbed so
+-- Event:new records dispatched events, and drive it with a fake ui.
+print("\n=== Unit: navigate tool executor ===")
+do
+    package.loaded["ui/event"] = {
+        new = function(_, handler, a, b) return { handler = handler, args = { a, b } } end,
+    }
+    local RealTools = dofile(dir .. "/../bbtools.lua")
+
+    local function makeUI(o)
+        o = o or {}
+        local rec = { events = {}, pushes = 0, backs = 0 }
+        local page = o.page or 10
+        local ui = {
+            rolling = o.rolling, -- nil => paging engine
+            view = { state = { page = page } },
+            document = {
+                getCurrentPage = function() return page end,
+                getPageCount = function() return o.page_count or 200 end,
+                getToc = function() return o.toc or {} end,
+            },
+            toc = { getTocTitleOfCurrentPage = function() return o.chapter or "" end },
+            link = {
+                location_stack = o.location_stack or {},
+                addCurrentLocationToStack = function() rec.pushes = rec.pushes + 1 end,
+                onGoBackLink = function() rec.backs = rec.backs + 1 end,
+            },
+            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+        }
+        return ui, rec
+    end
+
+    local function check(label, cond)
+        if cond then
+            total_pass = total_pass + 1
+            print("  ok:   " .. label)
+        else
+            total_fail = total_fail + 1
+            print("  FAIL: " .. label)
+        end
+    end
+
+    do -- page jump (paging engine)
+        local ui, rec = makeUI{ page = 10, chapter = "Chapter 1" }
+        local result, summary = RealTools.execute("navigate", { page = 88 }, ui)
+        check("page: pushed to history once", rec.pushes == 1)
+        check("page: one GotoPage event to 88",
+            #rec.events == 1 and rec.events[1].handler == "GotoPage" and rec.events[1].args[1] == 88)
+        check("page: result reports prior page 10", result:find("page 10") ~= nil)
+        check("page: summary set", summary ~= nil and summary ~= "")
+    end
+
+    do -- percent jump
+        local ui, rec = makeUI{ page = 10 }
+        RealTools.execute("navigate", { percent = 50 }, ui)
+        check("percent: pushed once", rec.pushes == 1)
+        check("percent: GotoPercent 50",
+            rec.events[1] and rec.events[1].handler == "GotoPercent" and rec.events[1].args[1] == 50)
+    end
+
+    do -- chapter jump, rolling engine with xpointer
+        local ui, rec = makeUI{ rolling = true, page = 5,
+            toc = { { title = "One", page = 1, xpointer = "xp1" },
+                    { title = "Two", page = 40, xpointer = "xp40" } } }
+        RealTools.execute("navigate", { chapter_index = 2 }, ui)
+        check("chapter(rolling): pushed once", rec.pushes == 1)
+        check("chapter(rolling): GotoXPointer xp40",
+            rec.events[1] and rec.events[1].handler == "GotoXPointer" and rec.events[1].args[1] == "xp40")
+    end
+
+    do -- chapter jump, paging engine without xpointer
+        local ui, rec = makeUI{ page = 5,
+            toc = { { title = "One", page = 1 }, { title = "Two", page = 40 } } }
+        RealTools.execute("navigate", { chapter_index = 2 }, ui)
+        check("chapter(paging): GotoPage 40",
+            rec.events[1] and rec.events[1].handler == "GotoPage" and rec.events[1].args[1] == 40)
+    end
+
+    do -- back with a non-empty history stack
+        local ui, rec = makeUI{ page = 88, location_stack = { { page = 10 } } }
+        RealTools.execute("navigate", { back = true }, ui)
+        check("back: called onGoBackLink", rec.backs == 1)
+        check("back: did not push to stack", rec.pushes == 0)
+    end
+
+    do -- back with an empty history stack
+        local ui, rec = makeUI{ page = 88, location_stack = {} }
+        local result = RealTools.execute("navigate", { back = true }, ui)
+        check("back(empty): did not call onGoBackLink", rec.backs == 0)
+        check("back(empty): explains there is nothing to go back to",
+            result:find("no previous location") ~= nil)
+    end
+
+    do -- no target / multiple targets
+        local ui = makeUI{}
+        check("no target: errors", RealTools.execute("navigate", {}, ui):find("exactly one") ~= nil)
+        check("multi target: errors",
+            RealTools.execute("navigate", { page = 5, percent = 50 }, ui):find("only one") ~= nil)
+    end
+end
+
 print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))
 os.exit(total_fail == 0 and 0 or 1)

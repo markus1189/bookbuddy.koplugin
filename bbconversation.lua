@@ -339,12 +339,27 @@ function Conversation:_toolActionPhrase(tu)
         phrase = _("Checked the book details")
     elseif tu.name == "get_highlights" then
         phrase = _("Looked up your highlights")
+    elseif tu.name == "navigate" then
+        phrase = self:_navigatePhrase(input)
     elseif tu.name == "memory" then
         phrase = self:_memoryPhrase(input)
     else
         phrase = T(_("Used %1"), tu.name)
     end
     return "  → " .. phrase
+end
+
+function Conversation:_navigatePhrase(input)
+    if input.back then
+        return _("Went back")
+    elseif input.page ~= nil then
+        return T(_("Went to page %1"), tostring(input.page))
+    elseif input.percent ~= nil then
+        return T(_("Went to %1%"), tostring(input.percent))
+    elseif input.chapter_index ~= nil then
+        return T(_("Went to chapter %1"), tostring(input.chapter_index))
+    end
+    return _("Navigated the book")
 end
 
 -- "/memories/notes.md" -> "notes.md"; the /memories root -> nil (no useful name).
