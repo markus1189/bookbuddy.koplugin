@@ -12,6 +12,8 @@ local DEFAULT_SEARCH_RESULTS = 8
 local MAX_SEARCH_RESULTS = 20
 local FINDALL_CONTEXT_WORDS = 10
 local FINDALL_MAX_HITS = 5000
+local DEFAULT_HIGHLIGHTS = 100
+local MAX_HIGHLIGHTS = 500
 
 local function truncate(text, limit)
     limit = limit or MAX_RESULT_CHARS
@@ -177,12 +179,47 @@ local function tool_book_context(ui, _input)
     return table.concat(lines, "\n")
 end
 
+local function tool_get_highlights(ui, input)
+    local items = ui.annotation and ui.annotation.annotations
+    if not items or #items == 0 then
+        return "This book has no highlights or notes yet."
+    end
+    local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
+    local out, total, shown = {}, 0, 0
+    for i = 1, #items do
+        local a = items[i]
+        local text = a.text and a.text ~= "" and a.text:gsub("%s+", " ") or nil
+        local note = a.note and a.note ~= "" and a.note:gsub("%s+", " ") or nil
+        if text or note then -- skip bare page bookmarks
+            total = total + 1
+            if shown < max_results then
+                shown = shown + 1
+                local loc = a.pageno and ("page " .. tostring(a.pageno)) or "page ?"
+                if a.chapter and a.chapter ~= "" then
+                    loc = loc .. ", " .. a.chapter
+                end
+                local entry = string.format("%d. [%s | %s]", total, note and "note" or "highlight", loc)
+                if text then entry = entry .. "\n   \"" .. text .. "\"" end
+                if note then entry = entry .. "\n   note: " .. note end
+                out[#out + 1] = entry
+            end
+        end
+    end
+    if total == 0 then
+        return "This book has no highlights or notes yet."
+    end
+    local header = string.format("%d highlight(s)/note(s) in this book%s:",
+        total, shown < total and string.format(" (showing first %d)", shown) or "")
+    return truncate(header .. "\n" .. table.concat(out, "\n"))
+end
+
 local DISPATCH = {
     search_book = tool_search_book,
     read_page_range = tool_read_page_range,
     get_toc = tool_get_toc,
     read_chapter = tool_read_chapter,
     book_context = tool_book_context,
+    get_highlights = tool_get_highlights,
 }
 
 function Tools.getSpecs()
@@ -235,6 +272,16 @@ function Tools.getSpecs()
             name = "book_context",
             description = "Get the book's title and author, the total page count, and the reader's current page and chapter.",
             input_schema = no_args(),
+        },
+        {
+            name = "get_highlights",
+            description = "List the reader's own highlights and notes for the current book, in reading order, with the highlighted passage, any attached note, the chapter, and the page number. Use this to discuss passages the reader marked as important or to ground answers in them.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    max_results = { type = "integer", description = "Maximum highlights/notes to return (default 100, max 500)." },
+                },
+            },
         },
         -- Server-side tool: Anthropic runs the search and returns the results
         -- inline, so there is no DISPATCH executor and the model finishes the turn
