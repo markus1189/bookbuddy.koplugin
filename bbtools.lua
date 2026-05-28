@@ -54,8 +54,8 @@ local function readPageRangeText(ui, start_page, end_page)
     end
     local xp0 = ui.document:getPageXPointer(start_page)
     local xp1 = ui.document:getPageXPointer(math.min(end_page + 1, page_count))
-    local res = ui.document:getTextFromXPointers(xp0, xp1)
-    return res and res.text or "", start_page, end_page, capped
+    local text = ui.document:getTextFromXPointers(xp0, xp1)
+    return text or "", start_page, end_page, capped
 end
 
 local function tool_search_book(ui, input)
