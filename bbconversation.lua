@@ -105,12 +105,18 @@ function Conversation:_loop()
     local max_turns = cfg.max_turns
 
     local iterations = 0
+    -- Set after a pause_turn: the next round resends the partial assistant turn
+    -- unchanged to let the server finish (e.g. a long web search).
+    local resuming = false
     while iterations < max_turns do
         iterations = iterations + 1
         -- On the final allowed round, drop the tools so the model has to answer in
-        -- text rather than requesting another tool call we'd refuse to run.
+        -- text rather than requesting another tool call we'd refuse to run. While
+        -- resuming a paused server-side turn we must keep the tools, though: the
+        -- paused turn references a server tool and the API needs it to finish.
         local last_round = iterations >= max_turns
-        local tools = (not last_round) and self.tool_specs or nil
+        local tools = (not last_round or resuming) and self.tool_specs or nil
+        resuming = false
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
         logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages,
@@ -196,36 +202,48 @@ function Conversation:_loop()
             self.transcript[#self.transcript] = nil
         end
 
-        if res.stop_reason ~= "tool_use" or #tool_uses == 0 then
+        -- Web search runs server-side, so it never reaches the client tool loop
+        -- below; surface each query (with result count when available) as its own
+        -- transcript line, placed before this turn's reply text.
+        self:_renderWebSearches(res.content, entry)
+
+        if res.stop_reason == "pause_turn" then
+            -- The API paused a long server-side turn. Resend the partial assistant
+            -- turn as-is (no user message) so the model resumes; adding a message
+            -- here would strand the server_tool_use without its result and the next
+            -- request would 400.
+            resuming = true
+            self:_flushNow()
+        elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
+            self:_flushNow()
+            local tool_results = {}
+            for i = 1, #tool_uses do
+                local tu = tool_uses[i]
+                -- Show the in-progress action immediately, then fold the outcome
+                -- summary into the same line once the executor returns.
+                local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
+                self.transcript[#self.transcript + 1] = tool_entry
+                self:_flushNow()
+                local result, summary
+                if tu.name == "memory" and self.memory then
+                    result = self.memory:execute(tu.input)
+                else
+                    result, summary = Tools.execute(tu.name, tu.input, self.ui)
+                end
+                if summary and summary ~= "" then
+                    tool_entry.text = tool_entry.text .. " — " .. summary
+                end
+                tool_results[#tool_results + 1] = {
+                    type = "tool_result",
+                    tool_use_id = tu.id,
+                    content = result,
+                }
+            end
+            self.messages[#self.messages + 1] = { role = "user", content = tool_results }
+        else
             self:_render()
             return
         end
-
-        self:_flushNow()
-        local tool_results = {}
-        for i = 1, #tool_uses do
-            local tu = tool_uses[i]
-            -- Show the in-progress action immediately, then fold the outcome summary
-            -- into the same line once the executor returns.
-            local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
-            self.transcript[#self.transcript + 1] = tool_entry
-            self:_flushNow()
-            local result, summary
-            if tu.name == "memory" and self.memory then
-                result = self.memory:execute(tu.input)
-            else
-                result, summary = Tools.execute(tu.name, tu.input, self.ui)
-            end
-            if summary and summary ~= "" then
-                tool_entry.text = tool_entry.text .. " — " .. summary
-            end
-            tool_results[#tool_results + 1] = {
-                type = "tool_result",
-                tool_use_id = tu.id,
-                content = result,
-            }
-        end
-        self.messages[#self.messages + 1] = { role = "user", content = tool_results }
     end
 
     -- Unreachable in practice: the final round omits tools and returns above.
@@ -288,6 +306,54 @@ function Conversation:_memoryPhrase(input)
         return _("Renamed a memory note")
     end
     return _("Used memory")
+end
+
+-- Add a transcript line for each web_search query in this assistant turn's content
+-- blocks. The result count comes from the matching web_search_tool_result block
+-- when it is present in the same turn (the common case); after a pause_turn the
+-- query and its result can land in different turns, in which case we show the
+-- query alone. Lines are inserted just before this turn's reply text (entry).
+function Conversation:_renderWebSearches(content, entry)
+    if type(content) ~= "table" then
+        return
+    end
+    local outcome = {}
+    for i = 1, #content do
+        local b = content[i]
+        if b.type == "web_search_tool_result" and b.tool_use_id then
+            local c = b.content
+            if type(c) == "table" and c.type == "web_search_tool_result_error" then
+                outcome[b.tool_use_id] = { error = c.error_code }
+            elseif type(c) == "table" then
+                outcome[b.tool_use_id] = { count = #c }
+            end
+        end
+    end
+    local lines = {}
+    for i = 1, #content do
+        local b = content[i]
+        if b.type == "server_tool_use" and b.name == "web_search" then
+            local query = (b.input and b.input.query) or ""
+            local text = "  → " .. T(_("Searched the web for %1"), string.format("%q", query))
+            local r = outcome[b.id]
+            if r and r.error then
+                text = text .. " — " .. T(_("error: %1"), tostring(r.error))
+            elseif r and r.count then
+                text = text .. " — " .. T(_("%1 result(s)"), r.count)
+            end
+            lines[#lines + 1] = { role = "tool", text = text }
+        end
+    end
+    if #lines == 0 then
+        return
+    end
+    local pos = #self.transcript + 1
+    if entry and self.transcript[#self.transcript] == entry then
+        pos = #self.transcript
+    end
+    for k = 1, #lines do
+        table.insert(self.transcript, pos + k - 1, lines[k])
+    end
 end
 
 function Conversation:_transcriptText()
