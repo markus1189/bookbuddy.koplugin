@@ -27,6 +27,9 @@ function Conversation:new(o)
     o.transcript = {}
     o.tool_specs = Tools.getSpecs()
     o.viewer = nil
+    -- Accumulated across every API call in the conversation (each turn resends the
+    -- full history, so summing input_tokens reflects what was actually billed).
+    o.usage = { input = 0, output = 0, cache_read = 0, cache_write = 0 }
     return o
 end
 
@@ -106,6 +109,14 @@ function Conversation:_loop()
             local msg = data.error.message or data.error.type or "unknown error"
             fail(T(_("BookBuddy API error: %1"), tostring(msg)))
             return
+        end
+
+        local u = data.usage
+        if u then
+            self.usage.input = self.usage.input + (u.input_tokens or 0)
+            self.usage.output = self.usage.output + (u.output_tokens or 0)
+            self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
+            self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
         end
 
         self.messages[#self.messages + 1] = { role = "assistant", content = data.content }
@@ -203,7 +214,28 @@ function Conversation:_transcriptText()
             out[#out + 1] = turn.text
         end
     end
+    local usage = self:_usageText()
+    if usage then
+        out[#out + 1] = usage
+    end
     return table.concat(out, "\n\n")
+end
+
+-- Footer summarizing token spend across the whole conversation. nil until at
+-- least one API call has reported usage. cache_read/cache_write are the prompt
+-- tokens served from / written to the prompt cache (Anthropic reports them
+-- separately from input_tokens).
+function Conversation:_usageText()
+    local u = self.usage
+    if u.input + u.output == 0 then
+        return nil
+    end
+    local parts = { T(_("input %1"), u.input), T(_("output %1"), u.output) }
+    local cached = u.cache_read + u.cache_write
+    if cached > 0 then
+        parts[#parts + 1] = T(_("cached %1"), cached)
+    end
+    return T(_("[tokens — %1]"), table.concat(parts, ", "))
 end
 
 function Conversation:_render()
