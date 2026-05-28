@@ -229,6 +229,14 @@ function Tools.getSpecs()
             description = "Get the book's title and author, the total page count, and the reader's current page and chapter.",
             input_schema = no_args(),
         },
+        -- Server-side tool: Anthropic runs the search and returns the results
+        -- inline, so there is no DISPATCH executor and the model finishes the turn
+        -- itself (stop_reason "end_turn") rather than handing us a tool_use to run.
+        {
+            type = "web_search_20250305",
+            name = "web_search",
+            max_uses = 5,
+        },
     }
 end
 
