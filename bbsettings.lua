@@ -9,6 +9,7 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Memory = require("bbmemory")
+local Updater = require("bbupdate")
 
 local DEFAULTS = {
     base_url = "https://api.portkey.ai",
@@ -290,6 +291,13 @@ function Settings:getMenu(ui)
                 callback = function() self:showMemory(ui) end,
             }
         end
+        items[#items + 1] = {
+            text_func = function()
+                return T(_("Check for updates (v%1)"), Updater.getInstalledVersion())
+            end,
+            keep_menu_open = true,
+            callback = function() Updater.check() end,
+        }
         return {
             text = _("BookBuddy"),
             sorting_hint = "tools",
