@@ -274,6 +274,7 @@ function Settings:getMenu(ui)
         end
         return {
             text = _("BookBuddy"),
+            sorting_hint = "tools",
             sub_item_table = items,
         }
 end
