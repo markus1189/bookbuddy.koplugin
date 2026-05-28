@@ -163,8 +163,10 @@ function Conversation:_loop()
         self:_ensureStreamingViewer()
 
         -- Each entry is created on its first delta so a turn that produces no
-        -- thinking (or no text) leaves no empty line in the transcript. Thinking
-        -- streams before text, so it lands above the answer in reading order.
+        -- thinking (or no text) leaves no empty line in the transcript. These live
+        -- entries are replaced by content-ordered ones once the turn finishes (see
+        -- _renderAssistantTurn); mark where this turn's entries begin.
+        local turn_transcript_start = #self.transcript
         local entry, thinking_entry
         local parser = Anthropic.newStreamParser{
             on_thinking = function(t)
@@ -235,22 +237,11 @@ function Conversation:_loop()
 
         logger.dbg("BookBuddy: reply", res.stop_reason, "blocks:", #res.content)
         self:_storeAssistant(res.content, is_resume)
-        local text_parts, tool_uses = self:_split(res.content)
-        if #text_parts > 0 then
-            if not entry then
-                entry = { role = "assistant", text = "" }
-                self.transcript[#self.transcript + 1] = entry
-            end
-            -- Canonical text (handles multiple text blocks the deltas glued together).
-            entry.text = table.concat(text_parts, "\n\n")
-        elseif entry and self.transcript[#self.transcript] == entry then
-            self.transcript[#self.transcript] = nil
-        end
-
-        -- Web search runs server-side, so it never reaches the client tool loop
-        -- below; surface each query (with result count when available) as its own
-        -- transcript line, placed before this turn's reply text.
-        self:_renderWebSearches(res.content, entry)
+        local tool_uses = select(2, self:_split(res.content))
+        -- Replace this turn's live streamed entries with content-ordered ones, so a
+        -- server-side web search shows between the lead-in and the answer rather than
+        -- hoisted above them. Client tool calls are added below, after execution.
+        self:_renderAssistantTurn(res.content, turn_transcript_start)
 
         if res.stop_reason == "pause_turn" then
             -- The API paused a long server-side turn. Resume by resending the partial
@@ -356,28 +347,51 @@ function Conversation:_toolActionPhrase(tu)
     return "  → " .. phrase
 end
 
+-- "/memories/notes.md" -> "notes.md"; the /memories root -> nil (no useful name).
+local function memoryNoteName(path)
+    if type(path) ~= "string" then
+        return nil
+    end
+    local name = path:gsub("^/memories/?", "")
+    return name ~= "" and name or nil
+end
+
 function Conversation:_memoryPhrase(input)
     local cmd = input.command
+    local name = memoryNoteName(input.path)
     if cmd == "view" then
-        return _("Reviewed memory")
+        if name then
+            return T(_("Read memory note %1"), name)
+        end
+        return _("Reviewed saved memory")
     elseif cmd == "create" then
-        return _("Saved a memory note")
+        return name and T(_("Saved memory note %1"), name) or _("Saved a memory note")
     elseif cmd == "str_replace" or cmd == "insert" then
-        return _("Updated a memory note")
+        return name and T(_("Updated memory note %1"), name) or _("Updated a memory note")
     elseif cmd == "delete" then
-        return _("Deleted a memory note")
+        return name and T(_("Deleted memory note %1"), name) or _("Deleted a memory note")
     elseif cmd == "rename" then
+        local from, to = memoryNoteName(input.old_path), memoryNoteName(input.new_path)
+        if from and to then
+            return T(_("Renamed memory note %1 to %2"), from, to)
+        end
         return _("Renamed a memory note")
     end
     return _("Used memory")
 end
 
--- Add a transcript line for each web_search query in this assistant turn's content
--- blocks. The result count comes from the matching web_search_tool_result block
--- when it is present in the same turn (the common case); after a pause_turn the
--- query and its result can land in different turns, in which case we show the
--- query alone. Lines are inserted just before this turn's reply text (entry).
-function Conversation:_renderWebSearches(content, entry)
+-- Re-render this turn's assistant content into the transcript in block order,
+-- replacing the live streamed entries (everything past turn_start). This keeps a
+-- server-side web search between the model's lead-in and its answer instead of
+-- hoisting it above them, and renders interleaved thinking/text in reading order.
+-- Web search runs server-side, so its query never reaches the client tool loop;
+-- we surface it here, with the result count from the matching result block when it
+-- is in this turn (after a pause_turn the result can be absent, so we show the
+-- query alone).
+function Conversation:_renderAssistantTurn(content, turn_start)
+    for i = #self.transcript, turn_start + 1, -1 do
+        self.transcript[i] = nil
+    end
     if type(content) ~= "table" then
         return
     end
@@ -393,10 +407,13 @@ function Conversation:_renderWebSearches(content, entry)
             end
         end
     end
-    local lines = {}
     for i = 1, #content do
         local b = content[i]
-        if b.type == "server_tool_use" and b.name == "web_search" then
+        if b.type == "thinking" and b.thinking and b.thinking ~= "" then
+            self.transcript[#self.transcript + 1] = { role = "thinking", text = b.thinking }
+        elseif b.type == "text" and b.text and b.text ~= "" then
+            self.transcript[#self.transcript + 1] = { role = "assistant", text = b.text }
+        elseif b.type == "server_tool_use" and b.name == "web_search" then
             local query = (b.input and b.input.query) or ""
             local text = "  → " .. T(_("Searched the web for %1"), string.format("%q", query))
             local r = outcome[b.id]
@@ -405,18 +422,8 @@ function Conversation:_renderWebSearches(content, entry)
             elseif r and r.count then
                 text = text .. " — " .. T(_("%1 result(s)"), r.count)
             end
-            lines[#lines + 1] = { role = "tool", text = text }
+            self.transcript[#self.transcript + 1] = { role = "tool", text = text }
         end
-    end
-    if #lines == 0 then
-        return
-    end
-    local pos = #self.transcript + 1
-    if entry and self.transcript[#self.transcript] == entry then
-        pos = #self.transcript
-    end
-    for k = 1, #lines do
-        table.insert(self.transcript, pos + k - 1, lines[k])
     end
 end
 

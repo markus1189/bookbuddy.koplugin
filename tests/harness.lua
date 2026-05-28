@@ -56,14 +56,17 @@ function json.encode(v)
     elseif t == "string" then
         return encodeString(v)
     elseif t == "table" then
+        -- An explicit __array marker (set by our decoder) wins; otherwise treat a
+        -- pure 1..#v sequence as an array and anything else as an object.
         local n = 0
         for _ in pairs(v) do n = n + 1 end
-        if #v == n and (n > 0 or v.__array) then
+        local is_array = v.__array or (n > 0 and #v == n)
+        if is_array then
             local parts = {}
             for i = 1, #v do parts[i] = json.encode(v[i]) end
             return "[" .. table.concat(parts, ",") .. "]"
         elseif n == 0 then
-            return v.__array and "[]" or "{}"
+            return "{}"
         else
             local parts = {}
             for k, val in pairs(v) do
@@ -187,10 +190,11 @@ package.loaded["ui/network/manager"] = { willRerunWhenOnline = function() return
 package.loaded["ui/widget/infomessage"] = { new = function(_, o) return o or {} end }
 package.loaded["ui/widget/inputdialog"] = { new = function(_, o) return o or {} end }
 
-package.loaded["bbchatviewer"] = {
-    build = function() return { _stub = true } end,
-    updateText = noop,
-}
+local ChatViewerStub = {}
+ChatViewerStub.last_text = nil
+ChatViewerStub.build = function(o) ChatViewerStub.last_text = o and o.text; return { _stub = true } end
+ChatViewerStub.updateText = function(_, text) ChatViewerStub.last_text = text end
+package.loaded["bbchatviewer"] = ChatViewerStub
 package.loaded["bbmemory"] = {
     baseDirForBook = function() return nil end,
     new = function() return {} end,
@@ -441,6 +445,13 @@ local function runScenario(sc)
         scenario_ok = false
     end
 
+    if sc.show_transcript then
+        print("  --- final transcript ---")
+        for line in (ChatViewerStub.last_text or ""):gmatch("[^\n]*") do
+            print("  | " .. line)
+        end
+    end
+
     local expect_ok = (sc.expect_ok ~= false)
     if scenario_ok == expect_ok then
         total_pass = total_pass + 1
@@ -518,5 +529,50 @@ runScenario{
     },
 }
 
-print(string.format("\n==== %d scenario(s) passed, %d failed ====", total_pass, total_fail))
+runScenario{
+    name = "S5: thinking + completed web search in one turn",
+    show_transcript = true,
+    responses = {
+        buildTurnSSE{ blocks = {
+            { type = "thinking", thinking = "The reader asks about the author; I should look it up." },
+            { type = "text", text = "Let me look that up." },
+            { type = "server_tool_use", id = "srvtoolu_E", input = { query = "Max Gladstone biography" } },
+            { type = "web_search_tool_result", tool_use_id = "srvtoolu_E", content = webResults(3) },
+            { type = "text", text = "The author is Max Gladstone, born 1984." },
+        }, stop_reason = "end_turn" },
+    },
+}
+
+--------------------------------------------------------------------------------
+-- Unit checks for tool-call phrasing.
+--------------------------------------------------------------------------------
+local function checkPhrase(label, got, want)
+    if got == want then
+        total_pass = total_pass + 1
+        print(string.format("  ok:   %-24s -> %s", label, got))
+    else
+        total_fail = total_fail + 1
+        print(string.format("  FAIL: %-24s -> got %q, want %q", label, got, want))
+    end
+end
+
+print("\n=== Unit: memory tool phrases ===")
+do
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "x" }
+    local function phrase(input) return conv:_toolActionPhrase({ name = "memory", input = input }) end
+    checkPhrase("view root", phrase{ command = "view", path = "/memories" },
+        "  → Reviewed saved memory")
+    checkPhrase("view file", phrase{ command = "view", path = "/memories/characters.md" },
+        "  → Read memory note characters.md")
+    checkPhrase("create", phrase{ command = "create", path = "/memories/themes.md" },
+        "  → Saved memory note themes.md")
+    checkPhrase("str_replace", phrase{ command = "str_replace", path = "/memories/themes.md" },
+        "  → Updated memory note themes.md")
+    checkPhrase("delete", phrase{ command = "delete", path = "/memories/old.md" },
+        "  → Deleted memory note old.md")
+    checkPhrase("rename", phrase{ command = "rename", old_path = "/memories/a.md", new_path = "/memories/b.md" },
+        "  → Renamed memory note a.md to b.md")
+end
+
+print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))
 os.exit(total_fail == 0 and 0 or 1)
