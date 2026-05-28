@@ -18,8 +18,8 @@ local NETWORK_ERROR_MARKER = "X-BB-NETWORK-ERROR:"
 -- first-party API; we route through a gateway, so we add our own when the memory
 -- tool is enabled, otherwise the model may never look at /memories.
 local MEMORY_PROTOCOL =
-    "You have a persistent memory directory at /memories, private to this book "
-    .. "(or shared across its series). At the start of every conversation, use the memory "
+    "You have a persistent memory directory at /memories, private to this book. "
+    .. "At the start of every conversation, use the memory "
     .. "tool's `view` command on /memories to recall what you noted before. As you learn "
     .. "durable things about this book — recurring themes, characters and their arcs, the "
     .. "reader's interests and how they like answers, and roughly where they are in the plot "

@@ -34,13 +34,17 @@ function Conversation:new(o)
     o.messages = {}
     o.transcript = {}
     o.tool_specs = Tools.getSpecs()
-    -- When memory is enabled, build the per-scope store once and offer the memory
+    -- When memory is enabled, build the per-book store once and offer the memory
     -- tool alongside the others. It rides in tool_specs, so the last_round rule
-    -- that drops tools to force a text answer drops memory too.
+    -- that drops tools to force a text answer drops memory too. Skip it if the
+    -- book has no resolvable sidecar dir to store memory in.
     o.memory = nil
     if o.ui and o.settings and o.settings:getConfig().enable_memory then
-        o.memory = Memory.new(Memory.baseDirForBook(o.ui))
-        o.tool_specs[#o.tool_specs + 1] = Memory.spec()
+        local base = Memory.baseDirForBook(o.ui)
+        if base then
+            o.memory = Memory.new(base)
+            o.tool_specs[#o.tool_specs + 1] = Memory.spec()
+        end
     end
     o.viewer = nil
     o.streaming_viewer = false

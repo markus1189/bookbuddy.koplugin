@@ -253,7 +253,7 @@ function Settings:getMenu(ui)
             },
             {
                 text = _("Per-book memory"),
-                help_text = _("Let BookBuddy keep notes about this book (or series) across conversations, stored on this device."),
+                help_text = _("Let BookBuddy keep notes about this book across conversations, stored in the book's sidecar so they travel with the book."),
                 checked_func = function() return self:get("enable_memory") and true or false end,
                 keep_menu_open = true,
                 callback = function(touchmenu_instance)

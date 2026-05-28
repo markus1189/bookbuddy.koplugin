@@ -1,16 +1,16 @@
 -- Filesystem-backed store for Anthropic's client-side memory tool.
 --
 -- The model issues `memory` tool_use blocks with a `command` over a virtual
--- `/memories` directory; we execute them against a real per-scope directory on
+-- `/memories` directory; we execute them against a real per-book directory on
 -- disk and return the protocol's result strings (kept verbatim so the model
--- recognizes them — these are NOT translated). Storage is scoped per book, or
--- shared across a series when the book has series metadata, so notes carry over
--- between sessions and between volumes of the same series.
+-- recognizes them — these are NOT translated). Storage lives in the open book's
+-- sidecar (.sdr) directory, so memory travels with the book (e.g. via Syncthing)
+-- and is naturally isolated per book.
 --
 -- Security: the model only ever names paths under /memories. `_resolve` refuses
 -- anything outside that root and forbids `..`, so a tool call cannot reach files
--- outside the scope directory.
-local DataStorage = require("datastorage")
+-- outside the book's memory directory.
+local DocSettings = require("docsettings")
 local lfs = require("libs/libkoreader-lfs")
 local util = require("util")
 local ffiUtil = require("ffi/util")
@@ -18,7 +18,6 @@ local _ = require("gettext")
 local T = ffiUtil.template
 
 local VIRTUAL_ROOT = "/memories"
-local SLUG_MAX = 80
 local VIEW_MAX_DEPTH = 2
 local MAX_LINES = 999999
 
@@ -30,48 +29,29 @@ function Memory.spec()
     return { type = "memory_20250818", name = "memory" }
 end
 
--- Filesystem-safe, reasonably readable directory component.
-local function slug(s)
-    s = tostring(s or ""):lower()
-    s = s:gsub("%s+", "-"):gsub("[^%w%-_]", "_")
-    if #s > SLUG_MAX then s = s:sub(1, SLUG_MAX) end
-    if s == "" then s = "untitled" end
-    return s
-end
-
--- Returns (key, label, kind): a stable storage key for the open book. A book
--- that belongs to a series shares its series' memory; otherwise it is keyed by
--- a content digest (survives file renames) and falls back to its path.
-function Memory.scopeForBook(ui)
+-- Human label for the open book, for the management UI header.
+function Memory.bookLabel(ui)
     local doc = ui and ui.document
     local props = (doc and doc.getProps and doc:getProps()) or {}
-    local series = props.series
-    if type(series) == "string" then
-        series = series:gsub("^%s+", ""):gsub("%s+$", "")
-    else
-        series = nil
-    end
-    if series and series ~= "" then
-        return "series-" .. slug(series), series, "series"
-    end
     local file = doc and doc.file
     local title = props.title
-    if file and (not title or title == "") then
+    if (not title or title == "") and file then
         title = ffiUtil.basename(file)
     end
-    if file then
-        local md5 = util.partialMD5(file)
-        if md5 then
-            return "book-" .. md5, title or _("this book"), "book"
-        end
-        return "path-" .. slug(file), title or _("this book"), "book"
-    end
-    return "book-unknown", title or _("this book"), "book"
+    return title or _("this book")
 end
 
+-- Memory lives in the open book's sidecar directory, following KOReader's own
+-- sidecar-location setting (by default the .sdr next to the book, which syncs).
+-- Returns nil when there is no resolvable sidecar (e.g. no open file), in which
+-- case the caller skips memory entirely.
 function Memory.baseDirForBook(ui)
-    local key = Memory.scopeForBook(ui)
-    return DataStorage:getDataDir() .. "/bookbuddy/memory/" .. key
+    local file = ui and ui.document and ui.document.file
+    local sdr = file and DocSettings:getSidecarDir(file)
+    if not sdr or sdr == "" then
+        return nil
+    end
+    return sdr .. "/bookbuddy_memory"
 end
 
 local Store = {}
@@ -360,14 +340,11 @@ function Store:execute(input)
     return res or ""
 end
 
--- User-facing summary of the current scope's stored memory, for the menu.
+-- User-facing summary of this book's stored memory, for the menu.
 function Memory.summaryText(ui)
     local base = Memory.baseDirForBook(ui)
-    local _key, label, kind = Memory.scopeForBook(ui)
-    local header = (kind == "series")
-        and T(_("Memory shared across series: %1"), label)
-        or T(_("Memory for this book: %1"), label)
-    if not util.directoryExists(base) then
+    local header = T(_("Memory for this book: %1"), Memory.bookLabel(ui))
+    if not base or not util.directoryExists(base) then
         return header .. "\n\n" .. _("(no memory stored yet)")
     end
     local files = {}
@@ -385,16 +362,16 @@ function Memory.summaryText(ui)
     return table.concat(out, "\n")
 end
 
--- Returns true if the scope has any stored memory.
+-- Returns true if this book has any stored memory.
 function Memory.hasContent(ui)
     local base = Memory.baseDirForBook(ui)
-    return util.directoryExists(base) and not util.isEmptyDir(base)
+    return base ~= nil and util.directoryExists(base) and not util.isEmptyDir(base)
 end
 
--- Delete the current scope's memory directory.
+-- Delete this book's memory directory.
 function Memory.clear(ui)
     local base = Memory.baseDirForBook(ui)
-    if util.directoryExists(base) then
+    if base and util.directoryExists(base) then
         return ffiUtil.purgeDir(base)
     end
     return true
