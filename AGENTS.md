@@ -26,11 +26,16 @@ of guessing**:
 - Settings persist via `LuaSettings` (`bbsettings.lua`); per-book memory lives in the
   book's `.sdr` sidecar (`bbmemory.lua`).
 
+## Dev environment
+`flake.nix` provides a dev shell with `luajit`, `luacheck`, and `lua-language-server`.
+With [direnv](https://direnv.net) it loads automatically on `cd` (`.envrc` is `use flake`);
+otherwise run `nix develop`. The commands below assume that shell. Without Nix, substitute
+`nix run nixpkgs#luajit -- …` and `nix run nixpkgs#luaPackages.luacheck -- …`.
+
 ## Tests
 Headless harness — no device or network needed. From the plugin root:
 ```
 luajit tests/harness.lua
-# or: nix run nixpkgs#luajit -- tests/harness.lua
 ```
 It stubs KOReader, drives the real multi-turn tool loop in `bbconversation.lua` /
 `bbanthropic.lua`, validates the Vertex request rules (role alternation, `server_tool_use`
@@ -42,7 +47,6 @@ when you change the conversation loop or tools.
 `.luacheckrc` is copied from KOReader (same globals/ignores):
 ```
 luacheck .
-# or: nix run nixpkgs#luaPackages.luacheck -- .
 ```
 
 ## Quick syntax check
