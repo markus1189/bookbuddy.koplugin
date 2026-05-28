@@ -50,28 +50,42 @@ model answers using tools that read the actual book rather than guessing.
 
 ## Installation (first time)
 
-BookBuddy installs like any KOReader plugin: a folder named **`bookbuddy.koplugin`**
-inside KOReader's `plugins/` directory. The repository root *is* that folder. Do this
-once manually; after that the built-in "Check for updates" handles upgrades.
+BookBuddy is a KOReader plugin: a folder named exactly **`bookbuddy.koplugin`** placed
+inside KOReader's `plugins/` directory. You only do this once — afterwards the built-in
+"Check for updates" handles upgrades.
 
-1. **Get the plugin folder.** Either clone it (note the target folder name must end in
-   `.koplugin`):
-   ```bash
-   git clone https://github.com/markus1189/bookbuddy.koplugin bookbuddy.koplugin
-   ```
-   …or download the repo as a zip from GitHub and extract it, renaming the extracted
-   folder to `bookbuddy.koplugin`.
+### The easy way (no git required)
 
-2. **Copy `bookbuddy.koplugin/` into KOReader's `plugins/` directory.** Typical locations:
+1. **Download the zip.** Open the
+   [repository](https://github.com/markus1189/bookbuddy.koplugin), click the green
+   **Code** button, then **Download ZIP**. You'll get `bookbuddy.koplugin-main.zip`.
+
+2. **Extract it.** This gives you a folder named `bookbuddy.koplugin-main`.
+
+3. **Rename that folder to exactly `bookbuddy.koplugin`** — drop the `-main`. This step is
+   not optional: KOReader only loads folders whose name ends in `.koplugin`, so
+   `bookbuddy.koplugin-main` would be silently ignored.
+
+4. **Copy the `bookbuddy.koplugin` folder into KOReader's `plugins/` directory.** Typical
+   locations:
    - Kobo: `.adds/koreader/plugins/`
    - Kindle: `koreader/plugins/` (under `/mnt/us/`)
    - Android: `koreader/plugins/` in the app's storage (use a file manager)
    - Desktop / emulator: `<koreader install>/plugins/`
 
-3. **Restart KOReader.**
+5. **Restart KOReader.**
 
-4. Open a book → top menu → **BookBuddy** → set your Portkey API key (see
+6. Open a book → top menu → **BookBuddy** → set your Portkey API key (see
    [Configuration](#configuration)). You're ready to highlight a passage and ask.
+
+### Or, if you use git
+
+```bash
+git clone https://github.com/markus1189/bookbuddy.koplugin bookbuddy.koplugin
+```
+
+The target folder already ends in `.koplugin`, so there's no rename to do. Copy it into
+`plugins/` (step 4 above) and restart.
 
 ## Configuration
 
