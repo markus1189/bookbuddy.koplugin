@@ -152,6 +152,9 @@ function Conversation:_loop()
         -- paused turn references a server tool and the API needs it to finish.
         local last_round = iterations >= max_turns
         local tools = (not last_round or resuming) and self.tool_specs or nil
+        -- This round continues a turn the previous round left paused: its reply must
+        -- extend that same assistant message, not start a new one (see below).
+        local is_resume = resuming
         resuming = false
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
@@ -224,17 +227,14 @@ function Conversation:_loop()
         -- placeholder block so history stays resendable, and surface the gap.
         if type(res.content) ~= "table" or #res.content == 0 then
             logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder")
-            self.messages[#self.messages + 1] = {
-                role = "assistant",
-                content = { { type = "text", text = "(no response)" } },
-            }
+            self:_storeAssistant({ { type = "text", text = "(no response)" } }, is_resume)
             self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
             self:_render()
             return
         end
 
         logger.dbg("BookBuddy: reply", res.stop_reason, "blocks:", #res.content)
-        self.messages[#self.messages + 1] = { role = "assistant", content = res.content }
+        self:_storeAssistant(res.content, is_resume)
         local text_parts, tool_uses = self:_split(res.content)
         if #text_parts > 0 then
             if not entry then
@@ -295,6 +295,23 @@ function Conversation:_loop()
 
     -- Unreachable in practice: the final round omits tools and returns above.
     self:_render()
+end
+
+-- Record an assistant reply in the wire history. A pause_turn continuation
+-- (is_resume) extends the existing assistant turn instead of adding a second
+-- assistant message in a row: a paused-then-resumed turn is one logical turn, and
+-- two consecutive assistant messages make the gateway 400 ("roles must alternate")
+-- once a later user turn resends the pair. Merging also keeps each server_tool_use
+-- in the same message as its web_search_tool_result.
+function Conversation:_storeAssistant(blocks, is_resume)
+    local prev = self.messages[#self.messages]
+    if is_resume and prev and prev.role == "assistant" and type(prev.content) == "table" then
+        for i = 1, #blocks do
+            prev.content[#prev.content + 1] = blocks[i]
+        end
+    else
+        self.messages[#self.messages + 1] = { role = "assistant", content = blocks }
+    end
 end
 
 function Conversation:_split(content)
