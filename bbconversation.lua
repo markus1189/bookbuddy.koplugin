@@ -46,6 +46,42 @@ local function stripMarkdown(text)
     return text
 end
 
+-- Vertex AI's request validator (unlike Anthropic's first-party API) rejects any
+-- server_tool_use that lacks a paired web_search_tool_result in the same assistant
+-- message. A pause_turn can stop right after the in-flight web search's
+-- server_tool_use, before its result arrives, so resending that turn verbatim --
+-- which the pause_turn contract otherwise prescribes -- makes the next request 400
+-- ("web_search tool use ... without a corresponding web_search_tool_result block").
+-- Pair each orphan with a synthetic "unavailable" error result so the resend
+-- validates; the model then resumes and either retries the search (a fresh turn
+-- has a fresh search budget) or answers without it.
+local function pairDanglingWebSearch(content)
+    if type(content) ~= "table" then
+        return
+    end
+    local has_result = {}
+    for _, b in ipairs(content) do
+        if b.type == "web_search_tool_result" and b.tool_use_id then
+            has_result[b.tool_use_id] = true
+        end
+    end
+    local i = 1
+    while i <= #content do
+        local b = content[i]
+        if b.type == "server_tool_use" and b.id and not has_result[b.id] then
+            table.insert(content, i + 1, {
+                type = "web_search_tool_result",
+                tool_use_id = b.id,
+                content = { type = "web_search_tool_result_error", error_code = "unavailable" },
+            })
+            has_result[b.id] = true
+            i = i + 2
+        else
+            i = i + 1
+        end
+    end
+end
+
 local Conversation = {}
 Conversation.__index = Conversation
 
@@ -217,10 +253,12 @@ function Conversation:_loop()
         self:_renderWebSearches(res.content, entry)
 
         if res.stop_reason == "pause_turn" then
-            -- The API paused a long server-side turn. Resend the partial assistant
-            -- turn as-is (no user message) so the model resumes; adding a message
-            -- here would strand the server_tool_use without its result and the next
-            -- request would 400.
+            -- The API paused a long server-side turn. Resume by resending the partial
+            -- assistant turn (no user message). The pause can stop on the in-flight
+            -- web search's server_tool_use before its result, which our Vertex gateway
+            -- rejects on resend; pair any such orphan with a synthetic error result
+            -- first so the request validates and the model can finish its turn.
+            pairDanglingWebSearch(self.messages[#self.messages].content)
             resuming = true
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
