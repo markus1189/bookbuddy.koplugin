@@ -8,7 +8,7 @@ local T = require("ffi/util").template
 local DEFAULTS = {
     base_url = "https://api.portkey.ai",
     model = "@vertex-ai/anthropic.claude-sonnet-4-6",
-    max_tokens = 2048,
+    max_tokens = 64000,
     max_turns = 20,
     system_prompt = "You are BookBuddy, a concise and insightful reading companion embedded in an e-reader. "
         .. "The user is reading a book and has highlighted a passage to ask you about. "

@@ -61,9 +61,9 @@ function Anthropic.request(body_json, cfg)
 
     -- Non-streaming: the gateway holds the socket until the whole reply is
     -- generated, so the block (time-to-first-byte) timeout must cover the model's
-    -- entire generation, not just network latency. A tool-heavy turn can take a
-    -- while; the user can still cancel anytime via Trapper.
-    socketutil:set_timeout(180, 240)
+    -- entire generation, not just network latency. With a high max_tokens a long
+    -- reply can take many minutes; the user can still cancel anytime via Trapper.
+    socketutil:set_timeout(600, 660)
     local code, resp_headers = socket.skip(1, http.request{
         url = cfg.base_url .. "/v1/messages",
         method = "POST",
