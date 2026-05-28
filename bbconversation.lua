@@ -17,6 +17,7 @@ local T = require("ffi/util").template
 
 local Anthropic = require("bbanthropic")
 local ChatViewer = require("bbchatviewer")
+local Memory = require("bbmemory")
 local Stream = require("bbstream")
 local Tools = require("bbtools")
 
@@ -33,6 +34,14 @@ function Conversation:new(o)
     o.messages = {}
     o.transcript = {}
     o.tool_specs = Tools.getSpecs()
+    -- When memory is enabled, build the per-scope store once and offer the memory
+    -- tool alongside the others. It rides in tool_specs, so the last_round rule
+    -- that drops tools to force a text answer drops memory too.
+    o.memory = nil
+    if o.ui and o.settings and o.settings:getConfig().enable_memory then
+        o.memory = Memory.new(Memory.baseDirForBook(o.ui))
+        o.tool_specs[#o.tool_specs + 1] = Memory.spec()
+    end
     o.viewer = nil
     o.streaming_viewer = false
     o._cancel = nil
@@ -152,7 +161,12 @@ function Conversation:_loop()
             local tu = tool_uses[i]
             self.transcript[#self.transcript + 1] = { role = "tool", text = self:_toolLabel(tu) }
             self:_flushNow()
-            local result = Tools.execute(tu.name, tu.input, self.ui)
+            local result
+            if tu.name == "memory" and self.memory then
+                result = self.memory:execute(tu.input)
+            else
+                result = Tools.execute(tu.name, tu.input, self.ui)
+            end
             tool_results[#tool_results + 1] = {
                 type = "tool_result",
                 tool_use_id = tu.id,
@@ -190,6 +204,9 @@ function Conversation:_toolLabel(tu)
         detail = T(_("pages %1–%2"), tostring(input.start_page), tostring(input.end_page))
     elseif tu.name == "read_chapter" then
         detail = T(_("chapter %1"), tostring(input.chapter_index))
+    elseif tu.name == "memory" then
+        local path = input.path or input.old_path
+        detail = path and (tostring(input.command) .. " " .. tostring(path)) or tostring(input.command)
     end
     if detail then
         return T(_("[used %1: %2]"), tu.name, detail)

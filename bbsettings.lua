@@ -1,15 +1,21 @@
+local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
+local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
+local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
 local T = require("ffi/util").template
+
+local Memory = require("bbmemory")
 
 local DEFAULTS = {
     base_url = "https://api.portkey.ai",
     model = "@vertex-ai/anthropic.claude-sonnet-4-6",
     max_tokens = 64000,
     max_turns = 20,
+    enable_memory = true,
     system_prompt = "You are BookBuddy, a concise and insightful reading companion embedded in an e-reader. "
         .. "The user is reading a book and has highlighted a passage to ask you about. "
         .. "You have tools to search the book, read page ranges and chapters, inspect the table of contents, "
@@ -50,6 +56,7 @@ function Settings:getConfig()
         max_tokens = tonumber(self:get("max_tokens")) or DEFAULTS.max_tokens,
         max_turns = math.max(1, tonumber(self:get("max_turns")) or DEFAULTS.max_turns),
         system_prompt = self:get("system_prompt"),
+        enable_memory = self:get("enable_memory") and true or false,
     }
 end
 
@@ -130,10 +137,42 @@ function Settings:editMultiline(touchmenu_instance, opts)
     dialog:onShowKeyboard()
 end
 
-function Settings:getMenu()
-    return {
-        text = _("BookBuddy"),
-        sub_item_table = {
+-- Show the current book/series memory with an option to clear it.
+function Settings:showMemory(ui)
+    local viewer
+    viewer = TextViewer:new{
+        title = _("BookBuddy memory"),
+        text = Memory.summaryText(ui),
+        add_default_buttons = false,
+        buttons_table = {{
+            {
+                text = _("Clear memory"),
+                callback = function()
+                    UIManager:show(ConfirmBox:new{
+                        text = _("Delete all stored memory for the current book or series?"),
+                        ok_text = _("Delete"),
+                        ok_callback = function()
+                            Memory.clear(ui)
+                            UIManager:close(viewer)
+                            UIManager:show(InfoMessage:new{
+                                text = _("BookBuddy memory cleared."),
+                                timeout = 2,
+                            })
+                        end,
+                    })
+                end,
+            },
+            {
+                text = _("Close"),
+                callback = function() UIManager:close(viewer) end,
+            },
+        }},
+    }
+    UIManager:show(viewer)
+end
+
+function Settings:getMenu(ui)
+    local items = {
             {
                 text_func = function()
                     return T(_("Portkey API key: %1"),
@@ -212,8 +251,28 @@ function Settings:getMenu()
                     })
                 end,
             },
-        },
-    }
+            {
+                text = _("Per-book memory"),
+                help_text = _("Let BookBuddy keep notes about this book (or series) across conversations, stored on this device."),
+                checked_func = function() return self:get("enable_memory") and true or false end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:set("enable_memory", not (self:get("enable_memory") and true or false))
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end,
+            },
+        }
+        if ui then
+            items[#items + 1] = {
+                text = _("Show book memory"),
+                keep_menu_open = true,
+                callback = function() self:showMemory(ui) end,
+            }
+        end
+        return {
+            text = _("BookBuddy"),
+            sub_item_table = items,
+        }
 end
 
 return Settings

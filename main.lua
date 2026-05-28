@@ -66,7 +66,7 @@ function BookBuddy:onBookBuddyAskSelection()
 end
 
 function BookBuddy:addToMainMenu(menu_items)
-    menu_items.bookbuddy = self.settings:getMenu()
+    menu_items.bookbuddy = self.settings:getMenu(self.ui)
 end
 
 -- Open an input dialog seeded with the highlighted passage, then start a chat.
