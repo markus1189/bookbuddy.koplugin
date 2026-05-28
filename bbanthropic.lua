@@ -51,6 +51,13 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     if tool_specs and #tool_specs > 0 then
         body.tools = tool_specs
     end
+    -- Adaptive thinking is the only supported mode on Opus 4.7 (a fixed
+    -- budget_tokens 400s there), and it interleaves thinking between tool calls
+    -- on its own. display="summarized" is required to get any thinking text:
+    -- the default omits it, which would leave the live "Thinking" view empty.
+    if cfg.enable_thinking then
+        body.thinking = { type = "adaptive", display = "summarized" }
+    end
     return rapidjson.encode(body)
 end
 
@@ -126,10 +133,12 @@ local Parser = {}
 Parser.__index = Parser
 
 -- o.on_text(delta): optional, called with each text fragment as it arrives.
+-- o.on_thinking(delta): optional, called with each summarized-thinking fragment.
 function Anthropic.newStreamParser(o)
     o = o or {}
     return setmetatable({
         on_text = o.on_text,
+        on_thinking = o.on_thinking,
         blocks = {},        -- index (0-based) -> content block table
         json_accum = {},    -- index -> accumulated tool_use input JSON string
         max_index = -1,
@@ -183,6 +192,16 @@ function Parser:_event(event)
                 local b = self.blocks[idx]
                 if b then b.text = (b.text or "") .. d.text end
                 if self.on_text then self.on_text(d.text) end
+            elseif d.type == "thinking_delta" and d.thinking then
+                local b = self.blocks[idx]
+                if b then b.thinking = (b.thinking or "") .. d.thinking end
+                if self.on_thinking then self.on_thinking(d.thinking) end
+            elseif d.type == "signature_delta" and d.signature then
+                -- Accumulate onto the thinking block; the API requires the
+                -- signature back verbatim when the turn's thinking is resent
+                -- alongside tool_use, so it must survive in self.blocks[idx].
+                local b = self.blocks[idx]
+                if b then b.signature = (b.signature or "") .. d.signature end
             elseif d.type == "input_json_delta" and d.partial_json then
                 self.json_accum[idx] = (self.json_accum[idx] or "") .. d.partial_json
             end

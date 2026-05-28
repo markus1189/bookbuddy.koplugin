@@ -12,10 +12,14 @@ local Memory = require("bbmemory")
 
 local DEFAULTS = {
     base_url = "https://api.portkey.ai",
-    model = "@vertex-ai/anthropic.claude-sonnet-4-6",
+    model = "@vertex-eu-global/anthropic.claude-opus-4-7",
     max_tokens = 64000,
     max_turns = 20,
     enable_memory = true,
+    -- Adaptive extended thinking. Opus 4.7 supports adaptive thinking only, off
+    -- unless requested; its thinking text is omitted unless we ask for the
+    -- summarized display, which is what makes reasoning visible (see bbanthropic).
+    enable_thinking = true,
     system_prompt = "You are BookBuddy, a concise and insightful reading companion embedded in an e-reader. "
         .. "The user is reading a book and has highlighted a passage to ask you about. "
         .. "You have tools to search the book, read page ranges and chapters, inspect the table of contents, "
@@ -60,6 +64,7 @@ function Settings:getConfig()
         max_turns = math.max(1, tonumber(self:get("max_turns")) or DEFAULTS.max_turns),
         system_prompt = self:get("system_prompt"),
         enable_memory = self:get("enable_memory") and true or false,
+        enable_thinking = self:get("enable_thinking") and true or false,
     }
 end
 
@@ -213,7 +218,7 @@ function Settings:getMenu(ui)
                     self:editText(touchmenu_instance, {
                         key = "model",
                         title = _("Model"),
-                        description = _("Portkey model slug, e.g. @vertex-ai/anthropic.claude-sonnet-4-6."),
+                        description = _("Portkey model slug, e.g. @vertex-eu-global/anthropic.claude-opus-4-7."),
                     })
                 end,
             },
@@ -261,6 +266,16 @@ function Settings:getMenu(ui)
                 keep_menu_open = true,
                 callback = function(touchmenu_instance)
                     self:set("enable_memory", not (self:get("enable_memory") and true or false))
+                    if touchmenu_instance then touchmenu_instance:updateItems() end
+                end,
+            },
+            {
+                text = _("Extended thinking"),
+                help_text = _("Let the model reason before answering. Its summarized thinking is shown above the reply. Requires a model that supports adaptive thinking, such as Claude Opus 4.7."),
+                checked_func = function() return self:get("enable_thinking") and true or false end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:set("enable_thinking", not (self:get("enable_thinking") and true or false))
                     if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
             },

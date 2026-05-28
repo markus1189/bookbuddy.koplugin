@@ -123,10 +123,19 @@ function Conversation:_loop()
             "tools:", tools and #tools or 0)
         self:_ensureStreamingViewer()
 
-        -- The assistant entry is created on the first text delta so a pure tool
-        -- turn (no text) leaves no empty "BookBuddy:" line in the transcript.
-        local entry
+        -- Each entry is created on its first delta so a turn that produces no
+        -- thinking (or no text) leaves no empty line in the transcript. Thinking
+        -- streams before text, so it lands above the answer in reading order.
+        local entry, thinking_entry
         local parser = Anthropic.newStreamParser{
+            on_thinking = function(t)
+                if not thinking_entry then
+                    thinking_entry = { role = "thinking", text = "" }
+                    self.transcript[#self.transcript + 1] = thinking_entry
+                end
+                thinking_entry.text = thinking_entry.text .. t
+                self:_scheduleFlush()
+            end,
             on_text = function(t)
                 if not entry then
                     entry = { role = "assistant", text = "" }
@@ -364,6 +373,8 @@ function Conversation:_transcriptText()
             out[#out + 1] = T(_("You: %1"), turn.text)
         elseif turn.role == "assistant" then
             out[#out + 1] = T(_("BookBuddy: %1"), stripMarkdown(turn.text))
+        elseif turn.role == "thinking" then
+            out[#out + 1] = T(_("Thinking: %1"), stripMarkdown(turn.text))
         else
             out[#out + 1] = turn.text
         end
