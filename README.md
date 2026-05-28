@@ -1,4 +1,6 @@
-# BookBuddy
+<p align="center">
+  <img src="assets/bookbuddy-logo.png" alt="BookBuddy" width="480">
+</p>
 
 A [KOReader](https://github.com/koreader/koreader) plugin that puts a tool-using
 Claude agent inside your e-reader. Highlight a passage, ask a question, and the
