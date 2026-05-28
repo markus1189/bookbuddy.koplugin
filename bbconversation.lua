@@ -205,13 +205,19 @@ function Conversation:_loop()
         local tool_results = {}
         for i = 1, #tool_uses do
             local tu = tool_uses[i]
-            self.transcript[#self.transcript + 1] = { role = "tool", text = self:_toolLabel(tu) }
+            -- Show the in-progress action immediately, then fold the outcome summary
+            -- into the same line once the executor returns.
+            local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
+            self.transcript[#self.transcript + 1] = tool_entry
             self:_flushNow()
-            local result
+            local result, summary
             if tu.name == "memory" and self.memory then
                 result = self.memory:execute(tu.input)
             else
-                result = Tools.execute(tu.name, tu.input, self.ui)
+                result, summary = Tools.execute(tu.name, tu.input, self.ui)
+            end
+            if summary and summary ~= "" then
+                tool_entry.text = tool_entry.text .. " — " .. summary
             end
             tool_results[#tool_results + 1] = {
                 type = "tool_result",
@@ -241,23 +247,47 @@ function Conversation:_split(content)
     return text_parts, tool_uses
 end
 
-function Conversation:_toolLabel(tu)
+-- A friendly, present-completed description of one tool call, e.g.
+--   "  → Searched book for "whales"". The leading arrow/indent set tool lines
+-- apart from the You:/BookBuddy: turns in the plain-text transcript. The outcome
+-- summary (match count, word count, …) is appended by the caller once known.
+function Conversation:_toolActionPhrase(tu)
     local input = tu.input or {}
-    local detail
+    local phrase
     if tu.name == "search_book" then
-        detail = string.format("%q", input.query or "")
+        phrase = T(_("Searched book for %1"), string.format("%q", input.query or ""))
     elseif tu.name == "read_page_range" then
-        detail = T(_("pages %1–%2"), tostring(input.start_page), tostring(input.end_page))
+        phrase = T(_("Read pages %1–%2"), tostring(input.start_page), tostring(input.end_page))
     elseif tu.name == "read_chapter" then
-        detail = T(_("chapter %1"), tostring(input.chapter_index))
+        phrase = T(_("Read chapter %1"), tostring(input.chapter_index))
+    elseif tu.name == "get_toc" then
+        phrase = _("Fetched the table of contents")
+    elseif tu.name == "book_context" then
+        phrase = _("Checked the book details")
+    elseif tu.name == "get_highlights" then
+        phrase = _("Looked up your highlights")
     elseif tu.name == "memory" then
-        local path = input.path or input.old_path
-        detail = path and (tostring(input.command) .. " " .. tostring(path)) or tostring(input.command)
+        phrase = self:_memoryPhrase(input)
+    else
+        phrase = T(_("Used %1"), tu.name)
     end
-    if detail then
-        return T(_("[used %1: %2]"), tu.name, detail)
+    return "  → " .. phrase
+end
+
+function Conversation:_memoryPhrase(input)
+    local cmd = input.command
+    if cmd == "view" then
+        return _("Reviewed memory")
+    elseif cmd == "create" then
+        return _("Saved a memory note")
+    elseif cmd == "str_replace" or cmd == "insert" then
+        return _("Updated a memory note")
+    elseif cmd == "delete" then
+        return _("Deleted a memory note")
+    elseif cmd == "rename" then
+        return _("Renamed a memory note")
     end
-    return T(_("[used %1]"), tu.name)
+    return _("Used memory")
 end
 
 function Conversation:_transcriptText()

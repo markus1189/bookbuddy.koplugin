@@ -3,6 +3,8 @@
 -- the network subprocess. Every executor returns a plain string for tool_result.
 
 local logger = require("logger")
+local _ = require("gettext")
+local T = require("ffi/util").template
 
 local Tools = {}
 
@@ -21,6 +23,14 @@ local function truncate(text, limit)
         return text:sub(1, limit) .. "\n…[truncated]"
     end
     return text
+end
+
+local function wordCount(text)
+    if not text or text == "" then
+        return 0
+    end
+    local _, n = text:gsub("%S+", "")
+    return n
 end
 
 local function isRolling(ui)
@@ -66,7 +76,7 @@ local function tool_search_book(ui, input)
     local max_results = math.min(tonumber(input.max_results) or DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS)
     local results = ui.document:findAllText(query, true, FINDALL_CONTEXT_WORDS, FINDALL_MAX_HITS, false)
     if not results or #results == 0 then
-        return string.format("No matches found for %q.", query)
+        return string.format("No matches found for %q.", query), _("no matches")
     end
     local out = {
         string.format("Found %d match(es) for %q (showing up to %d):", #results, query, max_results),
@@ -83,12 +93,12 @@ local function tool_search_book(ui, input)
         snippet = snippet:gsub("%s+", " ")
         out[#out + 1] = string.format("%d. [page %s] …%s…", i, tostring(pageOfResult(ui, item)), snippet)
     end
-    return truncate(table.concat(out, "\n"))
+    return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #results)
 end
 
 local function tool_read_page_range(ui, input)
     if not isRolling(ui) then
-        return "read_page_range is only supported for reflowable (EPUB) books in this version."
+        return "read_page_range is only supported for reflowable (EPUB) books in this version.", _("EPUB only")
     end
     local start_page = tonumber(input.start_page)
     local end_page = tonumber(input.end_page)
@@ -97,16 +107,16 @@ local function tool_read_page_range(ui, input)
     end
     local text, s, e, capped = readPageRangeText(ui, start_page, end_page)
     if not text or text == "" then
-        return string.format("No text found on pages %d–%d.", start_page, end_page)
+        return string.format("No text found on pages %d–%d.", start_page, end_page), _("no text")
     end
     local header = string.format("Text of pages %d–%d%s:", s, e, capped and " (range capped)" or "")
-    return truncate(header .. "\n\n" .. text)
+    return truncate(header .. "\n\n" .. text), T(_("~%1 words"), wordCount(text))
 end
 
 local function tool_get_toc(ui, _input)
     local toc = ui.document:getToc()
     if not toc or #toc == 0 then
-        return "This book has no table of contents."
+        return "This book has no table of contents.", _("none")
     end
     local out = { string.format("Table of contents (%d entries):", #toc) }
     local limit = math.min(#toc, 300)
@@ -118,16 +128,16 @@ local function tool_get_toc(ui, _input)
     if #toc > limit then
         out[#out + 1] = string.format("…and %d more entries.", #toc - limit)
     end
-    return truncate(table.concat(out, "\n"))
+    return truncate(table.concat(out, "\n")), T(_("%1 entries"), #toc)
 end
 
 local function tool_read_chapter(ui, input)
     if not isRolling(ui) then
-        return "read_chapter is only supported for reflowable (EPUB) books in this version."
+        return "read_chapter is only supported for reflowable (EPUB) books in this version.", _("EPUB only")
     end
     local toc = ui.document:getToc()
     if not toc or #toc == 0 then
-        return "This book has no table of contents to identify chapters."
+        return "This book has no table of contents to identify chapters.", _("no chapters")
     end
     local idx = tonumber(input.chapter_index)
     if not idx or idx < 1 or idx > #toc then
@@ -145,7 +155,7 @@ local function tool_read_chapter(ui, input)
     end
     local text, s, e, capped = readPageRangeText(ui, start_page, end_page)
     if not text or text == "" then
-        return string.format("Could not read chapter %d (%s).", idx, entry.title or "")
+        return string.format("Could not read chapter %d (%s).", idx, entry.title or ""), _("no text")
     end
     local header
     if capped then
@@ -156,7 +166,7 @@ local function tool_read_chapter(ui, input)
     else
         header = string.format("Chapter %d: %s (pages %d–%d)", idx, entry.title or "", s, e)
     end
-    return truncate(header .. "\n\n" .. text)
+    return truncate(header .. "\n\n" .. text), T(_("~%1 words"), wordCount(text))
 end
 
 local function tool_book_context(ui, _input)
@@ -168,21 +178,22 @@ local function tool_book_context(ui, _input)
     if props.series then
         lines[#lines + 1] = "Series: " .. props.series
     end
-    lines[#lines + 1] = string.format("Current page: %s of %s",
-        tostring(currentPage(ui) or "?"), tostring(ui.document:getPageCount() or "?"))
+    local cur = tostring(currentPage(ui) or "?")
+    local total = tostring(ui.document:getPageCount() or "?")
+    lines[#lines + 1] = string.format("Current page: %s of %s", cur, total)
     if ui.toc then
         local ok, title = pcall(function() return ui.toc:getTocTitleOfCurrentPage() end)
         if ok and title and title ~= "" then
             lines[#lines + 1] = "Current chapter: " .. title
         end
     end
-    return table.concat(lines, "\n")
+    return table.concat(lines, "\n"), T(_("page %1 of %2"), cur, total)
 end
 
 local function tool_get_highlights(ui, input)
     local items = ui.annotation and ui.annotation.annotations
     if not items or #items == 0 then
-        return "This book has no highlights or notes yet."
+        return "This book has no highlights or notes yet.", _("none yet")
     end
     local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
     local out, total, shown = {}, 0, 0
@@ -206,11 +217,11 @@ local function tool_get_highlights(ui, input)
         end
     end
     if total == 0 then
-        return "This book has no highlights or notes yet."
+        return "This book has no highlights or notes yet.", _("none yet")
     end
     local header = string.format("%d highlight(s)/note(s) in this book%s:",
         total, shown < total and string.format(" (showing first %d)", shown) or "")
-    return truncate(header .. "\n" .. table.concat(out, "\n"))
+    return truncate(header .. "\n" .. table.concat(out, "\n")), T(_("%1 found"), total)
 end
 
 local DISPATCH = {
@@ -294,17 +305,19 @@ function Tools.getSpecs()
     }
 end
 
+-- Returns (result_string, summary). result_string is the tool_result content sent
+-- back to the model; summary is a short human phrase for the transcript, or nil.
 function Tools.execute(name, input, ui)
     local fn = DISPATCH[name]
     if not fn then
         return "Error: unknown tool " .. tostring(name)
     end
-    local ok, result = pcall(fn, ui, input or {})
+    local ok, result, summary = pcall(fn, ui, input or {})
     if not ok then
         logger.warn("BookBuddy: tool error", name, result)
         return "Error while running tool '" .. tostring(name) .. "': " .. tostring(result)
     end
-    return result or ""
+    return result or "", summary
 end
 
 return Tools
