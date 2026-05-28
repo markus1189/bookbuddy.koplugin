@@ -48,18 +48,30 @@ model answers using tools that read the actual book rather than guessing.
   authenticated with a Portkey API key sent as the `x-portkey-api-key` header. Point
   the base URL / model elsewhere if your setup differs.
 
-## Installation
+## Installation (first time)
 
-The repository root **is** the plugin, so clone it directly into KOReader's
-`plugins/` directory under the name `bookbuddy.koplugin`:
+BookBuddy installs like any KOReader plugin: a folder named **`bookbuddy.koplugin`**
+inside KOReader's `plugins/` directory. The repository root *is* that folder. Do this
+once manually; after that the built-in "Check for updates" handles upgrades.
 
-```bash
-git clone https://github.com/markus1189/bookbuddy.koplugin \
-  /path/to/koreader/plugins/bookbuddy.koplugin
-```
+1. **Get the plugin folder.** Either clone it (note the target folder name must end in
+   `.koplugin`):
+   ```bash
+   git clone https://github.com/markus1189/bookbuddy.koplugin bookbuddy.koplugin
+   ```
+   …or download the repo as a zip from GitHub and extract it, renaming the extracted
+   folder to `bookbuddy.koplugin`.
 
-Then restart KOReader. (Or download the repo zip and extract it as
-`plugins/bookbuddy.koplugin`.)
+2. **Copy `bookbuddy.koplugin/` into KOReader's `plugins/` directory.** Typical locations:
+   - Kobo: `.adds/koreader/plugins/`
+   - Kindle: `koreader/plugins/` (under `/mnt/us/`)
+   - Android: `koreader/plugins/` in the app's storage (use a file manager)
+   - Desktop / emulator: `<koreader install>/plugins/`
+
+3. **Restart KOReader.**
+
+4. Open a book → top menu → **BookBuddy** → set your Portkey API key (see
+   [Configuration](#configuration)). You're ready to highlight a passage and ask.
 
 ## Configuration
 
