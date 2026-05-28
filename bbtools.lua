@@ -145,8 +145,15 @@ local function tool_read_chapter(ui, input)
     if not text or text == "" then
         return string.format("Could not read chapter %d (%s).", idx, entry.title or "")
     end
-    local header = string.format("Chapter %d: %s (pages %d–%d%s)",
-        idx, entry.title or "", s, e, capped and ", truncated" or "")
+    local header
+    if capped then
+        header = string.format(
+            "Chapter %d: %s spans pages %d–%d. Showing pages %d–%d only (20-page limit); "
+                .. "read the rest with read_page_range starting at page %d.",
+            idx, entry.title or "", start_page, end_page, s, e, e + 1)
+    else
+        header = string.format("Chapter %d: %s (pages %d–%d)", idx, entry.title or "", s, e)
+    end
     return truncate(header .. "\n\n" .. text)
 end
 
@@ -215,7 +222,7 @@ function Tools.getSpecs()
         },
         {
             name = "read_chapter",
-            description = "Read the full text of a chapter identified by its number from get_toc (1-based). Reflowable (EPUB) books only.",
+            description = "Read the text of a chapter identified by its number from get_toc (1-based). Reflowable (EPUB) books only. Long chapters are capped at 20 pages per call; the result reports the chapter's full page range, so read any remainder with read_page_range.",
             input_schema = {
                 type = "object",
                 properties = {
