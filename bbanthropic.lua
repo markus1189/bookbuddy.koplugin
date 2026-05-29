@@ -28,7 +28,7 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     end
     local extra = cfg.additional_system_prompt
     if extra and extra ~= "" then
-        system_text = system_text .. "\n\n" .. extra
+        system_text = system_text .. "\n\n<additional_system_prompt>\n" .. extra .. "\n</additional_system_prompt>"
     end
     local body = {
         model = cfg.model,

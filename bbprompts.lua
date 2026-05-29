@@ -47,13 +47,15 @@ Prompts.SYSTEM_PROMPT =
 -- first-party API; we route through a gateway, so we add our own when the memory
 -- tool is enabled, otherwise the model may never look at /memories.
 Prompts.MEMORY_PROTOCOL =
-    "You have a persistent memory directory at /memories, private to this book. "
+    "<memory_protocol>\n"
+    .. "You have a persistent memory directory at /memories, private to this book. "
     .. "At the start of every conversation, use the memory "
     .. "tool's `view` command on /memories to recall what you noted before. As you learn "
     .. "durable things about this book — recurring themes, characters and their arcs, the "
     .. "reader's interests and how they like answers, and roughly where they are in the plot "
     .. "— record them in memory files so later conversations are better informed. Keep memory "
     .. "tidy and up to date; reorganize or delete stale notes. Never store secrets, and do not "
-    .. "write down plot points beyond the reader's current position."
+    .. "write down plot points beyond the reader's current position.\n"
+    .. "</memory_protocol>"
 
 return Prompts

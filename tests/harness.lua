@@ -640,10 +640,10 @@ runScenario{
         buildTurnSSE{ blocks = { { type = "text", text = "Good instinct." } }, stop_reason = "end_turn" },
     },
     expect_seed_contains = {
-        "I've highlighted this passage:",
-        "And I wrote this note on it:",
+        "<highlighted_passage>",
+        "<reader_note>",
         "I think the narrator is unreliable here.",
-        "My question: Am I right about this?",
+        "<question>\nAm I right about this?\n</question>",
     },
 }
 
@@ -654,8 +654,8 @@ runScenario{
         buildTurnSSE{ blocks = { { type = "text", text = "It means X." } }, stop_reason = "end_turn" },
     },
     expect_seed_contains = {
-        "I've highlighted this passage:",
-        "My question: What does this mean?",
+        "<highlighted_passage>",
+        "<question>\nWhat does this mean?\n</question>",
     },
 }
 
@@ -668,11 +668,11 @@ runScenario{
     },
     expect_text = "The protagonist is Ada.",
     expect_seed_contains = {
-        "I'm reading this book:",
-        "My question: Who are the main characters so far?",
+        "<book_context>",
+        "<question>\nWho are the main characters so far?\n</question>",
     },
     expect_seed_absent = {
-        "I've highlighted this passage:",
+        "<highlighted_passage>",
     },
 }
 
