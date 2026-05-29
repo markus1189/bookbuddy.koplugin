@@ -13,11 +13,11 @@ local Updater = require("bbupdate")
 
 local DEFAULTS = {
     base_url = "https://api.portkey.ai",
-    model = "@vertex-eu-global/anthropic.claude-opus-4-7",
+    model = "@vertex-eu-global/anthropic.claude-opus-4-8",
     max_tokens = 64000,
     max_turns = 20,
     enable_memory = true,
-    -- Adaptive extended thinking. Opus 4.7 supports adaptive thinking only, off
+    -- Adaptive extended thinking. Opus 4.8 supports adaptive thinking only, off
     -- unless requested; its thinking text is omitted unless we ask for the
     -- summarized display, which is what makes reasoning visible (see bbanthropic).
     enable_thinking = true,
@@ -225,7 +225,7 @@ function Settings:getMenu(ui)
                     self:editText(touchmenu_instance, {
                         key = "model",
                         title = _("Model"),
-                        description = _("Portkey model slug, e.g. @vertex-eu-global/anthropic.claude-opus-4-7."),
+                        description = _("Portkey model slug, e.g. @vertex-eu-global/anthropic.claude-opus-4-8."),
                     })
                 end,
             },
@@ -278,7 +278,7 @@ function Settings:getMenu(ui)
             },
             {
                 text = _("Extended thinking"),
-                help_text = _("Let the model reason before answering. Its summarized thinking is shown above the reply. Requires a model that supports adaptive thinking, such as Claude Opus 4.7."),
+                help_text = _("Let the model reason before answering. Its summarized thinking is shown above the reply. Requires a model that supports adaptive thinking, such as Claude Opus 4.8."),
                 checked_func = function() return self:get("enable_thinking") and true or false end,
                 keep_menu_open = true,
                 callback = function(touchmenu_instance)

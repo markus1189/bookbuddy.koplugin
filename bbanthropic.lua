@@ -51,7 +51,7 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     if tool_specs and #tool_specs > 0 then
         body.tools = tool_specs
     end
-    -- Adaptive thinking is the only supported mode on Opus 4.7 (a fixed
+    -- Adaptive thinking is the only supported mode on Opus 4.8 (a fixed
     -- budget_tokens 400s there), and it interleaves thinking between tool calls
     -- on its own. display="summarized" is required to get any thinking text:
     -- the default omits it, which would leave the live "Thinking" view empty.
