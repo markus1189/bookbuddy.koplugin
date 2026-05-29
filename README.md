@@ -8,7 +8,7 @@ model doesn't answer from the snippet alone — it searches the full text, reads
 pages around your highlight, checks the table of contents, and pulls up your own
 notes before it replies. The answer is grounded in what the book actually says.
 
-It's a conversation, not a one-shot lookup: ask follow-ups and it keeps the whole
+It's a conversation, not a one-shot lookup: reply and it keeps the whole
 thread in context. It can flip you to a relevant page (and back), keep per-book
 notes that persist between sessions, and check the web for outside facts without
 spoiling what lies ahead.
@@ -55,8 +55,8 @@ Every question starts a multi-turn loop: Claude requests a tool, BookBuddy runs 
 against the live document, hands back the result, and Claude decides what to do
 next — search, read more, navigate, or answer. Nothing is hidden; you see each step.
 
-- Adds an **"Ask BookBuddy"** button to KOReader's text-highlight menu (and an
-  "Ask BookBuddy about selection" action you can bind to a gesture or shortcut).
+- Adds a **"Chat with BookBuddy"** button to KOReader's text-highlight menu (and a
+  "Chat with BookBuddy about selection" action you can bind to a gesture or shortcut).
 - **Streams the reply live** into a chat view, coalesced so it stays readable on
   e-ink, with each tool call shown as a line you can follow.
 - **Grounds answers in the real text** with tools that read the book instead of
@@ -148,11 +148,11 @@ directory).
 ## Usage
 
 1. Long-press to select a passage.
-2. Tap **Ask BookBuddy** in the highlight menu.
-3. Type a question (or leave it blank for a general explanation) and tap **Ask**.
+2. Tap **Chat with BookBuddy** in the highlight menu.
+3. Type a question or instruction (or leave it blank for a general explanation) and tap **Send**.
 
-The reply streams in; you can Stop it or ask a follow-up. You can also bind
-"Ask BookBuddy about selection" to a gesture/shortcut for the current selection.
+The reply streams in; you can Stop it or reply to continue the conversation. You can
+also bind "Chat with BookBuddy about selection" to a gesture/shortcut for the current selection.
 
 ## Self-update
 

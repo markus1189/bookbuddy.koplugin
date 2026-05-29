@@ -24,7 +24,7 @@ function BookBuddy:init()
     if self.ui and self.ui.highlight then
         self.ui.highlight:addToHighlightDialog("13_bookbuddy", function(this)
             return {
-                text = _("Ask BookBuddy"),
+                text = _("Chat with BookBuddy"),
                 callback = function()
                     local sel = this.selected_text
                     if not (sel and sel.text and sel.text ~= "") then
@@ -50,13 +50,13 @@ function BookBuddy:onDispatcherRegisterActions()
     Dispatcher:registerAction("bookbuddy_ask_selection", {
         category = "none",
         event = "BookBuddyAskSelection",
-        title = _("Ask BookBuddy about selection"),
+        title = _("Chat with BookBuddy about selection"),
         reader = true,
     })
     Dispatcher:registerAction("bookbuddy_ask_book", {
         category = "none",
         event = "BookBuddyAskBook",
-        title = _("Ask BookBuddy about this book"),
+        title = _("Chat with BookBuddy about this book"),
         reader = true,
     })
 end
@@ -67,7 +67,7 @@ function BookBuddy:onBookBuddyAskSelection()
     local sel = hl and hl.selected_text
     if not (sel and sel.text and sel.text ~= "") then
         UIManager:show(InfoMessage:new{
-            text = _("Select some text first, then ask BookBuddy about it."),
+            text = _("Select some text first, then chat with BookBuddy about it."),
         })
         return true
     end
@@ -78,7 +78,7 @@ function BookBuddy:onBookBuddyAskSelection()
 end
 
 -- Triggered by a gesture/shortcut: a book-level chat, no selection needed.
--- Mirrors the menu's "Ask about this book" entry.
+-- Mirrors the menu's "Chat about this book" entry.
 function BookBuddy:onBookBuddyAskBook()
     self:promptAndStart(nil)
     return true
@@ -89,7 +89,7 @@ function BookBuddy:addToMainMenu(menu_items)
     -- A book-level entry point: start a chat about the whole book, no highlight
     -- needed. Omit keep_menu_open so the menu closes when the chat opens.
     table.insert(menu.sub_item_table, 1, {
-        text = _("Ask about this book"),
+        text = _("Chat about this book"),
         callback = function() self:promptAndStart(nil) end,
     })
     menu_items.bookbuddy = menu
@@ -116,7 +116,7 @@ function BookBuddy:promptAndStart(text, note)
     local description, input_hint
     if not has_text then
         -- Book-level chat: no passage to show, just invite a question about the book.
-        description = _("Ask BookBuddy anything about this book.")
+        description = _("Chat with BookBuddy about this book.")
         input_hint = _("e.g. Who are the main characters so far?")
     else
         if note and note ~= "" then
@@ -129,7 +129,7 @@ function BookBuddy:promptAndStart(text, note)
 
     local dialog
     dialog = InputDialog:new{
-        title = _("Ask BookBuddy"),
+        title = _("Chat with BookBuddy"),
         description = description,
         input = "",
         input_hint = input_hint,
@@ -142,7 +142,7 @@ function BookBuddy:promptAndStart(text, note)
                 end,
             },
             {
-                text = _("Ask"),
+                text = _("Send"),
                 is_enter_default = true,
                 callback = function()
                     local question = dialog:getInputText()

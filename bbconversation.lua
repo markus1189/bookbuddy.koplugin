@@ -603,7 +603,7 @@ function Conversation:_usageText()
 end
 
 -- Show (or re-show) the viewer in streaming mode, i.e. with a Stop button. A
--- follow-up reuses the finished viewer, which is in Ask-follow-up mode, so we
+-- follow-up reuses the finished viewer, which is in Reply mode, so we
 -- rebuild it here; mid-conversation turns keep the same streaming viewer.
 function Conversation:_ensureStreamingViewer()
     if self.viewer and self.streaming_viewer then
@@ -683,9 +683,9 @@ end
 function Conversation:_promptFollowup()
     local dialog
     dialog = InputDialog:new{
-        title = _("Ask a follow-up"),
+        title = _("Reply"),
         input = "",
-        input_hint = _("Type your follow-up question"),
+        input_hint = _("Type your reply"),
         buttons = {{
             {
                 text = _("Cancel"),
@@ -693,7 +693,7 @@ function Conversation:_promptFollowup()
                 callback = function() UIManager:close(dialog) end,
             },
             {
-                text = _("Ask"),
+                text = _("Send"),
                 is_enter_default = true,
                 callback = function()
                     local q = dialog:getInputText()

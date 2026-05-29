@@ -1,6 +1,6 @@
 -- Builds the scrollable transcript window. Thin wrapper over TextViewer with a
 -- custom button row. While a reply is streaming the row shows Stop (opts.on_stop);
--- once the turn is done it shows Ask follow-up (opts.on_followup).
+-- once the turn is done it shows Reply (opts.on_followup).
 local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local TextViewer = require("ui/widget/textviewer")
@@ -22,7 +22,7 @@ function ChatViewer.build(opts)
         }
     else
         first_row[#first_row + 1] = {
-            text = _("Ask follow-up"),
+            text = _("Reply"),
             callback = function()
                 if opts.on_followup then opts.on_followup() end
             end,
