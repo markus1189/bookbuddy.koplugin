@@ -248,15 +248,20 @@ function Conversation:_loop()
         local turn_transcript_start = #self.transcript
         local entry, thinking_entry
         local parser = Anthropic.newStreamParser{
-            on_thinking = function(t)
+            on_thinking = function()
+                -- We don't surface the summarized thinking text anymore, just a
+                -- "Thinking..." status that flips to "Done" once the answer
+                -- starts (or the turn finishes; see _renderAssistantTurn). The
+                -- parser still accumulates the fragments onto the content block
+                -- for resend -- this transcript entry is display-only.
                 if not thinking_entry then
-                    thinking_entry = { role = "thinking", text = "" }
+                    thinking_entry = { role = "thinking", done = false }
                     self.transcript[#self.transcript + 1] = thinking_entry
+                    self:_scheduleFlush()
                 end
-                thinking_entry.text = thinking_entry.text .. t
-                self:_scheduleFlush()
             end,
             on_text = function(t)
+                if thinking_entry then thinking_entry.done = true end
                 if not entry then
                     entry = { role = "assistant", text = "" }
                     self.transcript[#self.transcript + 1] = entry
@@ -540,7 +545,7 @@ function Conversation:_renderAssistantTurn(content, turn_start)
     for i = 1, #content do
         local b = content[i]
         if b.type == "thinking" and b.thinking and b.thinking ~= "" then
-            self.transcript[#self.transcript + 1] = { role = "thinking", text = b.thinking }
+            self.transcript[#self.transcript + 1] = { role = "thinking", done = true }
         elseif b.type == "text" and b.text and b.text ~= "" then
             self.transcript[#self.transcript + 1] = { role = "assistant", text = b.text }
         elseif b.type == "server_tool_use" and b.name == "web_search" then
@@ -566,7 +571,7 @@ function Conversation:_transcriptText()
         elseif turn.role == "assistant" then
             out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
         elseif turn.role == "thinking" then
-            out[#out + 1] = T(_("Thinking: %1"), strippedEntry(turn))
+            out[#out + 1] = turn.done and _("Thinking... Done") or _("Thinking...")
         else
             out[#out + 1] = turn.text
         end
