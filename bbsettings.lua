@@ -278,7 +278,7 @@ function Settings:getMenu(ui)
             },
             {
                 text = _("Extended thinking"),
-                help_text = _("Let the model reason before answering. Its summarized thinking is shown above the reply. Requires a model that supports adaptive thinking, such as Claude Opus 4.8."),
+                help_text = _("Let the model reason before answering. A \"Thinking...\" indicator appears while it reasons. Requires a model that supports adaptive thinking, such as Claude Opus 4.8."),
                 checked_func = function() return self:get("enable_thinking") and true or false end,
                 keep_menu_open = true,
                 callback = function(touchmenu_instance)
