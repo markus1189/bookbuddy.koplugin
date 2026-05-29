@@ -120,6 +120,11 @@ function Conversation:new(o)
     o.viewer = nil
     o.streaming_viewer = false
     o._cancel = nil
+    -- Set true by the viewer's Stop button. A Stop pressed while a stream is live
+    -- cancels it immediately via _cancel; a Stop pressed during a synchronous tool
+    -- call (no live stream, _cancel is nil) can only be recorded here and is
+    -- honored at the next loop boundary (see _loop).
+    o.stop_requested = false
     o._flush_task = nil
     -- Accumulated across every API call in the conversation (each turn resends the
     -- full history, so summing input_tokens reflects what was actually billed).
@@ -154,6 +159,11 @@ function Conversation:_loop()
     local cfg = self.settings:getConfig()
     local max_turns = cfg.max_turns
 
+    -- Fresh per user turn (_loop runs once per ask(); resumes stay in the loop
+    -- below). Clears any Stop left set by a prior turn so a reused Conversation
+    -- can't abort a follow-up at its first boundary before the reader acts.
+    self.stop_requested = false
+
     -- A pause_turn is not a turn of its own: it's the API stopping mid-turn to let
     -- a long server-side job (e.g. a web search) keep running, which we continue by
     -- resending the partial assistant turn unchanged. Counting each resume against
@@ -187,6 +197,23 @@ function Conversation:_loop()
                 break
             end
         end
+        -- The synchronous tool loop blocks the event loop (Tools.execute below never
+        -- yields), so a Stop tapped during a tool call is buffered, not dispatched.
+        -- Yield once here -- mirroring Stream.run's idiom -- so UIManager runs
+        -- handleInput and delivers the buffered tap into on_stop, then abort if it
+        -- set the flag. Doing this before buildBody/the next fork means a Stop during
+        -- the previous round's tools costs no extra request, and history is already
+        -- balanced (the prior round appended both the assistant tool_use and the user
+        -- tool_result), so a later ask() can resend it.
+        local co = coroutine.running()
+        UIManager:nextTick(function() coroutine.resume(co) end)
+        coroutine.yield()
+        if self.stop_requested then
+            self:_closeViewer()
+            UIManager:show(InfoMessage:new{ text = _("BookBuddy request cancelled.") })
+            return
+        end
+
         -- On the final allowed substantive round, drop the tools so the model has to
         -- answer in text rather than requesting another tool call we'd refuse to
         -- run. (web_search rides in tool_specs too, so dropping tools also rules out
@@ -291,6 +318,10 @@ function Conversation:_loop()
             resuming = true
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
+            -- Tools run synchronously and are not interruptible mid-call: a Stop
+            -- pressed during a slow tool (a large read_page_range, a wide search) is
+            -- buffered and honored at the next loop boundary above, after the tool
+            -- returns -- not instantly.
             self:_flushNow()
             local tool_results = {}
             for i = 1, #tool_uses do
@@ -535,6 +566,11 @@ function Conversation:_ensureStreamingViewer()
         title = _("BookBuddy"),
         text = self:_transcriptText(),
         on_stop = function()
+            -- Record the request either way: a live-stream Stop cancels via _cancel
+            -- (Stream.run returns cancelled), while a Stop during a synchronous tool
+            -- call has no stream to cancel (_cancel is nil) and is picked up at the
+            -- next loop boundary.
+            self.stop_requested = true
             if self._cancel then self._cancel() end
         end,
         scroll_to_bottom = true,

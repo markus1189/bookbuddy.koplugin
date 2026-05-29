@@ -184,15 +184,41 @@ package.loaded["ffi/util"] = {
         return (fmt:gsub("%%(%d+)", function(n) return tostring(args[tonumber(n)] or "") end))
     end,
 }
-package.loaded["ui/uimanager"] = { scheduleIn = noop, unschedule = noop, show = noop, close = noop }
-package.loaded["ui/trapper"] = { wrap = function(_, fn) return fn() end }
+-- The loop yields once per round at its UI boundary, scheduling a nextTick that
+-- resumes it (so a real device dispatches a buffered Stop tap there). Headlessly
+-- we model the event loop: nextTick queues the callback, and Trapper:wrap pumps
+-- the queue after each yield, resuming the coroutine until it finishes.
+local tick_queue = {}
+package.loaded["ui/uimanager"] = {
+    scheduleIn = noop, unschedule = noop, show = noop, close = noop,
+    nextTick = function(_, fn) tick_queue[#tick_queue + 1] = fn end,
+}
+-- Run the conversation inside a coroutine so the loop can coroutine.yield() at
+-- its UI boundary, matching Trapper:wrap on a device (LuaJIT can't yield from the
+-- main thread). After each yield, drain the nextTick queue (each entry resumes us).
+package.loaded["ui/trapper"] = { wrap = function(_, fn)
+    tick_queue = {}
+    local co = coroutine.create(fn)
+    local ok, err = coroutine.resume(co)
+    if not ok then error(err) end
+    while coroutine.status(co) == "suspended" do
+        local cb = table.remove(tick_queue, 1)
+        if not cb then break end
+        cb()
+    end
+end }
 package.loaded["ui/network/manager"] = { willRerunWhenOnline = function() return false end }
 package.loaded["ui/widget/infomessage"] = { new = function(_, o) return o or {} end }
 package.loaded["ui/widget/inputdialog"] = { new = function(_, o) return o or {} end }
 
 local ChatViewerStub = {}
 ChatViewerStub.last_text = nil
-ChatViewerStub.build = function(o) ChatViewerStub.last_text = o and o.text; return { _stub = true } end
+ChatViewerStub.last_on_stop = nil
+ChatViewerStub.build = function(o)
+    ChatViewerStub.last_text = o and o.text
+    if o and o.on_stop then ChatViewerStub.last_on_stop = o.on_stop end
+    return { _stub = true }
+end
 ChatViewerStub.updateText = function(_, text) ChatViewerStub.last_text = text end
 package.loaded["bbchatviewer"] = ChatViewerStub
 package.loaded["bbmemory"] = {
@@ -202,6 +228,11 @@ package.loaded["bbmemory"] = {
     summaryText = function() return "" end,
     clear = noop,
 }
+-- A scenario sets stop_during_tool to simulate the reader tapping Stop *while a
+-- synchronous tool runs* (the real gap: no live stream, _cancel is nil). The
+-- bbtools.execute stub fires the captured on_stop closure mid-execution; the loop
+-- must then abort at its next UI boundary without issuing another request.
+local stop_during_tool = false
 package.loaded["bbtools"] = {
     getSpecs = function()
         return {
@@ -212,6 +243,10 @@ package.loaded["bbtools"] = {
     execute = function(name)
         if name == "book_context" then
             return "Title: Test Book\nAuthor: Tester\nCurrent page: 10 of 200", "page 10 of 200"
+        end
+        if stop_during_tool and ChatViewerStub.last_on_stop then
+            stop_during_tool = false
+            ChatViewerStub.last_on_stop()
         end
         return "TOOL_RESULT(" .. tostring(name) .. ")", "ok"
     end,
@@ -421,6 +456,8 @@ local total_pass, total_fail = 0, 0
 local function runScenario(sc)
     captured = {}
     FakeStream.reset(sc.responses)
+    ChatViewerStub.last_on_stop = nil
+    stop_during_tool = sc.stop_during_tool or false
     -- Per-scenario max_turns override, restored after the run (the shared cfg is
     -- otherwise max_turns = 20). Used to exercise the substantive-turn budget edge.
     local saved_max_turns = cfg.max_turns
@@ -429,6 +466,7 @@ local function runScenario(sc)
     conv:ask(sc.first_question or "What does this mean?")
     for _, fq in ipairs(sc.followups or {}) do conv:ask(fq) end
     cfg.max_turns = saved_max_turns
+    local final_messages = conv.messages
 
     print("\n=== " .. sc.name .. " ===")
     local scenario_ok = true
@@ -460,6 +498,40 @@ local function runScenario(sc)
         else
             print(string.format("  text check: missing %q (FAIL)", sc.expect_text))
             scenario_ok = false
+        end
+    end
+
+    -- Assert how many requests the loop issued: a Stop honored at the loop boundary
+    -- must abort *before* forking the next request, so the index must not advance
+    -- past the tool turn (here: exactly one request, no wasted follow-up).
+    if sc.expect_requests then
+        if FakeStream.idx == sc.expect_requests then
+            print(string.format("  request count: %d as expected (PASS)", FakeStream.idx))
+        else
+            print(string.format("  request count: got %d, want %d (FAIL)", FakeStream.idx, sc.expect_requests))
+            scenario_ok = false
+        end
+    end
+
+    -- After a Stop honored at the loop boundary, the stored history must stay
+    -- resendable: the in-flight tool round left assistant(tool_use) + user(tool_result)
+    -- balanced, with no dangling tool_use, so a later ask() can POST it. Also assert
+    -- the tool actually ran (the stop hook fired), so the check isn't vacuous, and
+    -- that the history really ends on the tool_result pair (not just the seed).
+    if sc.expect_final_valid then
+        local ferrs = validateMessages(final_messages)
+        local last = final_messages[#final_messages]
+        local ends_with_tool_result = last and last.role == "user"
+            and type(last.content) == "table" and last.content[1]
+            and last.content[1].type == "tool_result"
+        if #ferrs == 0 and not stop_during_tool and ends_with_tool_result then
+            print("  final history: tool round stored, balanced/resendable (PASS)")
+        else
+            scenario_ok = false
+            print("  final history: NOT resendable (FAIL)")
+            if stop_during_tool then print("      ! stop hook never fired (tool did not run)") end
+            if not ends_with_tool_result then print("      ! history does not end on a tool_result") end
+            for _, e in ipairs(ferrs) do print("      ! " .. e) end
         end
     end
 
