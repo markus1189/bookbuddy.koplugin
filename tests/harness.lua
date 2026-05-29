@@ -876,6 +876,7 @@ do
                 getCurrentPage = function() return page end,
                 getPageCount = function() return o.page_count or 200 end,
                 getToc = function() return o.toc or {} end,
+                findAllText = function() return o.hits end,
             },
             toc = { getTocTitleOfCurrentPage = function() return o.chapter or "" end },
             link = {
@@ -954,6 +955,36 @@ do
         check("no target: errors", RealTools.execute("navigate", {}, ui):find("exactly one") ~= nil)
         check("multi target: errors",
             RealTools.execute("navigate", { page = 5, percent = 50 }, ui):find("only one") ~= nil)
+    end
+
+    do -- search_book max_page filtering (paging engine: pageOfResult == item.start)
+        local function hits()
+            return {
+                { start = 5,  matched_text = "whale" },
+                { start = 50, matched_text = "whale" },
+                { start = 150, matched_text = "whale" },
+            }
+        end
+        do -- no max_page: every hit is visible
+            local ui = makeUI{ hits = hits() }
+            local result = RealTools.execute("search_book", { query = "whale" }, ui)
+            check("search: all 3 shown without max_page", result:find("Found 3 match") ~= nil)
+            check("search: page 150 hit present", result:find("page 150") ~= nil)
+        end
+        do -- max_page hides later hits but reports the count
+            local ui = makeUI{ hits = hits() }
+            local result, summary = RealTools.execute("search_book", { query = "whale", max_page = 50 }, ui)
+            check("search: 2 visible at/before page 50", result:find("Found 2 match") ~= nil)
+            check("search: 1 hidden reported", result:find("1 hidden beyond page 50") ~= nil)
+            check("search: spoiler page 150 not revealed", result:find("page 150") == nil)
+            check("search: summary counts visible only", summary ~= nil and summary:find("2 ") ~= nil)
+        end
+        do -- max_page below every hit: nothing visible, all hidden
+            local ui = makeUI{ hits = hits() }
+            local result = RealTools.execute("search_book", { query = "whale", max_page = 1 }, ui)
+            check("search: none at/before page 1", result:find("No matches for") ~= nil)
+            check("search: reports 3 hidden", result:find("3 match%(es%) hidden") ~= nil)
+        end
     end
 
     -- edit_highlight_note: addressed by the get_highlights display number, which

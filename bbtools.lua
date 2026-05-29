@@ -96,15 +96,35 @@ local function tool_search_book(ui, input)
         return "Error: 'query' is required."
     end
     local max_results = math.min(tonumber(input.max_results) or DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS)
+    local max_page = tonumber(input.max_page)
     local results = ui.document:findAllText(query, true, FINDALL_CONTEXT_WORDS, FINDALL_MAX_HITS, false)
     if not results or #results == 0 then
         return string.format("No matches found for %q.", query), _("no matches")
     end
-    local out = {
-        string.format("Found %d match(es) for %q (showing up to %d):", #results, query, max_results),
-    }
-    for i = 1, math.min(#results, max_results) do
+    -- Drop hits past max_page to avoid spoilers; the page is still searched, just not revealed.
+    local visible, hidden = {}, 0
+    for i = 1, #results do
         local item = results[i]
+        local page = pageOfResult(ui, item)
+        if max_page and page and tonumber(page) and tonumber(page) > max_page then
+            hidden = hidden + 1
+        else
+            item._page = page
+            visible[#visible + 1] = item
+        end
+    end
+    if #visible == 0 then
+        return string.format(
+            "No matches for %q at or before page %d (%d match(es) hidden beyond it to avoid spoilers).",
+            query, max_page, hidden), _("all hidden")
+    end
+    local header = string.format("Found %d match(es) for %q (showing up to %d)", #visible, query, max_results)
+    if hidden > 0 then
+        header = header .. string.format(", %d hidden beyond page %d to avoid spoilers", hidden, max_page)
+    end
+    local out = { header .. ":" }
+    for i = 1, math.min(#visible, max_results) do
+        local item = visible[i]
         local snippet = table.concat({
             item.prev_text or "",
             item.matched_word_prefix or "",
@@ -113,9 +133,9 @@ local function tool_search_book(ui, input)
             item.next_text or "",
         })
         snippet = snippet:gsub("%s+", " ")
-        out[#out + 1] = string.format("%d. [page %s] …%s…", i, tostring(pageOfResult(ui, item)), snippet)
+        out[#out + 1] = string.format("%d. [page %s] …%s…", i, tostring(item._page), snippet)
     end
-    return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #results)
+    return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #visible)
 end
 
 local function tool_read_page_range(ui, input)
@@ -413,12 +433,13 @@ function Tools.getSpecs()
     return {
         {
             name = "search_book",
-            description = "Full-text search the entire book for a string and return matches with surrounding context and their page numbers.",
+            description = "Full-text search the entire book for a string and return matches with surrounding context and their page numbers. Use max_page to hide matches past a given page so the reader is not spoiled by later content.",
             input_schema = {
                 type = "object",
                 properties = {
                     query = { type = "string", description = "Text to search for (literal, case-insensitive)." },
                     max_results = { type = "integer", description = "Maximum matches to return (default 8, max 20)." },
+                    max_page = { type = "integer", description = "Hide matches on pages greater than this (1-based) to avoid spoilers. Omit to search the whole book. The count of hidden matches is reported, but their content is not." },
                 },
                 required = { "query" },
             },
