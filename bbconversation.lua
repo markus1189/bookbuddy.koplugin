@@ -19,6 +19,7 @@ local T = require("ffi/util").template
 local Anthropic = require("bbanthropic")
 local ChatViewer = require("bbchatviewer")
 local Memory = require("bbmemory")
+local Presets = require("bbpresets")
 local Stream = require("bbstream")
 local Tools = require("bbtools")
 
@@ -682,28 +683,30 @@ end
 
 function Conversation:_promptFollowup()
     local dialog
+    local buttons = Presets.buttonRows(Presets.followup, function() return dialog end)
+    buttons[#buttons + 1] = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function() UIManager:close(dialog) end,
+        },
+        {
+            text = _("Send"),
+            is_enter_default = true,
+            callback = function()
+                local q = dialog:getInputText()
+                UIManager:close(dialog)
+                if q and q ~= "" then
+                    self:ask(q)
+                end
+            end,
+        },
+    }
     dialog = InputDialog:new{
         title = _("Reply"),
         input = "",
         input_hint = _("Type your reply"),
-        buttons = {{
-            {
-                text = _("Cancel"),
-                id = "close",
-                callback = function() UIManager:close(dialog) end,
-            },
-            {
-                text = _("Send"),
-                is_enter_default = true,
-                callback = function()
-                    local q = dialog:getInputText()
-                    UIManager:close(dialog)
-                    if q and q ~= "" then
-                        self:ask(q)
-                    end
-                end,
-            },
-        }},
+        buttons = buttons,
     }
     UIManager:show(dialog)
     dialog:onShowKeyboard()

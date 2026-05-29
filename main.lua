@@ -9,6 +9,7 @@ local T = require("ffi/util").template
 
 local Settings = require("bbsettings")
 local Conversation = require("bbconversation")
+local Presets = require("bbpresets")
 
 local BookBuddy = WidgetContainer:extend{
     name = "bookbuddy",
@@ -128,44 +129,48 @@ function BookBuddy:promptAndStart(text, note)
     end
 
     local dialog
+    local buttons = Presets.buttonRows(
+        has_text and Presets.passage or Presets.book,
+        function() return dialog end)
+    buttons[#buttons + 1] = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+                UIManager:close(dialog)
+            end,
+        },
+        {
+            text = _("Send"),
+            is_enter_default = true,
+            callback = function()
+                local question = dialog:getInputText()
+                UIManager:close(dialog)
+                if not question or question == "" then
+                    if not has_text then
+                        question = _("Give me a brief overview of this book.")
+                    elseif note and note ~= "" then
+                        question = _("Discuss my note on this passage.")
+                    else
+                        question = _("Explain this passage and its significance in the book.")
+                    end
+                end
+                local conversation = Conversation:new{
+                    ui = self.ui,
+                    settings = self.settings,
+                    selected_text = text,
+                    note = note,
+                }
+                conversation:ask(question)
+            end,
+        },
+    }
     dialog = InputDialog:new{
         title = _("Chat with BookBuddy"),
         description = description,
         input = "",
         input_hint = input_hint,
-        buttons = {{
-            {
-                text = _("Cancel"),
-                id = "close",
-                callback = function()
-                    UIManager:close(dialog)
-                end,
-            },
-            {
-                text = _("Send"),
-                is_enter_default = true,
-                callback = function()
-                    local question = dialog:getInputText()
-                    UIManager:close(dialog)
-                    if not question or question == "" then
-                        if not has_text then
-                            question = _("Give me a brief overview of this book.")
-                        elseif note and note ~= "" then
-                            question = _("Discuss my note on this passage.")
-                        else
-                            question = _("Explain this passage and its significance in the book.")
-                        end
-                    end
-                    local conversation = Conversation:new{
-                        ui = self.ui,
-                        settings = self.settings,
-                        selected_text = text,
-                        note = note,
-                    }
-                    conversation:ask(question)
-                end,
-            },
-        }},
+        buttons = buttons,
     }
     UIManager:show(dialog)
     dialog:onShowKeyboard()

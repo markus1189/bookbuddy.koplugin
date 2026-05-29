@@ -59,6 +59,11 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   "Chat with BookBuddy about selection" action you can bind to a gesture or shortcut).
 - **Streams the reply live** into a chat view, coalesced so it stays readable on
   e-ink, with each tool call shown as a line you can follow.
+- **Quick-action presets** in the chat prompts: one tap fills the input box with a
+  starter like *Overview* / *Characters* / *Themes* for a book, *Explain* / *Why it
+  matters* / *Simpler* for a highlighted passage, or *Yes* / *Go on* / *Example* when
+  replying. They prefill rather than send, so you can tweak the wording before tapping
+  **Send** — handy for sidestepping the on-screen keyboard.
 - **Grounds answers in the real text** with tools that read the book instead of
   guessing:
   - `search_book` — full-text search within the book
@@ -149,10 +154,14 @@ directory).
 
 1. Long-press to select a passage.
 2. Tap **Chat with BookBuddy** in the highlight menu.
-3. Type a question or instruction (or leave it blank for a general explanation) and tap **Send**.
+3. Type a question or instruction — or tap a **quick-action preset** to fill one in,
+   then edit if you like — and tap **Send**. (Leaving it blank sends a general explanation.)
 
-The reply streams in; you can Stop it or reply to continue the conversation. You can
-also bind "Chat with BookBuddy about selection" to a gesture/shortcut for the current selection.
+The reply streams in; you can Stop it or reply to continue the conversation — a short
+*Yes* or *Go on* is a perfectly good reply when the agent ends its turn with a question.
+You can also start a chat about the whole book (no selection needed) from the menu's
+**Chat about this book** entry, or bind "Chat with BookBuddy about selection" to a
+gesture/shortcut for the current selection.
 
 ## Self-update
 
