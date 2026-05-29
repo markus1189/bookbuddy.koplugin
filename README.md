@@ -68,6 +68,8 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   - `get_highlights` — the reader's own highlights and notes
   - `edit_highlight_note` — add a note to one of your highlights; it appends to any
     existing note and never overwrites or deletes what you wrote
+  - `create_highlight` — mark a passage in the book (reflowable/EPUB only), by a
+    recent `search_book` match or a verbatim snippet, optionally with a note and color
   - `navigate` — move the reader to a page, percent, or chapter (your spot is saved
     first, so Back returns you)
   - `web_search` — for outside facts only; it's told not to spoil what lies ahead
