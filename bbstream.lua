@@ -66,17 +66,24 @@ function Stream.run(opts)
 
         local readsize = ffiutil.getNonBlockingReadSize(parent_read_fd)
         if readsize and readsize > 0 then
-            local bytes_read = tonumber(ffi.C.read(parent_read_fd, buffer_ptr, CHUNK_SIZE))
-            if bytes_read < 0 then
-                logger.warn("BookBuddy: stream read error:", ffi.string(ffi.C.strerror(ffi.errno())))
-                read_error = true
-                break
-            elseif bytes_read == 0 then
-                completed = true
-            else
-                partial_data = partial_data .. ffi.string(buffer, bytes_read)
-                process_lines()
+            -- Drain everything the kernel has buffered this tick (not just one
+            -- CHUNK_SIZE) so throughput isn't pinned to one read per CHECK_INTERVAL.
+            while readsize and readsize > 0 do
+                local bytes_read = tonumber(ffi.C.read(parent_read_fd, buffer_ptr, CHUNK_SIZE))
+                if bytes_read < 0 then
+                    logger.warn("BookBuddy: stream read error:", ffi.string(ffi.C.strerror(ffi.errno())))
+                    read_error = true
+                    break
+                elseif bytes_read == 0 then
+                    completed = true
+                    break
+                else
+                    partial_data = partial_data .. ffi.string(buffer, bytes_read)
+                    process_lines()
+                end
+                readsize = ffiutil.getNonBlockingReadSize(parent_read_fd)
             end
+            if read_error then break end
         elseif ffiutil.isSubProcessDone(pid) then
             -- Nothing buffered and the child has exited: we've drained the pipe.
             completed = true
