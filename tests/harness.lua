@@ -184,6 +184,12 @@ package.loaded["ffi/util"] = {
         return (fmt:gsub("%%(%d+)", function(n) return tostring(args[tonumber(n)] or "") end))
     end,
 }
+package.loaded["util"] = {
+    -- Trim + collapse interior whitespace, matching util.cleanupSelectedText's intent.
+    cleanupSelectedText = function(text)
+        return (tostring(text or ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", ""))
+    end,
+}
 -- The loop yields once per round at its UI boundary, scheduling a nextTick that
 -- resumes it (so a real device dispatches a buffered Stop tap there). Headlessly
 -- we model the event loop: nextTick queues the callback, and Trapper:wrap pumps
@@ -702,6 +708,22 @@ runScenario{
 }
 
 runScenario{
+    -- A client create_highlight tool round: the loop must run the tool, return its
+    -- tool_result, render the transcript phrase, and stay balanced/resendable.
+    name = "S4b: create_highlight tool round",
+    show_transcript = true,
+    expect_text = "Created a highlight",
+    responses = {
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "I'll mark that passage." },
+            { type = "tool_use", id = "toolu_HL", name = "create_highlight",
+              input = { text = "the important bit", note = "remember this" } },
+        }, stop_reason = "tool_use" },
+        buildTurnSSE{ blocks = { { type = "text", text = "Done -- highlighted on page 12." } }, stop_reason = "end_turn" },
+    },
+}
+
+runScenario{
     -- Three pause_turns then an answer, under a 2-turn budget. Pauses are not
     -- substantive turns, so they must not spend the budget: the loop has to resume
     -- through all of them and still reach the text answer. (Under the old
@@ -1054,6 +1076,121 @@ do
         local ui = makeHlUI{}
         check("edit: empty book errors",
             RealTools.execute("edit_highlight_note", { highlight_index = 1, note = "x" }, ui):find("no highlights") ~= nil)
+    end
+
+    -- create_highlight: positions never come from the model. The search_result path
+    -- reuses the xpointers search_book already produced; the text path re-searches
+    -- and disambiguates by occurrence/page. A rolling (EPUB) ui with the document,
+    -- annotation, view and toc surfaces the tool touches.
+    print("\n=== Unit: create_highlight tool executor ===")
+    local function makeCreateUI(o)
+        o = o or {}
+        local rec = { events = {} }
+        local anns = {}
+        local ui
+        ui = {
+            rolling = (o.rolling ~= false) or nil, -- default rolling; pass rolling=false for paging
+            view = {
+                highlight = { saved_drawer = "lighten", saved_color = "yellow" },
+                footer = { maybeUpdateFooter = function() end },
+            },
+            document = {
+                getCurrentPage = function() return 1 end,
+                findAllText = function() return o.hits end,
+                getPageFromXPointer = function(_, xp) return (o.page_of and o.page_of[xp]) or 1 end,
+                getTextFromXPointers = function(_, p0) return (o.text_of and o.text_of[p0]) or "located text" end,
+                isXPointerInDocument = function() return o.invalid_xp ~= true end,
+            },
+            toc = {
+                getTocTitleByPage = function() return o.chapter or "Some Chapter" end,
+                getTocTitleOfCurrentPage = function() return o.chapter or "Some Chapter" end,
+            },
+            annotation = {
+                annotations = anns,
+                addItem = function(_, item)
+                    item.pageno = ui.document:getPageFromXPointer(item.page)
+                    anns[#anns + 1] = item
+                    return #anns
+                end,
+            },
+            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+        }
+        return ui, rec, anns
+    end
+
+    do -- highlight a prior search result by its number; reuses that match's xpointers
+        local hits = {
+            { start = "xpA", ["end"] = "xpA2", matched_text = "alpha" },
+            { start = "xpB", ["end"] = "xpB2", matched_text = "beta" },
+        }
+        local ui, rec, anns = makeCreateUI{ hits = hits,
+            page_of = { xpA = 3, xpB = 7 }, text_of = { xpA = "the alpha passage" } }
+        RealTools.execute("search_book", { query = "x" }, ui) -- populates ui._bookbuddy_last_search
+        local result, summary = RealTools.execute("create_highlight",
+            { search_result = 1, color = "red", drawer = "underscore", note = "key bit" }, ui)
+        check("create(handle): added exactly one annotation", #anns == 1)
+        check("create(handle): reused match 1's start xpointer", anns[1] and anns[1].pos0 == "xpA")
+        check("create(handle): page key set to the same xpointer", anns[1] and anns[1].page == "xpA")
+        check("create(handle): text read from that position", anns[1] and anns[1].text == "the alpha passage")
+        check("create(handle): chosen color/drawer applied",
+            anns[1] and anns[1].color == "red" and anns[1].drawer == "underscore")
+        check("create(handle): note attached", anns[1] and anns[1].note == "key bit")
+        check("create(handle): pageno filled via getPageFromXPointer", anns[1] and anns[1].pageno == 3)
+        check("create(handle): fired AnnotationsModified +1",
+            rec.events[1] and rec.events[1].handler == "AnnotationsModified"
+            and rec.events[1].args[1].nb_highlights_added == 1)
+        check("create(handle): result reports the page", result:find("page 3") ~= nil)
+        check("create(handle): summary set", summary ~= nil and summary ~= "")
+    end
+
+    do -- highlight by verbatim text; color/drawer fall back to the saved style
+        local ui, _, anns = makeCreateUI{
+            hits = { { start = "xpC", ["end"] = "xpC2", matched_text = "gamma" } },
+            page_of = { xpC = 5 }, text_of = { xpC = "gamma sentence" } }
+        local result = RealTools.execute("create_highlight", { text = "gamma" }, ui)
+        check("create(text): added one annotation", #anns == 1)
+        check("create(text): default drawer/color from saved style",
+            anns[1] and anns[1].drawer == "lighten" and anns[1].color == "yellow")
+        check("create(text): no note when none given", anns[1] and anns[1].note == nil)
+        check("create(text): result echoes the text", result:find("gamma sentence") ~= nil)
+    end
+
+    do -- ambiguous text: multiple matches, no occurrence -> ask, highlight nothing
+        local ui, _, anns = makeCreateUI{
+            hits = { { start = "xp1", ["end"] = "xp1b" }, { start = "xp2", ["end"] = "xp2b" } },
+            page_of = { xp1 = 4, xp2 = 9 } }
+        local result, summary = RealTools.execute("create_highlight", { text = "dup" }, ui)
+        check("create(ambiguous): reports both pages", result:find("4") ~= nil and result:find("9") ~= nil)
+        check("create(ambiguous): asks for occurrence/page", result:find("occurrence") ~= nil)
+        check("create(ambiguous): added nothing", #anns == 0)
+        check("create(ambiguous): summary marks it ambiguous", summary ~= nil and summary ~= "")
+    end
+
+    do -- ambiguous text resolved by occurrence picks the right match
+        local ui, _, anns = makeCreateUI{
+            hits = { { start = "xp1", ["end"] = "xp1b" }, { start = "xp2", ["end"] = "xp2b" } },
+            page_of = { xp1 = 4, xp2 = 9 }, text_of = { xp2 = "second one" } }
+        RealTools.execute("create_highlight", { text = "dup", occurrence = 2 }, ui)
+        check("create(occurrence): picked the 2nd match", anns[1] and anns[1].pos0 == "xp2")
+        check("create(occurrence): text from the 2nd position", anns[1] and anns[1].text == "second one")
+    end
+
+    do -- error/guard cases highlight nothing
+        local ui, _, anns = makeCreateUI{ rolling = false } -- paging engine
+        check("create: paging engine rejected as EPUB-only",
+            RealTools.execute("create_highlight", { text = "x" }, ui):find("reflowable") ~= nil)
+        check("create: paging added nothing", #anns == 0)
+
+        local ui2, _, anns2 = makeCreateUI{ hits = {} }
+        check("create: no input errors",
+            RealTools.execute("create_highlight", {}, ui2):find("provide") ~= nil)
+        check("create: stale/empty search_result errors",
+            RealTools.execute("create_highlight", { search_result = 1 }, ui2):find("no recent search results") ~= nil)
+        check("create: text with no matches errors",
+            RealTools.execute("create_highlight", { text = "absent" }, ui2):find("No passage matching") ~= nil)
+        check("create: bad color rejected",
+            RealTools.execute("create_highlight", { text = "x", color = "chartreuse" }, ui2):find("'color' must be") ~= nil)
+        check("create: guard/error cases added nothing", #anns2 == 0)
     end
 end
 
