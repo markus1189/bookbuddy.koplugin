@@ -46,6 +46,20 @@ local function stripMarkdown(text)
     return text
 end
 
+-- Per-entry memo for stripMarkdown: _transcriptText re-renders the whole
+-- transcript on every ~2.5fps flush, but only the still-streaming entry's
+-- .text changes. Cache the stripped text keyed on the entry's current .text;
+-- the live entry (mutating .text) misses and re-strips, finalized entries hit.
+-- _renderAssistantTurn replaces live entries with fresh tables, so a stale
+-- memo can never outlive its source.
+local function strippedEntry(turn)
+    if turn._md_src ~= turn.text then
+        turn._md_src = turn.text
+        turn._md_out = stripMarkdown(turn.text)
+    end
+    return turn._md_out
+end
+
 -- Vertex AI's request validator (unlike Anthropic's first-party API) rejects any
 -- server_tool_use that lacks a paired web_search_tool_result in the same assistant
 -- message. A pause_turn can stop right after the in-flight web search's
@@ -475,9 +489,9 @@ function Conversation:_transcriptText()
         if turn.role == "user" then
             out[#out + 1] = T(_("You: %1"), turn.text)
         elseif turn.role == "assistant" then
-            out[#out + 1] = T(_("BookBuddy: %1"), stripMarkdown(turn.text))
+            out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
         elseif turn.role == "thinking" then
-            out[#out + 1] = T(_("Thinking: %1"), stripMarkdown(turn.text))
+            out[#out + 1] = T(_("Thinking: %1"), strippedEntry(turn))
         else
             out[#out + 1] = turn.text
         end
