@@ -906,7 +906,7 @@ do
                 addCurrentLocationToStack = function() rec.pushes = rec.pushes + 1 end,
                 onGoBackLink = function() rec.backs = rec.backs + 1 end,
             },
-            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+            handleEvent = function(_, event) rec.events[#rec.events + 1] = event end,
         }
         return ui, rec
     end
@@ -1023,7 +1023,7 @@ do
                     rec.pdf[#rec.pdf + 1] = { action = action, item = item, content = content }
                 end,
             },
-            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+            handleEvent = function(_, event) rec.events[#rec.events + 1] = event end,
         }
         return ui, rec
     end
@@ -1113,7 +1113,7 @@ do
                     return #anns
                 end,
             },
-            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+            handleEvent = function(_, event) rec.events[#rec.events + 1] = event end,
         }
         return ui, rec, anns
     end

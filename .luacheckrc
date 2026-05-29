@@ -2,6 +2,9 @@
 -- KOReader and shares its runtime (LuaJIT) and globals.
 unused_args = false
 std = "luajit"
+-- .direnv is the Nix flake-input tree (direnv `use flake`); it's generated and
+-- full of unrelated vendored Lua. Don't lint our own code against its noise.
+exclude_files = { ".direnv" }
 -- ignore implicit self
 self = false
 
