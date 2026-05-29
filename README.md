@@ -74,8 +74,8 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
   sidecar, so they travel with the book, stay isolated to it, and are still there
   next session — ask it to remember who a character is and it won't forget.
-- **Extended (adaptive) thinking** (optional): a summarized view of the model's
-  reasoning, shown above the reply.
+- **Extended (adaptive) thinking** (optional): a `Thinking...` indicator shows
+  while the model reasons before it replies.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
   position unless you explicitly ask.
 - A **token-usage footer** tracks what each conversation cost.
@@ -85,7 +85,7 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - KOReader (recent enough to have `Device:unpackArchive` and the modern `NetworkMgr`).
 - Access to a Claude model through an Anthropic-compatible gateway. The defaults
   target a [Portkey](https://portkey.ai) gateway (`https://api.portkey.ai`, endpoint
-  `/v1/messages`) with the model slug `@vertex-eu-global/anthropic.claude-opus-4-7`,
+  `/v1/messages`) with the model slug `@vertex-eu-global/anthropic.claude-opus-4-8`,
   authenticated with a Portkey API key sent as the `x-portkey-api-key` header. Point
   the base URL / model elsewhere if your setup differs.
 
