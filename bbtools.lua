@@ -674,6 +674,12 @@ function Tools.getSpecs()
                     back = { type = "boolean", description = "Set true to return to the reader's previous location." },
                 },
             },
+            input_examples = {
+                { page = 42 },
+                { chapter_index = 3 },
+                { percent = 50 },
+                { back = true },
+            },
         },
         {
             name = "edit_highlight_note",
@@ -713,6 +719,12 @@ function Tools.getSpecs()
                     color = { type = "string", enum = COLOR_LIST, description = "Optional highlight color. Defaults to the reader's saved color." },
                     drawer = { type = "string", enum = DRAWER_LIST, description = "Optional highlight style. Defaults to the reader's saved style." },
                 },
+            },
+            input_examples = {
+                { search_result = 2 },
+                { text = "It was the best of times" },
+                { text = "the green light", occurrence = 2, note = "recurring symbol" },
+                { search_result = 1, color = "yellow" },
             },
         },
         -- Server-side tool: Anthropic runs the search and returns the results
