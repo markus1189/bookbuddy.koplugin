@@ -212,34 +212,55 @@ local function tool_book_context(ui, _input)
     return table.concat(lines, "\n"), T(_("page %1 of %2"), cur, total)
 end
 
-local function tool_get_highlights(ui, input)
+-- The reader's annotations that carry a highlighted passage or a note, in the
+-- order KOReader stores them (reading order), skipping bare page bookmarks.
+-- This is the single source of the 1-based numbering shared by get_highlights
+-- (which lists them) and edit_highlight_note (which addresses them by number);
+-- the array index here is NOT the index into ui.annotation.annotations, which
+-- also holds bare bookmarks.
+local function highlightList(ui)
     local items = ui.annotation and ui.annotation.annotations
-    if not items or #items == 0 then
-        return "This book has no highlights or notes yet.", _("none yet")
-    end
-    local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
-    local out, total, shown = {}, 0, 0
-    for i = 1, #items do
-        local a = items[i]
-        local text = a.text and a.text ~= "" and a.text:gsub("%s+", " ") or nil
-        local note = a.note and a.note ~= "" and a.note:gsub("%s+", " ") or nil
-        if text or note then -- skip bare page bookmarks
-            total = total + 1
-            if shown < max_results then
-                shown = shown + 1
-                local loc = a.pageno and ("page " .. tostring(a.pageno)) or "page ?"
-                if a.chapter and a.chapter ~= "" then
-                    loc = loc .. ", " .. a.chapter
-                end
-                local entry = string.format("%d. [%s | %s]", total, note and "note" or "highlight", loc)
-                if text then entry = entry .. "\n   \"" .. text .. "\"" end
-                if note then entry = entry .. "\n   note: " .. note end
-                out[#out + 1] = entry
+    local list = {}
+    if items then
+        for i = 1, #items do
+            local a = items[i]
+            local has_text = a.text and a.text ~= ""
+            local has_note = a.note and a.note ~= ""
+            if has_text or has_note then
+                list[#list + 1] = a
             end
         end
     end
+    return list
+end
+
+-- Location label for a highlight, e.g. "page 42, Chapter 2".
+local function highlightLocation(a)
+    local loc = a.pageno and ("page " .. tostring(a.pageno)) or "page ?"
+    if a.chapter and a.chapter ~= "" then
+        loc = loc .. ", " .. a.chapter
+    end
+    return loc
+end
+
+local function tool_get_highlights(ui, input)
+    local list = highlightList(ui)
+    local total = #list
     if total == 0 then
         return "This book has no highlights or notes yet.", _("none yet")
+    end
+    local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
+    local out, shown = {}, 0
+    for i = 1, total do
+        if shown >= max_results then break end
+        shown = shown + 1
+        local a = list[i]
+        local text = a.text and a.text ~= "" and a.text:gsub("%s+", " ") or nil
+        local note = a.note and a.note ~= "" and a.note:gsub("%s+", " ") or nil
+        local entry = string.format("%d. [%s | %s]", i, note and "note" or "highlight", highlightLocation(a))
+        if text then entry = entry .. "\n   \"" .. text .. "\"" end
+        if note then entry = entry .. "\n   note: " .. note end
+        out[#out + 1] = entry
     end
     local header = string.format("%d highlight(s)/note(s) in this book%s:",
         total, shown < total and string.format(" (showing first %d)", shown) or "")
@@ -323,6 +344,56 @@ local function tool_navigate(ui, input)
         T(_("→ %1"), to)
 end
 
+-- Add to (never overwrite) the note on one of the reader's highlights. The
+-- highlight is addressed by its number from get_highlights, so both tools share
+-- highlightList()'s numbering. Strictly non-destructive: a note-less highlight
+-- gets the note set; a highlight that already has a note gets the text appended
+-- below it (KOReader joins notes with a blank line, readerbookmark.lua:1376). It
+-- never deletes or replaces existing note text, so -- like navigate -- no
+-- confirmation is needed. Mirrors ReaderBookmark:setBookmarkNote for persistence:
+-- the in-place mutation is saved by ReaderAnnotation:onSaveSettings on close, and
+-- the AnnotationsModified event keeps the footer's counters and the
+-- datetime_updated timestamp honest.
+local function tool_edit_highlight_note(ui, input)
+    local list = highlightList(ui)
+    if #list == 0 then
+        return "Error: this book has no highlights or notes to edit."
+    end
+    local idx = tonumber(input.highlight_index)
+    if not idx or idx < 1 or idx > #list or idx ~= math.floor(idx) then
+        return string.format("Error: 'highlight_index' must be a whole number between 1 and %d (see get_highlights).", #list)
+    end
+    local note = input.note
+    if type(note) ~= "string" or note:gsub("%s", "") == "" then
+        return "Error: 'note' text is required."
+    end
+
+    local a = list[idx]
+    local had_note = a.note and a.note ~= ""
+    local new_note = had_note and (a.note .. "\n\n" .. note) or note
+
+    -- No-op for non-PDF documents (readerhighlight.lua:2151 self-guards), but
+    -- keeps note content in sync for PDFs with write-into-pdf enabled.
+    if ui.highlight then
+        ui.highlight:writePdfAnnotation("content", a, new_note)
+    end
+    a.note = new_note
+
+    if ui.handleEvent then
+        if had_note then
+            ui:handleEvent(Event:new("AnnotationsModified", { a, modify_datetime = true }))
+        else -- a bare highlight became a note: keep the highlight/note counters right
+            ui:handleEvent(Event:new("AnnotationsModified",
+                { a, nb_highlights_added = -1, nb_notes_added = 1 }))
+        end
+    end
+
+    local verb = had_note and "Appended to" or "Added"
+    return string.format("%s the note on highlight %d (%s). The note now reads:\n%s",
+            verb, idx, highlightLocation(a), new_note),
+        had_note and _("appended note") or _("added note")
+end
+
 local DISPATCH = {
     search_book = tool_search_book,
     read_page_range = tool_read_page_range,
@@ -331,6 +402,7 @@ local DISPATCH = {
     book_context = tool_book_context,
     get_highlights = tool_get_highlights,
     navigate = tool_navigate,
+    edit_highlight_note = tool_edit_highlight_note,
 }
 
 function Tools.getSpecs()
@@ -409,6 +481,22 @@ function Tools.getSpecs()
                     chapter_index = { type = "integer", description = "1-based chapter number as listed by get_toc." },
                     back = { type = "boolean", description = "Set true to return to the reader's previous location." },
                 },
+            },
+        },
+        {
+            name = "edit_highlight_note",
+            description = "Add or extend the note attached to one of the reader's highlights. "
+                .. "Identify the highlight by its number from get_highlights (call that first). "
+                .. "If the highlight has no note yet, this sets it; if it already has a note, your "
+                .. "text is appended below the existing note. It never overwrites or deletes the "
+                .. "reader's existing note, so it is safe to use without asking first.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    highlight_index = { type = "integer", description = "1-based number of the highlight as listed by get_highlights." },
+                    note = { type = "string", description = "Note text to add. Appended below any existing note for that highlight." },
+                },
+                required = { "highlight_index", "note" },
             },
         },
         -- Server-side tool: Anthropic runs the search and returns the results

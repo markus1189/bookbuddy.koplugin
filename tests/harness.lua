@@ -766,6 +766,13 @@ do
     checkPhrase("nav back", phrase{ back = true }, "  → Went back")
 end
 
+print("\n=== Unit: edit_highlight_note tool phrase ===")
+do
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "x" }
+    local function phrase(input) return conv:_toolActionPhrase({ name = "edit_highlight_note", input = input }) end
+    checkPhrase("edit note", phrase{ highlight_index = 3 }, "  → Updated the note on highlight 3")
+end
+
 -- Exercise the real navigate executor (the bbtools stub above is only for the
 -- conversation loop). Load the real module fresh with ui/event stubbed so
 -- Event:new records dispatched events, and drive it with a fake ui.
@@ -866,6 +873,178 @@ do
         check("multi target: errors",
             RealTools.execute("navigate", { page = 5, percent = 50 }, ui):find("only one") ~= nil)
     end
+
+    -- edit_highlight_note: addressed by the get_highlights display number, which
+    -- skips bare bookmarks, so the annotations array index differs. Build a list
+    -- with a leading bare bookmark to prove the mapping, then a note-less
+    -- highlight (set-if-empty) and a noted highlight (append).
+    print("\n=== Unit: edit_highlight_note tool executor ===")
+    local function makeHlUI(anns)
+        local rec = { events = {}, pdf = {} }
+        local ui = {
+            annotation = { annotations = anns },
+            highlight = {
+                writePdfAnnotation = function(_, action, item, content)
+                    rec.pdf[#rec.pdf + 1] = { action = action, item = item, content = content }
+                end,
+            },
+            handleEvent = function(_, ev) rec.events[#rec.events + 1] = ev end,
+        }
+        return ui, rec
+    end
+
+    do -- set-if-empty on a note-less highlight; display index 1 skips the bookmark
+        local anns = {
+            { text = nil, note = nil, pageno = 1 },                       -- bare bookmark
+            { text = "passage", note = nil, pageno = 10, chapter = "Ch 1" }, -- highlight, no note
+            { text = "more", note = "old", pageno = 20 },                  -- highlight with note
+        }
+        local ui, rec = makeHlUI(anns)
+        local result, summary = RealTools.execute("edit_highlight_note", { highlight_index = 1, note = "new" }, ui)
+        check("edit: index 1 maps past the bare bookmark to annotations[2]",
+            anns[2].note == "new" and anns[1].note == nil)
+        check("edit: untouched highlight keeps its note", anns[3].note == "old")
+        check("edit: result reports it was added", result:find("Added") ~= nil)
+        check("edit: result echoes the new note", result:find("new") ~= nil)
+        check("edit: summary set", summary ~= nil and summary ~= "")
+        check("edit: fired AnnotationsModified with note counter +1",
+            rec.events[1] and rec.events[1].handler == "AnnotationsModified"
+            and rec.events[1].args[1].nb_notes_added == 1)
+        check("edit: wrote pdf annotation content", rec.pdf[1] and rec.pdf[1].action == "content")
+    end
+
+    do -- append to a highlight that already has a note
+        local anns = {
+            { text = "passage", note = nil, pageno = 10 },
+            { text = "more", note = "old", pageno = 20 },
+        }
+        local ui, rec = makeHlUI(anns)
+        local result = RealTools.execute("edit_highlight_note", { highlight_index = 2, note = "added" }, ui)
+        check("edit(append): joined below the existing note with a blank line",
+            anns[2].note == "old\n\nadded")
+        check("edit(append): result reports it was appended", result:find("Appended") ~= nil)
+        check("edit(append): fired AnnotationsModified to refresh timestamp",
+            rec.events[1] and rec.events[1].args[1].modify_datetime == true)
+    end
+
+    do -- error cases leave notes untouched
+        local anns = { { text = "passage", note = "keep", pageno = 10 } }
+        local ui = makeHlUI(anns)
+        check("edit: out-of-range index errors",
+            RealTools.execute("edit_highlight_note", { highlight_index = 9, note = "x" }, ui):find("between 1 and") ~= nil)
+        check("edit: blank note errors",
+            RealTools.execute("edit_highlight_note", { highlight_index = 1, note = "   " }, ui):find("required") ~= nil)
+        check("edit: errors did not mutate the note", anns[1].note == "keep")
+    end
+
+    do -- no highlights to edit
+        local ui = makeHlUI{}
+        check("edit: empty book errors",
+            RealTools.execute("edit_highlight_note", { highlight_index = 1, note = "x" }, ui):find("no highlights") ~= nil)
+    end
+end
+
+-- Meta-test: prove validateMessages actually rejects the 400-worthy shapes it
+-- guards against. Every integration scenario above trusts this validator; without
+-- this, a validator that silently degraded to `return {}` would let all of them
+-- keep reporting PASS while the safety net had a hole in it.
+print("\n=== Meta: the request validator rejects bad message arrays ===")
+do
+    local function checkValidator(label, messages, want_errors)
+        local errs = validateMessages(messages)
+        local got_errors = #errs > 0
+        if got_errors == want_errors then
+            total_pass = total_pass + 1
+            print(string.format("  ok:   %-38s (%d err)", label, #errs))
+        else
+            total_fail = total_fail + 1
+            print(string.format("  FAIL: %-38s got %d err(s), wanted %s",
+                label, #errs, want_errors and "at least one" or "none"))
+            for _, e in ipairs(errs) do print("      ! " .. e) end
+        end
+    end
+
+    -- A clean, fully-paired exchange must validate (no false positives, or the
+    -- whole suite is one big tautology).
+    checkValidator("valid paired exchange", {
+        { role = "user", content = "hi" },
+        { role = "assistant", content = {
+            { type = "text", text = "let me look" },
+            { type = "server_tool_use", id = "s1", name = "web_search" },
+            { type = "web_search_tool_result", tool_use_id = "s1", content = {} },
+            { type = "tool_use", id = "t1", name = "search_book" },
+        } },
+        { role = "user", content = {
+            { type = "tool_result", tool_use_id = "t1", content = "ok" },
+        } },
+    }, false)
+
+    checkValidator("first message must be user", {
+        { role = "assistant", content = "x" },
+    }, true)
+
+    checkValidator("two user messages in a row", {
+        { role = "user", content = "a" },
+        { role = "user", content = "b" },
+    }, true)
+
+    checkValidator("server_tool_use without web result", {
+        { role = "user", content = "hi" },
+        { role = "assistant", content = {
+            { type = "server_tool_use", id = "s1", name = "web_search" },
+        } },
+    }, true)
+
+    checkValidator("web result without server_tool_use", {
+        { role = "user", content = "hi" },
+        { role = "assistant", content = {
+            { type = "web_search_tool_result", tool_use_id = "ghost", content = {} },
+        } },
+    }, true)
+
+    checkValidator("client tool_use with no tool_result", {
+        { role = "user", content = "hi" },
+        { role = "assistant", content = {
+            { type = "tool_use", id = "t1", name = "search_book" },
+        } },
+    }, true)
+end
+
+-- Unit checks for stripMarkdown, driven through the public _transcriptText render
+-- path (the function itself is file-local). The viewer is plain text, so these
+-- markers must be removed -- but snake_case identifiers and URLs must survive
+-- untouched, which is exactly where a naive emphasis-stripper goes wrong.
+print("\n=== Unit: markdown stripped from rendered transcript ===")
+do
+    -- A fresh conversation per case: usage is zero so _transcriptText emits no
+    -- footer, and a single assistant entry renders as "BookBuddy: <stripped>".
+    local function rendered(text)
+        local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "x" }
+        conv.transcript = { { role = "assistant", text = text } }
+        return conv:_transcriptText()
+    end
+    local function checkStrip(label, input, want)
+        local got = rendered(input)
+        local expected = "BookBuddy: " .. want
+        if got == expected then
+            total_pass = total_pass + 1
+            print(string.format("  ok:   %-28s -> %q", label, got))
+        else
+            total_fail = total_fail + 1
+            print(string.format("  FAIL: %-28s got %q, want %q", label, got, expected))
+        end
+    end
+
+    checkStrip("bold", "**bold**", "bold")
+    checkStrip("italic (multi-char)", "*italic*", "italic")
+    checkStrip("italic (single char)", "a *i* b", "a i b")
+    checkStrip("strikethrough", "~~gone~~", "gone")
+    checkStrip("inline code", "`code`", "code")
+    checkStrip("link becomes text (url)", "[docs](http://x)", "docs (http://x)")
+    checkStrip("heading on first line", "# Title", "Title")
+    -- The must-survive cases: emphasis stripping must not touch snake_case or URLs.
+    checkStrip("snake_case survives", "see read_page_range now", "see read_page_range now")
+    checkStrip("url survives", "go to https://example.com/a", "go to https://example.com/a")
 end
 
 print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))

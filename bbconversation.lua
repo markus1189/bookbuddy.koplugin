@@ -438,6 +438,8 @@ function Conversation:_toolActionPhrase(tu)
         phrase = _("Checked the book details")
     elseif tu.name == "get_highlights" then
         phrase = _("Looked up your highlights")
+    elseif tu.name == "edit_highlight_note" then
+        phrase = T(_("Updated the note on highlight %1"), tostring(input.highlight_index))
     elseif tu.name == "navigate" then
         phrase = self:_navigatePhrase(input)
     elseif tu.name == "memory" then
