@@ -144,7 +144,9 @@ Open any book, then go to the top menu → **BookBuddy**:
 - **Model** — gateway model slug.
 - **Max tokens** — cap on each reply.
 - **Max tool rounds** — how many tool-using exchanges before a final answer.
-- **System prompt** — editable; resettable to the shipped default.
+- **Additional system prompt** — optional text appended to BookBuddy's built-in
+  system prompt; add your own preferences (tone, language, focus) without restating
+  the built-in instructions. Leave empty for the default behavior.
 - **Per-book memory** / **Extended thinking** — toggles.
 
 Settings persist via KOReader's `LuaSettings` (in `bookbuddy.lua` under your settings

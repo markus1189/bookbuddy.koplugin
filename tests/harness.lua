@@ -286,6 +286,9 @@ local Anthropic = require("bbanthropic")
 local Conversation = require("bbconversation")
 
 -- Capture the messages array on each outgoing request by wrapping buildBody.
+-- Keep a handle on the real one first, so the system-prompt assembly can still
+-- be unit-tested below (the stub throws the assembled body away).
+local realBuildBody = Anthropic.buildBody
 local captured = {}
 local function deepcopy(v)
     if type(v) ~= "table" then return v end
@@ -432,7 +435,7 @@ end
 local cfg = {
     base_url = "https://example", portkey_api_key = "k", model = "test",
     max_tokens = 1024, max_turns = 20,
-    system_prompt = "sys", enable_memory = false, enable_thinking = false,
+    additional_system_prompt = "", enable_memory = false, enable_thinking = false,
 }
 local stubSettings = { getConfig = function() return cfg end }
 
@@ -1295,6 +1298,42 @@ do
     -- The must-survive cases: emphasis stripping must not touch snake_case or URLs.
     checkStrip("snake_case survives", "see read_page_range now", "see read_page_range now")
     checkStrip("url survives", "go to https://example.com/a", "go to https://example.com/a")
+end
+
+print("\n=== Unit: system prompt assembly ===")
+do
+    local function check(label, cond)
+        if cond then
+            total_pass = total_pass + 1
+            print("  ok:   " .. label)
+        else
+            total_fail = total_fail + 1
+            print("  FAIL: " .. label)
+        end
+    end
+    local msgs = { { role = "user", content = "hi" } }
+    local function build(over)
+        local c = {
+            model = "test", max_tokens = 100,
+            additional_system_prompt = "", enable_memory = false, enable_thinking = false,
+        }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return realBuildBody(msgs, nil, c) -- JSON string; substring checks below
+    end
+    local BASE, MEM, EXTRA = "You are BookBuddy", "persistent memory directory", "Always answer in German."
+
+    local base = build()
+    check("base: contains the built-in prompt", base:find(BASE, 1, true) ~= nil)
+    check("base: no memory protocol when memory off", base:find(MEM, 1, true) == nil)
+    check("base: no additional text when empty", base:find("German", 1, true) == nil)
+
+    local mem = build{ enable_memory = true }
+    check("memory: appends the memory protocol", mem:find(MEM, 1, true) ~= nil)
+
+    local extra = build{ additional_system_prompt = EXTRA }
+    check("additional: appended to the body", extra:find(EXTRA, 1, true) ~= nil)
+    check("additional: comes after the built-in prompt",
+        (extra:find(BASE, 1, true) or 0) < (extra:find(EXTRA, 1, true) or math.huge))
 end
 
 print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))

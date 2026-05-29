@@ -7,6 +7,8 @@
 -- shape decode() would have produced for a non-streaming reply, so the tool loop
 -- in bbconversation does not care that the response arrived incrementally.
 
+local Prompts = require("bbprompts")
+
 local ANTHROPIC_VERSION = "2023-06-01"
 
 -- Sentinels the child writes to the pipe after the request finishes, so the
@@ -14,26 +16,19 @@ local ANTHROPIC_VERSION = "2023-06-01"
 local NON_200_MARKER = "X-BB-NON-200:"
 local NETWORK_ERROR_MARKER = "X-BB-NETWORK-ERROR:"
 
--- Anthropic auto-injects a memory protocol into the system prompt only on its
--- first-party API; we route through a gateway, so we add our own when the memory
--- tool is enabled, otherwise the model may never look at /memories.
-local MEMORY_PROTOCOL =
-    "You have a persistent memory directory at /memories, private to this book. "
-    .. "At the start of every conversation, use the memory "
-    .. "tool's `view` command on /memories to recall what you noted before. As you learn "
-    .. "durable things about this book — recurring themes, characters and their arcs, the "
-    .. "reader's interests and how they like answers, and roughly where they are in the plot "
-    .. "— record them in memory files so later conversations are better informed. Keep memory "
-    .. "tidy and up to date; reorganize or delete stale notes. Never store secrets, and do not "
-    .. "write down plot points beyond the reader's current position."
-
 local Anthropic = {}
 
 function Anthropic.buildBody(messages, tool_specs, cfg)
     local rapidjson = require("rapidjson")
-    local system_text = cfg.system_prompt or ""
+    -- BookBuddy's built-in prompt is the base; the memory protocol and the
+    -- reader's optional additional prompt are appended to it, in that order.
+    local system_text = Prompts.SYSTEM_PROMPT
     if cfg.enable_memory then
-        system_text = system_text .. "\n\n" .. MEMORY_PROTOCOL
+        system_text = system_text .. "\n\n" .. Prompts.MEMORY_PROTOCOL
+    end
+    local extra = cfg.additional_system_prompt
+    if extra and extra ~= "" then
+        system_text = system_text .. "\n\n" .. extra
     end
     local body = {
         model = cfg.model,

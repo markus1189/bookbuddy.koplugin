@@ -21,25 +21,10 @@ local DEFAULTS = {
     -- unless requested; its thinking text is omitted unless we ask for the
     -- summarized display, which is what makes reasoning visible (see bbanthropic).
     enable_thinking = true,
-    system_prompt = "You are BookBuddy, a concise and insightful reading companion embedded in an e-reader. "
-        .. "The user is reading a book and has highlighted a passage to ask you about. "
-        .. "You have tools to search the book, read page ranges and chapters, inspect the table of contents, "
-        .. "and fetch the book's metadata and the reader's current position. "
-        .. "Use these tools to ground your answers in the actual text instead of guessing. "
-        .. "You can also move the reader within the book with the navigate tool: to a page, a percentage, "
-        .. "a chapter from the table of contents, or back to where they were. When you navigate, tell the "
-        .. "reader where you took them; their current spot is saved first, so they can tap Back to return. "
-        .. "You can add a note to one of the reader's highlights with the edit_highlight_note tool, "
-        .. "identifying it by its number from get_highlights (call that first); your text is appended to "
-        .. "any existing note and never overwrites or deletes what the reader already wrote. "
-        .. "You can also search the web, but prefer the book itself: use web search only for outside "
-        .. "knowledge the book cannot answer (real-world facts, author background, references), and never to "
-        .. "look up where the story is heading, since web results can spoil what lies ahead. "
-        .. "Quote sparingly, avoid spoilers beyond the reader's current position unless explicitly asked, "
-        .. "and keep answers focused and readable on a small e-ink screen. "
-        .. "Your replies are displayed as plain text with no markdown rendering, so write in plain prose: "
-        .. "do not use markdown formatting such as **bold**, *italics*, # headings, `code`, tables, or "
-        .. "bullet characters. Use short paragraphs, and where you need a list, write it in sentences.",
+    -- Optional user text appended to BookBuddy's built-in system prompt
+    -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
+    -- user-editable, so customizations don't have to restate the internals.
+    additional_system_prompt = "",
 }
 
 local Settings = {}
@@ -69,7 +54,7 @@ function Settings:getConfig()
         model = self:get("model"),
         max_tokens = tonumber(self:get("max_tokens")) or DEFAULTS.max_tokens,
         max_turns = math.max(1, tonumber(self:get("max_turns")) or DEFAULTS.max_turns),
-        system_prompt = self:get("system_prompt"),
+        additional_system_prompt = self:get("additional_system_prompt"),
         enable_memory = self:get("enable_memory") and true or false,
         enable_thinking = self:get("enable_thinking") and true or false,
     }
@@ -118,6 +103,7 @@ function Settings:editMultiline(touchmenu_instance, opts)
     local dialog
     dialog = InputDialog:new{
         title = opts.title,
+        description = opts.description,
         input = tostring(self:get(opts.key) or ""),
         allow_newline = true,
         para_direction_rtl = false,
@@ -257,12 +243,14 @@ function Settings:getMenu(ui)
                 end,
             },
             {
-                text = _("System prompt"),
+                text = _("Additional system prompt"),
+                help_text = _("Optional text appended to BookBuddy's built-in system prompt. Use it to add your own preferences (tone, language, focus) without restating the built-in instructions. Leave empty for the default behavior."),
                 keep_menu_open = true,
                 callback = function(touchmenu_instance)
                     self:editMultiline(touchmenu_instance, {
-                        key = "system_prompt",
-                        title = _("System prompt"),
+                        key = "additional_system_prompt",
+                        title = _("Additional system prompt"),
+                        description = _("Appended to BookBuddy's built-in system prompt. Leave empty for the default behavior."),
                     })
                 end,
             },
