@@ -32,8 +32,14 @@ function BookBuddy:init()
                         return
                     end
                     local text = util.cleanupSelectedText(sel.text)
+                    -- Reached via an existing highlight's "…" menu, sel is a copy of
+                    -- the whole annotation, so it may carry the reader's own note.
+                    -- A fresh selection has no note. Keep the note's wording intact
+                    -- (cleanupSelectedText is for extracted document text, not prose).
+                    local note = sel.note
+                    if note == "" then note = nil end
                     this:onClose()
-                    self:promptAndStart(text)
+                    self:promptAndStart(text, note)
                 end,
             }
         end)
@@ -69,8 +75,9 @@ function BookBuddy:addToMainMenu(menu_items)
     menu_items.bookbuddy = self.settings:getMenu(self.ui)
 end
 
--- Open an input dialog seeded with the highlighted passage, then start a chat.
-function BookBuddy:promptAndStart(text)
+-- Open an input dialog seeded with the highlighted passage (and the reader's note
+-- on it, if any), then start a chat.
+function BookBuddy:promptAndStart(text, note)
     if not self.settings:isConfigured() then
         UIManager:show(InfoMessage:new{
             text = _("BookBuddy is not configured yet.\nOpen the menu → BookBuddy to set your Portkey API key."),
@@ -78,15 +85,24 @@ function BookBuddy:promptAndStart(text)
         return
     end
 
-    local preview = text
-    if #preview > 400 then
-        preview = preview:sub(1, 400) .. "…"
+    local function clip(s)
+        if #s > 400 then
+            return s:sub(1, 400) .. "…"
+        end
+        return s
+    end
+
+    local description
+    if note and note ~= "" then
+        description = T(_("About this passage:\n\n%1\n\nYour note:\n\n%2"), clip(text), clip(note))
+    else
+        description = T(_("About this passage:\n\n%1"), clip(text))
     end
 
     local dialog
     dialog = InputDialog:new{
         title = _("Ask BookBuddy"),
-        description = T(_("About this passage:\n\n%1"), preview),
+        description = description,
         input = "",
         input_hint = _("e.g. What does this mean in context?"),
         buttons = {{
@@ -104,12 +120,17 @@ function BookBuddy:promptAndStart(text)
                     local question = dialog:getInputText()
                     UIManager:close(dialog)
                     if not question or question == "" then
-                        question = _("Explain this passage and its significance in the book.")
+                        if note and note ~= "" then
+                            question = _("Discuss my note on this passage.")
+                        else
+                            question = _("Explain this passage and its significance in the book.")
+                        end
                     end
                     local conversation = Conversation:new{
                         ui = self.ui,
                         settings = self.settings,
                         selected_text = text,
+                        note = note,
                     }
                     conversation:ask(question)
                 end,

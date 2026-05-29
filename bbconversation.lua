@@ -135,9 +135,17 @@ end
 function Conversation:ask(question)
     if #self.messages == 0 then
         local context = Tools.execute("book_context", {}, self.ui)
-        local seed = T(
-            "I'm reading this book:\n%1\n\nI've highlighted this passage:\n\"\"\"\n%2\n\"\"\"\n\nMy question: %3",
-            context, self.selected_text or "", question)
+        local seed
+        if self.note and self.note ~= "" then
+            seed = T(
+                "I'm reading this book:\n%1\n\nI've highlighted this passage:\n\"\"\"\n%2\n\"\"\"\n\n"
+                    .. "And I wrote this note on it:\n\"\"\"\n%3\n\"\"\"\n\nMy question: %4",
+                context, self.selected_text or "", self.note, question)
+        else
+            seed = T(
+                "I'm reading this book:\n%1\n\nI've highlighted this passage:\n\"\"\"\n%2\n\"\"\"\n\nMy question: %3",
+                context, self.selected_text or "", question)
+        end
         self.messages[#self.messages + 1] = { role = "user", content = seed }
     else
         self.messages[#self.messages + 1] = { role = "user", content = question }

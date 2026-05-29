@@ -462,7 +462,7 @@ local function runScenario(sc)
     -- otherwise max_turns = 20). Used to exercise the substantive-turn budget edge.
     local saved_max_turns = cfg.max_turns
     if sc.max_turns then cfg.max_turns = sc.max_turns end
-    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "the passage" }
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "the passage", note = sc.note }
     conv:ask(sc.first_question or "What does this mean?")
     for _, fq in ipairs(sc.followups or {}) do conv:ask(fq) end
     cfg.max_turns = saved_max_turns
@@ -498,6 +498,23 @@ local function runScenario(sc)
         else
             print(string.format("  text check: missing %q (FAIL)", sc.expect_text))
             scenario_ok = false
+        end
+    end
+
+    -- Assert the very first POSTed message (the seed) contains expected substrings.
+    -- The seed is built in Conversation:ask before any tool round, so it's the first
+    -- message of the first captured request. Used to prove the reader's note is folded
+    -- into the seed when one is set.
+    if sc.expect_seed_contains then
+        local seed = captured[1] and captured[1].messages[1] and captured[1].messages[1].content
+        seed = (type(seed) == "string") and seed or ""
+        for _, want in ipairs(sc.expect_seed_contains) do
+            if seed:find(want, 1, true) then
+                print(string.format("  seed check: found %q (PASS)", want))
+            else
+                print(string.format("  seed check: missing %q (FAIL)", want))
+                scenario_ok = false
+            end
         end
     end
 
@@ -583,6 +600,33 @@ runScenario{
         buildTurnSSE{ blocks = { { type = "text", text = "Follow-up answer." } }, stop_reason = "end_turn" },
     },
     followups = { "And what about Y?" },
+}
+
+runScenario{
+    name = "S2b: a reader note is folded into the seed",
+    note = "I think the narrator is unreliable here.",
+    first_question = "Am I right about this?",
+    responses = {
+        buildTurnSSE{ blocks = { { type = "text", text = "Good instinct." } }, stop_reason = "end_turn" },
+    },
+    expect_seed_contains = {
+        "I've highlighted this passage:",
+        "And I wrote this note on it:",
+        "I think the narrator is unreliable here.",
+        "My question: Am I right about this?",
+    },
+}
+
+runScenario{
+    name = "S2c: with no note, the seed keeps the original framing",
+    first_question = "What does this mean?",
+    responses = {
+        buildTurnSSE{ blocks = { { type = "text", text = "It means X." } }, stop_reason = "end_turn" },
+    },
+    expect_seed_contains = {
+        "I've highlighted this passage:",
+        "My question: What does this mean?",
+    },
 }
 
 runScenario{
