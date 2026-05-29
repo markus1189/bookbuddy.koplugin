@@ -72,7 +72,14 @@ function BookBuddy:onBookBuddyAskSelection()
 end
 
 function BookBuddy:addToMainMenu(menu_items)
-    menu_items.bookbuddy = self.settings:getMenu(self.ui)
+    local menu = self.settings:getMenu(self.ui)
+    -- A book-level entry point: start a chat about the whole book, no highlight
+    -- needed. Omit keep_menu_open so the menu closes when the chat opens.
+    table.insert(menu.sub_item_table, 1, {
+        text = _("Ask about this book"),
+        callback = function() self:promptAndStart(nil) end,
+    })
+    menu_items.bookbuddy = menu
 end
 
 -- Open an input dialog seeded with the highlighted passage (and the reader's note
@@ -92,11 +99,19 @@ function BookBuddy:promptAndStart(text, note)
         return s
     end
 
-    local description
-    if note and note ~= "" then
-        description = T(_("About this passage:\n\n%1\n\nYour note:\n\n%2"), clip(text), clip(note))
+    local has_text = text and text ~= ""
+    local description, input_hint
+    if not has_text then
+        -- Book-level chat: no passage to show, just invite a question about the book.
+        description = _("Ask BookBuddy anything about this book.")
+        input_hint = _("e.g. Who are the main characters so far?")
     else
-        description = T(_("About this passage:\n\n%1"), clip(text))
+        if note and note ~= "" then
+            description = T(_("About this passage:\n\n%1\n\nYour note:\n\n%2"), clip(text), clip(note))
+        else
+            description = T(_("About this passage:\n\n%1"), clip(text))
+        end
+        input_hint = _("e.g. What does this mean in context?")
     end
 
     local dialog
@@ -104,7 +119,7 @@ function BookBuddy:promptAndStart(text, note)
         title = _("Ask BookBuddy"),
         description = description,
         input = "",
-        input_hint = _("e.g. What does this mean in context?"),
+        input_hint = input_hint,
         buttons = {{
             {
                 text = _("Cancel"),
@@ -120,7 +135,9 @@ function BookBuddy:promptAndStart(text, note)
                     local question = dialog:getInputText()
                     UIManager:close(dialog)
                     if not question or question == "" then
-                        if note and note ~= "" then
+                        if not has_text then
+                            question = _("Give me a brief overview of this book.")
+                        elseif note and note ~= "" then
                             question = _("Discuss my note on this passage.")
                         else
                             question = _("Explain this passage and its significance in the book.")

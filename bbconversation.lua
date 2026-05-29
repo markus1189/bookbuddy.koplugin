@@ -136,15 +136,21 @@ function Conversation:ask(question)
     if #self.messages == 0 then
         local context = Tools.execute("book_context", {}, self.ui)
         local seed
-        if self.note and self.note ~= "" then
+        if not (self.selected_text and self.selected_text ~= "") then
+            -- Book-level chat: no highlighted passage, just the book context and
+            -- the reader's question (started from the menu, not a selection).
+            seed = T(
+                "I'm reading this book:\n%1\n\nMy question: %2",
+                context, question)
+        elseif self.note and self.note ~= "" then
             seed = T(
                 "I'm reading this book:\n%1\n\nI've highlighted this passage:\n\"\"\"\n%2\n\"\"\"\n\n"
                     .. "And I wrote this note on it:\n\"\"\"\n%3\n\"\"\"\n\nMy question: %4",
-                context, self.selected_text or "", self.note, question)
+                context, self.selected_text, self.note, question)
         else
             seed = T(
                 "I'm reading this book:\n%1\n\nI've highlighted this passage:\n\"\"\"\n%2\n\"\"\"\n\nMy question: %3",
-                context, self.selected_text or "", question)
+                context, self.selected_text, question)
         end
         self.messages[#self.messages + 1] = { role = "user", content = seed }
     else

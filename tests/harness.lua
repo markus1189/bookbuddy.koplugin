@@ -462,7 +462,13 @@ local function runScenario(sc)
     -- otherwise max_turns = 20). Used to exercise the substantive-turn budget edge.
     local saved_max_turns = cfg.max_turns
     if sc.max_turns then cfg.max_turns = sc.max_turns end
-    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "the passage", note = sc.note }
+    -- Book-level scenarios start a chat with no highlighted passage (the menu
+    -- entry point); everything else seeds from a selection as before.
+    -- NB: not `sc.book_level and nil or "the passage"` -- `x and nil or y` always
+    -- yields y, since the middle term is falsy. Lua has no ternary; spell it out.
+    local selected_text
+    if not sc.book_level then selected_text = "the passage" end
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = selected_text, note = sc.note }
     conv:ask(sc.first_question or "What does this mean?")
     for _, fq in ipairs(sc.followups or {}) do conv:ask(fq) end
     cfg.max_turns = saved_max_turns
@@ -514,6 +520,21 @@ local function runScenario(sc)
             else
                 print(string.format("  seed check: missing %q (FAIL)", want))
                 scenario_ok = false
+            end
+        end
+    end
+
+    -- The mirror of expect_seed_contains: assert substrings the seed must NOT have.
+    -- Used to prove a book-level chat omits the highlighted-passage framing.
+    if sc.expect_seed_absent then
+        local seed = captured[1] and captured[1].messages[1] and captured[1].messages[1].content
+        seed = (type(seed) == "string") and seed or ""
+        for _, banned in ipairs(sc.expect_seed_absent) do
+            if seed:find(banned, 1, true) then
+                print(string.format("  seed check: unexpectedly found %q (FAIL)", banned))
+                scenario_ok = false
+            else
+                print(string.format("  seed check: absent %q (PASS)", banned))
             end
         end
     end
@@ -626,6 +647,23 @@ runScenario{
     expect_seed_contains = {
         "I've highlighted this passage:",
         "My question: What does this mean?",
+    },
+}
+
+runScenario{
+    name = "S2d: a book-level chat seeds context + question, no passage block",
+    book_level = true,
+    first_question = "Who are the main characters so far?",
+    responses = {
+        buildTurnSSE{ blocks = { { type = "text", text = "The protagonist is Ada." } }, stop_reason = "end_turn" },
+    },
+    expect_text = "The protagonist is Ada.",
+    expect_seed_contains = {
+        "I'm reading this book:",
+        "My question: Who are the main characters so far?",
+    },
+    expect_seed_absent = {
+        "I've highlighted this passage:",
     },
 }
 
