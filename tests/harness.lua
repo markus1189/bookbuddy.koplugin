@@ -421,9 +421,14 @@ local total_pass, total_fail = 0, 0
 local function runScenario(sc)
     captured = {}
     FakeStream.reset(sc.responses)
+    -- Per-scenario max_turns override, restored after the run (the shared cfg is
+    -- otherwise max_turns = 20). Used to exercise the substantive-turn budget edge.
+    local saved_max_turns = cfg.max_turns
+    if sc.max_turns then cfg.max_turns = sc.max_turns end
     local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "the passage" }
     conv:ask(sc.first_question or "What does this mean?")
     for _, fq in ipairs(sc.followups or {}) do conv:ask(fq) end
+    cfg.max_turns = saved_max_turns
 
     print("\n=== " .. sc.name .. " ===")
     local scenario_ok = true
@@ -443,6 +448,19 @@ local function runScenario(sc)
         print(string.format("  NOTE: loop requested %d responses but only %d were scripted",
             FakeStream.idx, #FakeStream.responses))
         scenario_ok = false
+    end
+
+    -- Validity alone won't catch a silently-missing final answer (a turn budget
+    -- exhausted by pauses), so optionally assert the rendered transcript contains
+    -- the expected answer text.
+    if sc.expect_text then
+        local rendered = ChatViewerStub.last_text or ""
+        if rendered:find(sc.expect_text, 1, true) then
+            print(string.format("  text check: found %q (PASS)", sc.expect_text))
+        else
+            print(string.format("  text check: missing %q (FAIL)", sc.expect_text))
+            scenario_ok = false
+        end
     end
 
     if sc.show_transcript then
@@ -526,6 +544,34 @@ runScenario{
             { type = "tool_use", id = "toolu_Z", name = "search_book", input = { query = "whales" } },
         }, stop_reason = "tool_use" },
         buildTurnSSE{ blocks = { { type = "text", text = "Here is what I found." } }, stop_reason = "end_turn" },
+    },
+}
+
+runScenario{
+    -- Three pause_turns then an answer, under a 2-turn budget. Pauses are not
+    -- substantive turns, so they must not spend the budget: the loop has to resume
+    -- through all of them and still reach the text answer. (Under the old
+    -- accounting each pause burned a turn, so the budget ran out mid-search and the
+    -- answer was never produced.)
+    name = "S6: pauses do not consume the substantive turn budget",
+    max_turns = 2,
+    expect_text = "Finally, the answer is 42.",
+    responses = {
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Searching (1)..." },
+            { type = "server_tool_use", id = "srvtoolu_P1", input = { query = "q1" } },
+        }, stop_reason = "pause_turn" },
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Searching (2)..." },
+            { type = "server_tool_use", id = "srvtoolu_P2", input = { query = "q2" } },
+        }, stop_reason = "pause_turn" },
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Searching (3)..." },
+            { type = "server_tool_use", id = "srvtoolu_P3", input = { query = "q3" } },
+        }, stop_reason = "pause_turn" },
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Finally, the answer is 42." },
+        }, stop_reason = "end_turn" },
     },
 }
 

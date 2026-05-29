@@ -140,22 +140,46 @@ function Conversation:_loop()
     local cfg = self.settings:getConfig()
     local max_turns = cfg.max_turns
 
+    -- A pause_turn is not a turn of its own: it's the API stopping mid-turn to let
+    -- a long server-side job (e.g. a web search) keep running, which we continue by
+    -- resending the partial assistant turn unchanged. Counting each resume against
+    -- max_turns let a repeatedly-pausing search burn the whole budget on pauses and
+    -- never reach an answer, so we count substantive turns and resumes separately:
+    -- a resume doesn't spend a turn, but its own cap still stops a server that
+    -- pauses without end.
+    local max_resumes = 16
     local iterations = 0
+    local resumes = 0
     -- Set after a pause_turn: the next round resends the partial assistant turn
     -- unchanged to let the server finish (e.g. a long web search).
     local resuming = false
-    while iterations < max_turns do
-        iterations = iterations + 1
-        -- On the final allowed round, drop the tools so the model has to answer in
-        -- text rather than requesting another tool call we'd refuse to run. While
-        -- resuming a paused server-side turn we must keep the tools, though: the
-        -- paused turn references a server tool and the API needs it to finish.
-        local last_round = iterations >= max_turns
-        local tools = (not last_round or resuming) and self.tool_specs or nil
+    while true do
         -- This round continues a turn the previous round left paused: its reply must
-        -- extend that same assistant message, not start a new one (see below).
+        -- extend that same assistant message, not start a new one (see below), and
+        -- it keeps the tools the paused turn references so the API can finish.
         local is_resume = resuming
         resuming = false
+        if is_resume then
+            resumes = resumes + 1
+            if resumes > max_resumes then
+                logger.warn("BookBuddy: pause_turn resume limit reached; rendering partial reply")
+                self:_render()
+                return
+            end
+        else
+            iterations = iterations + 1
+            resumes = 0
+            if iterations > max_turns then
+                break
+            end
+        end
+        -- On the final allowed substantive round, drop the tools so the model has to
+        -- answer in text rather than requesting another tool call we'd refuse to
+        -- run. (web_search rides in tool_specs too, so dropping tools also rules out
+        -- a pause on this round -- the round always yields a text answer.) A resume
+        -- always keeps the tools: its paused turn references a server tool.
+        local last_round = (not is_resume) and iterations >= max_turns
+        local tools = (not last_round) and self.tool_specs or nil
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
         logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages,
@@ -284,7 +308,9 @@ function Conversation:_loop()
         end
     end
 
-    -- Unreachable in practice: the final round omits tools and returns above.
+    -- Reached only when the substantive-turn budget runs out (the loop broke).
+    -- The final round omitted tools, so it produced a text answer that's already
+    -- in the transcript; render it.
     self:_render()
 end
 
