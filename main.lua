@@ -53,6 +53,12 @@ function BookBuddy:onDispatcherRegisterActions()
         title = _("Ask BookBuddy about selection"),
         reader = true,
     })
+    Dispatcher:registerAction("bookbuddy_ask_book", {
+        category = "none",
+        event = "BookBuddyAskBook",
+        title = _("Ask BookBuddy about this book"),
+        reader = true,
+    })
 end
 
 -- Triggered by a gesture/shortcut: use the current text selection if any.
@@ -68,6 +74,13 @@ function BookBuddy:onBookBuddyAskSelection()
     local text = util.cleanupSelectedText(sel.text)
     hl:onClose()
     self:promptAndStart(text)
+    return true
+end
+
+-- Triggered by a gesture/shortcut: a book-level chat, no selection needed.
+-- Mirrors the menu's "Ask about this book" entry.
+function BookBuddy:onBookBuddyAskBook()
+    self:promptAndStart(nil)
     return true
 end
 
