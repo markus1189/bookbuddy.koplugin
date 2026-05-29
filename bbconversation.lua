@@ -260,12 +260,14 @@ function Conversation:_loop()
         self:_cancelFlush()
 
         if r.cancelled then
+            self:_dropDanglingTail()
             self:_closeViewer()
             UIManager:show(InfoMessage:new{ text = _("BookBuddy request cancelled.") })
             return
         end
         if r.read_error then
             logger.warn("BookBuddy: streaming connection failed")
+            self:_dropDanglingTail()
             self:_closeViewer()
             UIManager:show(InfoMessage:new{ text = _("BookBuddy: the streaming connection failed.") })
             return
@@ -274,6 +276,7 @@ function Conversation:_loop()
         local res = parser:result()
         if not res.ok then
             logger.warn("BookBuddy: API error", res.code, res.error_message)
+            self:_dropDanglingTail()
             self:_closeViewer()
             self:_showError(res)
             return
@@ -373,6 +376,31 @@ function Conversation:_storeAssistant(blocks, is_resume)
         end
     else
         self.messages[#self.messages + 1] = { role = "assistant", content = blocks }
+    end
+end
+
+-- After an error/cancel exit, _loop has appended a user (seed or tool_result)
+-- turn but never stored the assistant reply for it, so history ends on a
+-- dangling, unanswered user turn. ask() would then append a *second* user
+-- message and the gateway 400s ("roles must alternate"); dropping only the
+-- trailing user would instead expose an unanswered client tool_use (also a
+-- 400). Walk back over the whole in-flight tool round to the last clean
+-- assistant turn (or empty history, which lets ask() re-seed) so the stored
+-- history is always resendable before the next ask(). This makes explicit the
+-- "history ends with an assistant reply" invariant that was, until now, only
+-- upheld by the error path closing the viewer.
+function Conversation:_dropDanglingTail()
+    local m = self.messages
+    while #m > 0 do
+        local last = m[#m]
+        local dangling = (last.role == "user")
+        if last.role == "assistant" and type(last.content) == "table" then
+            for _, b in ipairs(last.content) do
+                if b.type == "tool_use" then dangling = true break end
+            end
+        end
+        if not dangling then break end
+        m[#m] = nil
     end
 end
 

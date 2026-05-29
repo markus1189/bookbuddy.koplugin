@@ -661,6 +661,70 @@ runScenario{
     },
 }
 
+-- A single error SSE event: the parser reports result().ok == false, driving the
+-- API-error exit in _loop (res.ok is false) without leaving holes in the dense
+-- responses array.
+local function errorSSE()
+    return { ev{ type = "error", error = { type = "overloaded_error", message = "boom" } } }
+end
+
+runScenario{
+    -- A mid-conversation error leaves _loop having appended the follow-up user
+    -- message but never its assistant reply, so history ends on a dangling user
+    -- turn. _dropDanglingTail must strip it before the next ask(), or that ask()
+    -- appends a second user message and the request 400s on role alternation.
+    -- Round 1 answers; round 2 (the first follow-up) errors; round 3 (the second
+    -- follow-up) must still validate.
+    name = "S7: error on a plain follow-up still leaves resendable history",
+    responses = {
+        buildTurnSSE{ blocks = { { type = "text", text = "First answer." } }, stop_reason = "end_turn" },
+        errorSSE(),
+        buildTurnSSE{ blocks = { { type = "text", text = "Recovered answer." } }, stop_reason = "end_turn" },
+    },
+    expect_text = "Recovered answer.",
+    followups = { "broken one", "recover with this" },
+}
+
+runScenario{
+    -- Same invariant, but the error lands on the round after a client tool round,
+    -- so history ends on `assistant(tool_use), user(tool_result)`. Dropping only
+    -- the trailing user would expose an unanswered client tool_use (also a 400),
+    -- so _dropDanglingTail must walk back over the whole in-flight pair. Round 1
+    -- emits a tool_use; round 2 (resolving that tool) errors; the follow-up must
+    -- still validate (history drops back to the seed, which re-seeds cleanly).
+    name = "S8: error after a client tool round drops the whole in-flight pair",
+    responses = {
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Let me check the book." },
+            { type = "tool_use", id = "toolu_Q", name = "search_book", input = { query = "whales" } },
+        }, stop_reason = "tool_use" },
+        errorSSE(),
+        buildTurnSSE{ blocks = { { type = "text", text = "Answer after recovery." } }, stop_reason = "end_turn" },
+    },
+    expect_text = "Answer after recovery.",
+    followups = { "recover after tool error" },
+}
+
+runScenario{
+    -- Stop tapped *while a synchronous client tool runs* (the real gap: no live
+    -- stream, so _cancel is nil; on_stop can only set stop_requested). The loop
+    -- yields to the UI once at the top of each round, where the buffered Stop is
+    -- dispatched; it must abort there -- after the tool round's assistant(tool_use)
+    -- + user(tool_result) are stored (balanced, resendable) and BEFORE forking the
+    -- next request. Only the first response is scripted: the abort must not consume
+    -- a second, so no API request is wasted.
+    name = "S9: Stop during a synchronous tool aborts at the next loop boundary",
+    stop_during_tool = true,
+    expect_requests = 1,
+    expect_final_valid = true,
+    responses = {
+        buildTurnSSE{ blocks = {
+            { type = "text", text = "Let me check the book." },
+            { type = "tool_use", id = "toolu_S", name = "search_book", input = { query = "whales" } },
+        }, stop_reason = "tool_use" },
+    },
+}
+
 --------------------------------------------------------------------------------
 -- Unit checks for tool-call phrasing.
 --------------------------------------------------------------------------------
