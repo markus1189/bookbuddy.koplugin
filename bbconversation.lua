@@ -106,6 +106,14 @@ function Conversation:new(o)
     o.messages = {}
     o.transcript = {}
     o.tool_specs = Tools.getSpecs()
+    -- Per-conversation read state lives on the shared ui, which outlives a single
+    -- Conversation, so a new chat must clear it or it inherits stale locators and
+    -- search results. (Also fixes the long-standing _bookbuddy_last_search leak.)
+    if o.ui then
+        o.ui._bookbuddy_last_search = nil
+        o.ui._bookbuddy_locators = nil
+        o.ui._bookbuddy_loc_seq = nil
+    end
     -- When memory is enabled, build the per-book store once and offer the memory
     -- tool alongside the others. It rides in tool_specs, so the last_round rule
     -- that drops tools to force a text answer drops memory too. Skip it if the
@@ -452,6 +460,9 @@ function Conversation:_toolActionPhrase(tu)
     local phrase
     if tu.name == "search_book" then
         phrase = T(_("Searched book for %1"), string.format("%q", input.query or ""))
+    elseif tu.name == "read" then
+        phrase = T(_("Reading from %1"),
+            (input.from and tostring(input.from)) or _("your current page"))
     elseif tu.name == "read_page_range" then
         phrase = T(_("Read pages %1–%2"), tostring(input.start_page), tostring(input.end_page))
     elseif tu.name == "read_chapter" then

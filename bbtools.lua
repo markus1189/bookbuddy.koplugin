@@ -75,14 +75,25 @@ local function currentChapter(ui)
     return nil
 end
 
--- Plain-English "page N (Chapter)" for the model-facing tool_result.
-local function locationLabel(ui)
-    local page = tostring(currentPage(ui) or "?")
-    local chapter = currentChapter(ui)
-    if chapter then
-        return string.format("page %s (%s)", page, chapter)
+-- Plain-English "page N (Chapter)" for the model-facing tool_result. With no
+-- page argument it reports the reader's current page/chapter; with a page it
+-- labels that page, naming its chapter via the TOC when available.
+local function locationLabel(ui, page)
+    local chapter
+    if page == nil then
+        page = currentPage(ui)
+        chapter = currentChapter(ui)
+    elseif ui.toc then
+        local ok, title = pcall(function() return ui.toc:getTocTitleByPage(page) end)
+        if ok and title and title ~= "" then
+            chapter = title
+        end
     end
-    return "page " .. page
+    local page_s = tostring(page or "?")
+    if chapter then
+        return string.format("page %s (%s)", page_s, chapter)
+    end
+    return "page " .. page_s
 end
 
 local function pageOfResult(ui, item)
@@ -90,6 +101,34 @@ local function pageOfResult(ui, item)
         return ui.document:getPageFromXPointer(item.start)
     end
     return item.start
+end
+
+-- Per-conversation locator table. Maps an opaque "loc:<n>" token to a stored
+-- position so the model never handles raw xpointers (which it mangles). Lives on
+-- the shared ui; Conversation:new resets it so it does not leak across chats.
+-- An entry is { kind = "point"|"span", xp = <start xpointer>, xp_end = <optional> }.
+local function ensureLocators(ui)
+    ui._bookbuddy_locators = ui._bookbuddy_locators or {}
+    ui._bookbuddy_loc_seq = ui._bookbuddy_loc_seq or 0
+    return ui._bookbuddy_locators
+end
+
+-- Store one position and return its opaque token. Monotonic within a conversation.
+local function mintLocator(ui, entry)
+    local locators = ensureLocators(ui)
+    ui._bookbuddy_loc_seq = ui._bookbuddy_loc_seq + 1
+    local n = ui._bookbuddy_loc_seq
+    locators[n] = entry
+    return "loc:" .. n
+end
+
+-- The integer n from a "loc:<n>" token, or nil if the string is not a locator.
+local function parseLocToken(tok)
+    if type(tok) ~= "string" then
+        return nil
+    end
+    local n = tok:match("^loc:(%d+)$")
+    return n and tonumber(n) or nil
 end
 
 -- Read the text of pages [start_page, end_page] (reflowable engine only).
@@ -240,6 +279,144 @@ local function tool_read_chapter(ui, input)
         header = string.format("Chapter %d: %s (pages %d–%d)", idx, entry.title or "", s, e)
     end
     return truncate(header .. "\n\n" .. text), T(_("~%1 words"), wordCount(text))
+end
+
+local DEFAULT_READ_LIMIT = 1500
+local MAX_READ_LIMIT = 4000
+
+-- Read the book's prose forward from a position, bounded to ~limit chars and
+-- snapped to a word boundary, returning the chunk plus a continuation locator.
+-- Reflowable (EPUB) only: it steps word-by-word through crengine's xpointer API.
+-- `from` is polymorphic: a "loc:<n>" token, a bare page number string, or omitted
+-- (the reader's current page). A page-level spoiler gate refuses a start past the
+-- reader's current page and clamps a forward chunk that would cross into the next
+-- page, unless spoiler=true.
+local function tool_read(ui, input)
+    input = input or {}
+    local doc = ui.document
+    if not doc then
+        return _("No book is currently open.")
+    end
+    -- Reflowable-only guard: a paging doc (has_pages) or a doc missing the cre
+    -- xpointer stepping API can't drive the forward advance loop.
+    if (doc.info and doc.info.has_pages)
+        or not doc.getNextVisibleWordEnd or not doc.compareXPointers
+        or not doc.getTextFromXPointers or not doc.getPageXPointer then
+        return _("read works only on reflowable (EPUB) books.")
+    end
+
+    local from = input.from
+    if from == "" then from = nil end
+    local spoiler = input.spoiler == true
+
+    -- Resolve the start xpointer and its page.
+    local xp_start, start_page, prefix
+    if from == nil then
+        start_page = currentPage(ui)
+        xp_start = doc:getPageXPointer(start_page)
+    else
+        local n = parseLocToken(from)
+        if n ~= nil then
+            local entry = ensureLocators(ui)[n]
+            if not entry then
+                return _("That locator is stale; search again or give a page.")
+            end
+            local xp = entry.xp
+            -- Re-validate against the live document: a font/DOM change can move an
+            -- xpointer out of the document. Degrade to that page's start rather than
+            -- erroring, and tell the model why its place shifted.
+            if doc.isXPointerInDocument and not doc:isXPointerInDocument(xp) then
+                local pg = doc:getPageFromXPointer(xp)
+                pg = pg or currentPage(ui)
+                xp_start = doc:getPageXPointer(pg)
+                start_page = pg
+                prefix = T(_("(Your place shifted because the layout changed; resuming from page %1.)"),
+                    tostring(pg)) .. "\n\n"
+            else
+                xp_start = xp
+            end
+        elseif tonumber(from) ~= nil then
+            local pg = math.max(1, math.min(tonumber(from), doc:getPageCount() or tonumber(from)))
+            xp_start = doc:getPageXPointer(pg)
+            start_page = pg
+        else
+            return _("That locator is stale; search again or give a page.")
+        end
+    end
+    start_page = start_page or doc:getPageFromXPointer(xp_start)
+
+    -- Page-level spoiler gate (skipped when spoiler=true).
+    local cur = currentPage(ui)
+    local limit_xp
+    if not spoiler then
+        if start_page and cur and start_page > cur then
+            -- Start is ahead of the reader: refuse outright, no text, no next.
+            return T(_("That's past where you are in the book (page %1 of your current page %2). "
+                .. "I won't read ahead and risk spoiling it — call read again with spoiler=true "
+                .. "if you really want to."), tostring(start_page), tostring(cur))
+        end
+        if cur then
+            -- Clamp the forward chunk at the start of the next page.
+            limit_xp = doc:getPageXPointer(cur + 1)
+        end
+    end
+
+    local budget = tonumber(input.limit) or DEFAULT_READ_LIMIT
+    budget = math.max(1, math.min(budget, MAX_READ_LIMIT))
+
+    -- Advance forward from xp_start until ~budget chars, snapping to a word
+    -- boundary. compareXPointers is the oracle: 1 means the second arg is after
+    -- the first. Track which stop condition fired so the trailer is exact.
+    local xp_end, eob, clamped = xp_start, false, false
+    while true do
+        -- Spoiler clamp oracle: once xp_end reaches the start of the next page
+        -- (limit_xp), compareXPointers(xp_end, limit_xp) is 0 (equal) or -1 (past),
+        -- i.e. ~= 1, so stop. Skipped (limit_xp nil) when spoiler=true.
+        if limit_xp and doc:compareXPointers(xp_end, limit_xp) ~= 1 then
+            clamped = true
+            break
+        end
+        local nxt = doc:getNextVisibleWordEnd(xp_end)
+        if not nxt then
+            eob = true
+            break
+        end
+        if doc:compareXPointers(xp_end, nxt) ~= 1 then
+            break -- no forward progress
+        end
+        if #(doc:getTextFromXPointers(xp_start, nxt) or "") > budget then
+            break -- budget reached
+        end
+        xp_end = nxt
+    end
+    -- Forced progress: a single word longer than budget, or an absurdly low limit,
+    -- must still advance the cursor so the model's continue-loop terminates.
+    if doc:compareXPointers(xp_start, xp_end) ~= 1 and not eob and not clamped then
+        if doc.getNextVisibleChar then
+            local nxt = doc:getNextVisibleChar(xp_end)
+            if nxt then xp_end = nxt end
+        end
+    end
+
+    local text = doc:getTextFromXPointers(xp_start, xp_end) or ""
+    if text == "" and eob then
+        return _("Nothing further to read — you're at the end of the book.")
+    end
+
+    local header = T(_("[%1] reading forward:"), locationLabel(ui, start_page))
+
+    local trailer
+    if eob then
+        trailer = _("(End of book reached.)")
+    elseif clamped then
+        trailer = _("(Stopped at your current page to avoid spoilers. Pass spoiler=true to keep reading.)")
+    else
+        local nexttok = mintLocator(ui, { kind = "point", xp = xp_end })
+        trailer = T(_("(More follows — read again with from: %1.)"), nexttok)
+    end
+
+    return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer),
+        T(_("~%1 words"), wordCount(text))
 end
 
 local function tool_book_context(ui, _input)
@@ -586,6 +763,7 @@ end
 
 local DISPATCH = {
     search_book = tool_search_book,
+    read = tool_read,
     read_page_range = tool_read_page_range,
     get_toc = tool_get_toc,
     read_chapter = tool_read_chapter,
@@ -641,6 +819,29 @@ function Tools.getSpecs()
                     chapter_index = { type = "integer", description = "1-based index of the chapter as listed by get_toc." },
                 },
                 required = { "chapter_index" },
+            },
+        },
+        {
+            name = "read",
+            description = "Read the current book's text in order, starting from a locator (from grep or "
+                .. "get_toc), a page number, or — if you give neither — the reader's current page. "
+                .. "Returns a chunk of text and a 'next' locator; call read again with from=next to "
+                .. "keep going. Reflowable (EPUB) books only. Read only what you need — every chunk "
+                .. "you read stays in context.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    from = { type = "string", description = "A locator (loc:… from grep/get_toc/a previous read) OR a page number as a string. Omit to start at the reader's current page." },
+                    limit = { type = "integer", description = "Approximate characters to return (default 1500, max 4000). Smaller is cheaper." },
+                    spoiler = { type = "boolean", description = "Allow reading past the reader's current page (default false). Left false, a read that would go beyond where the reader is stops there, and a read that starts ahead is refused, to avoid spoilers." },
+                },
+            },
+            input_examples = {
+                {},
+                { from = "loc:4" },
+                { from = "120" },
+                { from = "loc:12", limit = 800 },
+                { from = "300", spoiler = true },
             },
         },
         {

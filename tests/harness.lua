@@ -1412,5 +1412,291 @@ do
     check("D: still exactly two breakpoints after clear", countBreakpoints(decD) == 2)
 end
 
+--------------------------------------------------------------------------------
+-- Unit: the `read` tool (forward char-budgeted reader over a fake "tape").
+--
+-- The fake document is an ordered array of word texts (the "tape"); a position is
+-- the token "tp:<i>" for 1-based tape index i. getPageXPointer(page) returns the
+-- tape token at that page's first word (via opts.page_to_tape). The advance loop,
+-- spoiler clamp, locator table and end-of-book handling are all exercised for real.
+--
+-- package.loaded["bbtools"] is the conversation-loop stub, so load the real module
+-- fresh (mirroring the navigate/create_highlight executor tests) to exercise read.
+--------------------------------------------------------------------------------
+package.loaded["ui/event"] = package.loaded["ui/event"] or { new = function() return {} end }
+local ReadTools = dofile(dir .. "/../bbtools.lua")
+
+-- Build a ui whose document is a word tape. opts:
+--   tape          : array of word strings (default 40 short words)
+--   current_page  : the reader's current page (default 1)
+--   page_count    : total pages (default large)
+--   page_to_tape  : page -> first tape index (default {[1]=1}); unmapped pages
+--                   resolve past the tape end so a single-page tape never clamps
+--   tape_to_page  : tape index -> page (default everything on page 1)
+--   invalid_xp    : a tape token isXPointerInDocument should report as stale
+--   has_pages     : true to model a paging (non-reflowable) doc
+local function makeReadUI(opts)
+    opts = opts or {}
+    local tape = opts.tape
+    if not tape then
+        tape = {}
+        for i = 1, 40 do tape[i] = string.format("w%03d", i) end
+    end
+    local page_to_tape = opts.page_to_tape or { [1] = 1 }
+    local tape_to_page = opts.tape_to_page
+    local current_page = opts.current_page or 1
+    local page_count = opts.page_count or 9999
+
+    local function idx(xp)
+        if type(xp) ~= "string" then return nil end
+        local n = xp:match("^tp:(%d+)$")
+        return n and tonumber(n) or nil
+    end
+    local function tok(i) return "tp:" .. i end
+
+    local doc = {}
+    doc.info = { has_pages = opts.has_pages or false }
+    function doc:getCurrentPage() return current_page end
+    function doc:getPageCount() return page_count end
+    function doc:getPageXPointer(page)
+        return tok(page_to_tape[page] or (#tape + 1))
+    end
+    function doc:getPageFromXPointer(xp)
+        local i = idx(xp)
+        if not i then return nil end
+        if tape_to_page then return tape_to_page[i] or 1 end
+        return 1
+    end
+    function doc:getNextVisibleWordEnd(xp)
+        local i = idx(xp)
+        if not i or i >= #tape then return nil end -- end of tape (eob)
+        return tok(i + 1)
+    end
+    function doc:getNextVisibleChar(xp)
+        local i = idx(xp)
+        if not i or i >= #tape then return nil end
+        return tok(i + 1)
+    end
+    function doc:compareXPointers(a, b)
+        local ia, ib = idx(a), idx(b)
+        if not ia or not ib then return nil end
+        if ib > ia then return 1 elseif ib < ia then return -1 else return 0 end
+    end
+    function doc:getTextFromXPointers(a, b)
+        local ia, ib = idx(a), idx(b)
+        if not ia or not ib or ia >= ib then return "" end
+        local parts = {}
+        for i = ia, ib - 1 do parts[#parts + 1] = tape[i] or "" end
+        return table.concat(parts, " ")
+    end
+    function doc:isXPointerInDocument(xp)
+        return xp ~= opts.invalid_xp
+    end
+    function doc:extendXPointersToSentenceSegment(_pos0, _pos1)
+        return opts.sentence_seg -- nil unless a scenario seeds one (Step 3 uses it)
+    end
+
+    local ui = {
+        rolling = {}, -- currentPage uses getCurrentPage; the EPUB guard uses doc.info.has_pages
+        document = doc,
+        view = { state = { page = current_page } },
+    }
+    return ui, tape
+end
+
+print("\n=== Unit: read tool ===")
+do
+    local function check(label, cond)
+        if cond then
+            total_pass = total_pass + 1
+            print("  ok:   " .. label)
+        else
+            total_fail = total_fail + 1
+            print("  FAIL: " .. label)
+        end
+    end
+
+    -- 1. read{} at current page: text, header, a next locator, within budget.
+    --    A long tape so the default 1500-char budget stops mid-tape (emitting a
+    --    continuation locator) rather than reaching end-of-book.
+    do
+        local long = {}
+        for i = 1, 600 do long[i] = string.format("w%03d", i) end
+        local ui = makeReadUI{ tape = long, page_count = 9999, page_to_tape = { [1] = 1 } }
+        local out = ReadTools.execute("read", {}, ui)
+        check("1 current-page: header", out:find("reading forward", 1, true) ~= nil)
+        check("1 current-page: next locator", out:match("from: (loc:%d+)") ~= nil)
+        local body = out:match("reading forward:\n\n(.-)\n\n%(") or ""
+        check("1 current-page: body within limit", #body > 0 and #body <= 1500)
+        -- Word boundary: the first tape word appears whole, nothing mid-word cut.
+        check("1 current-page: whole words", out:find("w001", 1, true) ~= nil)
+    end
+
+    -- 2. read{from=next} resumes exactly where the previous chunk ended.
+    do
+        local t = {}
+        for i = 1, 60 do t[i] = string.format("c%03d", i) end
+        local ui = makeReadUI{ tape = t, page_count = 9999, page_to_tape = { [1] = 1 } }
+        local out1 = ReadTools.execute("read", { limit = 40 }, ui)
+        local nexttok = out1:match("from: (loc:%d+)")
+        check("2 continue: first chunk emitted a next", nexttok ~= nil)
+        local out2 = nexttok and ReadTools.execute("read", { from = nexttok }, ui) or ""
+        -- Chunk 1 covered words up to xp_end = tp:k; chunk 2 begins at c<k>, the word
+        -- immediately after chunk 1's last word c<k-1>. No gap, no overlap.
+        local first2 = tonumber((out2:match("reading forward:\n\n(c%d+)") or ""):match("(%d+)"))
+        local last1
+        for w in out1:gmatch("c(%d+)") do last1 = tonumber(w) end
+        check("2 continue: no gap/overlap at boundary",
+            first2 ~= nil and last1 ~= nil and first2 == last1 + 1)
+    end
+
+    -- 3. read from a pre-seeded span locator starts at the span's start xpointer.
+    do
+        local ui = makeReadUI{ current_page = 9000, page_count = 9999, page_to_tape = { [9000] = 1 } }
+        ui._bookbuddy_locators = { { kind = "span", xp = "tp:8", xp_end = "tp:10" } }
+        ui._bookbuddy_loc_seq = 1
+        local out = ReadTools.execute("read", { from = "loc:1", spoiler = true }, ui)
+        check("3 span loc: starts at span start (w008)", out:find("w008", 1, true) ~= nil)
+        check("3 span loc: excludes earlier word w007", out:find("w007", 1, true) == nil)
+    end
+
+    -- 4. read from a page-number string, and from a seeded point locator.
+    do
+        local ui = makeReadUI{ page_count = 100, page_to_tape = { [20] = 5 } }
+        local out = ReadTools.execute("read", { from = "20", spoiler = true }, ui)
+        check("4 page string: header names page 20", out:find("page 20", 1, true) ~= nil)
+        check("4 page string: starts at page 20's first word (w005)", out:find("w005", 1, true) ~= nil)
+
+        local ui2 = makeReadUI{ page_count = 100, page_to_tape = { [1] = 1 } }
+        ui2._bookbuddy_locators = { { kind = "point", xp = "tp:5" } }
+        ui2._bookbuddy_loc_seq = 1
+        local out2 = ReadTools.execute("read", { from = "loc:1", spoiler = true }, ui2)
+        check("4 point loc: starts at index 5 (w005)", out2:find("w005", 1, true) ~= nil)
+    end
+
+    -- 5. End of book: advance hits nil -> "(End of book reached.)", no next.
+    --    Then reading exactly at the end -> "Nothing further".
+    do
+        local ui = makeReadUI{ page_count = 9999, page_to_tape = { [1] = 38 } } -- 40-word tape
+        local out = ReadTools.execute("read", {}, ui)
+        check("5 eob: End of book reached", out:find("End of book reached", 1, true) ~= nil)
+        check("5 eob: no next locator", out:match("loc:%d") == nil)
+
+        -- Start one position past the last word (tp:#tape+1): no word remains, so the
+        -- range is empty and getNextVisibleWordEnd is nil -> "Nothing further".
+        local ui2 = makeReadUI{ page_count = 9999, page_to_tape = { [1] = 1 } } -- 40-word tape
+        ui2._bookbuddy_locators = { { kind = "point", xp = "tp:41" } }
+        ui2._bookbuddy_loc_seq = 1
+        local out2 = ReadTools.execute("read", { from = "loc:1", spoiler = true }, ui2)
+        check("5 at-end: nothing further", out2:find("Nothing further", 1, true) ~= nil)
+    end
+
+    -- 6. Stale locator (isXPointerInDocument=false) degrades to a page fallback with
+    --    a "layout changed" prefix but still returns text. Unknown/garbled -> error.
+    do
+        local ui = makeReadUI{
+            current_page = 9000, page_count = 9999,
+            page_to_tape = { [9000] = 1, [1] = 1 },
+            tape_to_page = setmetatable({}, { __index = function() return 1 end }),
+            invalid_xp = "tp:8",
+        }
+        ui._bookbuddy_locators = { { kind = "point", xp = "tp:8" } }
+        ui._bookbuddy_loc_seq = 1
+        local out = ReadTools.execute("read", { from = "loc:1", spoiler = true }, ui)
+        check("6 stale: layout changed prefix", out:find("layout changed", 1, true) ~= nil)
+        check("6 stale: still returns text", out:find("reading forward", 1, true) ~= nil)
+
+        local ui2 = makeReadUI{}
+        check("6 unknown loc: stale error",
+            ReadTools.execute("read", { from = "loc:999" }, ui2):find("stale", 1, true) ~= nil)
+        check("6 garbled: stale error",
+            ReadTools.execute("read", { from = "@@@" }, ui2):find("stale", 1, true) ~= nil)
+    end
+
+    -- 7. Tiny limit must still strictly advance the cursor (forced progress).
+    do
+        local ui = makeReadUI{ page_count = 9999, page_to_tape = { [1] = 1 } }
+        local out = ReadTools.execute("read", { limit = 1, spoiler = true }, ui)
+        local nexttok = out:match("from: (loc:%d+)")
+        check("7 tiny limit: emitted a next locator", nexttok ~= nil)
+        if nexttok then
+            local out2 = ReadTools.execute("read", { from = nexttok, limit = 1, spoiler = true }, ui)
+            check("7 tiny limit: cursor advanced", out2 ~= out)
+        end
+    end
+
+    -- 8. Paging (non-reflowable) doc -> EPUB-only guard, no error.
+    do
+        local ui = makeReadUI{ has_pages = true }
+        local out = ReadTools.execute("read", {}, ui)
+        check("8 paging doc: EPUB/reflowable guard",
+            out:find("EPUB", 1, true) ~= nil or out:find("reflowable", 1, true) ~= nil)
+    end
+
+    -- 13. Spoiler refuse: a start past the current page is refused (no text/next);
+    --     spoiler=true reads.
+    do
+        local long = {}
+        for i = 1, 600 do long[i] = string.format("w%03d", i) end
+        local ui = makeReadUI{
+            tape = long,
+            current_page = 10, page_count = 100,
+            page_to_tape = { [10] = 1, [50] = 20, [11] = 5 },
+            tape_to_page = setmetatable({}, { __index = function(_, i)
+                if i >= 20 then return 50 elseif i >= 5 then return 11 else return 10 end
+            end }),
+        }
+        local out = ReadTools.execute("read", { from = "50" }, ui)
+        check("13 refuse: 'past where you are'", out:find("past where you are", 1, true) ~= nil)
+        check("13 refuse: no next locator", out:match("loc:%d") == nil)
+        check("13 refuse: no body text", out:find("reading forward", 1, true) == nil)
+
+        local out2 = ReadTools.execute("read", { from = "50", spoiler = true }, ui)
+        check("13 spoiler=true: reads (header)", out2:find("reading forward", 1, true) ~= nil)
+        check("13 spoiler=true: emits a next locator", out2:match("loc:%d") ~= nil)
+    end
+
+    -- 14. Spoiler clamp: read{} whose forward chunk would cross into cur+1 stops at
+    --     the page boundary, no next; spoiler=true crosses.
+    do
+        -- Words 1..5 are on page 10; word 6 onward on page 11. getPageXPointer(11)=tp:6.
+        -- A long tape so the spoiler=true read stops on budget (with a next loc).
+        local long = {}
+        for i = 1, 600 do long[i] = string.format("w%03d", i) end
+        local ui = makeReadUI{
+            tape = long,
+            current_page = 10, page_count = 100,
+            page_to_tape = { [10] = 1, [11] = 6 },
+            tape_to_page = setmetatable({}, { __index = function(_, i)
+                if i >= 6 then return 11 else return 10 end
+            end }),
+        }
+        local out = ReadTools.execute("read", {}, ui)
+        check("14 clamp: 'Stopped at your current page'",
+            out:find("Stopped at your current page", 1, true) ~= nil)
+        check("14 clamp: no next locator", out:match("loc:%d") == nil)
+        check("14 clamp: stops before w006", out:find("w006", 1, true) == nil)
+        check("14 clamp: includes page-10 words", out:find("w005", 1, true) ~= nil)
+
+        local out2 = ReadTools.execute("read", { spoiler = true }, ui)
+        check("14 spoiler=true: crosses boundary (w006)", out2:find("w006", 1, true) ~= nil)
+        check("14 spoiler=true: emits a next locator", out2:match("loc:%d") ~= nil)
+    end
+end
+
+-- Unit: _toolActionPhrase for the read tool (mirrors the navigate/memory phrase tests).
+print("\n=== Unit: read tool phrase ===")
+do
+    local conv = Conversation:new{ ui = {}, settings = stubSettings, selected_text = "x" }
+    local phrase = conv:_toolActionPhrase({ name = "read", input = { from = "loc:4" } })
+    if type(phrase) == "string" and phrase ~= "" and phrase:lower():find("read") then
+        total_pass = total_pass + 1
+        print(string.format("  ok:   read phrase -> %q", phrase))
+    else
+        total_fail = total_fail + 1
+        print(string.format("  FAIL: read phrase -> %q", tostring(phrase)))
+    end
+end
+
 print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))
 os.exit(total_fail == 0 and 0 or 1)
