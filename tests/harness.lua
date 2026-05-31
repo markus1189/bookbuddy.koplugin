@@ -1347,7 +1347,7 @@ do
     checkStrip("link becomes text (url)", "[docs](http://x)", "docs (http://x)")
     checkStrip("heading on first line", "# Title", "Title")
     -- The must-survive cases: emphasis stripping must not touch snake_case or URLs.
-    checkStrip("snake_case survives", "see read_page_range now", "see read_page_range now")
+    checkStrip("snake_case survives", "see get_toc now", "see get_toc now")
     checkStrip("url survives", "go to https://example.com/a", "go to https://example.com/a")
 end
 
@@ -1732,6 +1732,44 @@ do
         local out2 = ReadTools.execute("read", { spoiler = true }, ui)
         check("14 spoiler=true: crosses boundary (w006)", out2:find("w006", 1, true) ~= nil)
         check("14 spoiler=true: emits a next locator", out2:match("loc:%d") ~= nil)
+    end
+
+    -- A. get_toc mints a point loc: token per entry that has an xpointer, and read
+    --    can resolve that token to begin reading at the chapter's start.
+    do
+        local long = {}
+        for i = 1, 40 do long[i] = string.format("w%03d", i) end
+        local ui = makeReadUI{ tape = long, page_count = 100, page_to_tape = { [1] = 1 } }
+        -- makeReadUI's fake doc has no getToc; attach one returning a single chapter
+        -- whose start xpointer is a tape token the doc understands (tp:5).
+        ui.document.getToc = function()
+            return { { title = "Ch 1", page = 1, depth = 1, xpointer = "tp:5" } }
+        end
+        local out = ReadTools.execute("get_toc", {}, ui)
+        check("A get_toc: lists the chapter title", out:find("Ch 1", 1, true) ~= nil)
+        check("A get_toc: keeps the page label", out:find("(page 1)", 1, true) ~= nil)
+        check("A get_toc: mints a loc: token", out:match("loc:%d+") ~= nil)
+        check("A get_toc: locator actually minted onto ui", (ui._bookbuddy_loc_seq or 0) >= 1)
+
+        -- B. read resolves the toc-minted point locator: starts at the chapter's
+        --    xpointer (tape index 5 -> w005), reads forward, not a stale error.
+        local toc_loc = out:match("(loc:%d+)")
+        local out2 = ReadTools.execute("read", { from = toc_loc, spoiler = true }, ui)
+        check("B read toc loc: reads forward", out2:find("reading forward", 1, true) ~= nil)
+        check("B read toc loc: starts at chapter xpointer (w005)", out2:find("w005", 1, true) ~= nil)
+        check("B read toc loc: not a stale error", out2:find("stale", 1, true) == nil)
+    end
+
+    -- C. A TOC entry without an xpointer prints no loc: suffix and does not error
+    --    (paging docs / xpointer-less entries can't drive read's forward advance).
+    do
+        local ui = makeReadUI{ page_count = 100, page_to_tape = { [1] = 1 } }
+        ui.document.getToc = function()
+            return { { title = "Front matter", page = 1, depth = 1 } } -- no xpointer
+        end
+        local out = ReadTools.execute("get_toc", {}, ui)
+        check("C get_toc: lists the xpointer-less entry", out:find("Front matter", 1, true) ~= nil)
+        check("C get_toc: no loc: suffix for it", out:match("loc:%d+") == nil)
     end
 end
 

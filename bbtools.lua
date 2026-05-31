@@ -11,7 +11,6 @@ local T = require("ffi/util").template
 local Tools = {}
 
 local MAX_RESULT_CHARS = 6000
-local MAX_PAGE_SPAN = 20
 local DEFAULT_SEARCH_RESULTS = 8
 local MAX_SEARCH_RESULTS = 20
 local FINDALL_CONTEXT_WORDS = 10
@@ -129,23 +128,6 @@ local function parseLocToken(tok)
     end
     local n = tok:match("^loc:(%d+)$")
     return n and tonumber(n) or nil
-end
-
--- Read the text of pages [start_page, end_page] (reflowable engine only).
--- Returns text, clamped_start, clamped_end, capped(boolean).
-local function readPageRangeText(ui, start_page, end_page)
-    local page_count = ui.document:getPageCount()
-    start_page = math.max(1, math.min(start_page, page_count))
-    end_page = math.max(start_page, math.min(end_page, page_count))
-    local capped = false
-    if end_page - start_page + 1 > MAX_PAGE_SPAN then
-        end_page = start_page + MAX_PAGE_SPAN - 1
-        capped = true
-    end
-    local xp0 = ui.document:getPageXPointer(start_page)
-    local xp1 = ui.document:getPageXPointer(math.min(end_page + 1, page_count))
-    local text = ui.document:getTextFromXPointers(xp0, xp1)
-    return text or "", start_page, end_page, capped
 end
 
 -- Case-insensitive full-text search over the whole book. With regex=true the
@@ -271,22 +253,6 @@ local function tool_grep(ui, input)
     return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
 
-local function tool_read_page_range(ui, input)
-    local err, summary = rollingOnly(ui, "read_page_range")
-    if err then return err, summary end
-    local start_page = tonumber(input.start_page)
-    local end_page = tonumber(input.end_page)
-    if not start_page or not end_page then
-        return "Error: 'start_page' and 'end_page' are required integers."
-    end
-    local text, s, e, capped = readPageRangeText(ui, start_page, end_page)
-    if not text or text == "" then
-        return string.format("No text found on pages %d–%d.", start_page, end_page), _("no text")
-    end
-    local header = string.format("Text of pages %d–%d%s:", s, e, capped and " (range capped)" or "")
-    return truncate(header .. "\n\n" .. text), T(_("~%1 words"), wordCount(text))
-end
-
 local function tool_get_toc(ui, _input)
     local toc = ui.document:getToc()
     if not toc or #toc == 0 then
@@ -297,49 +263,24 @@ local function tool_get_toc(ui, _input)
     for i = 1, limit do
         local item = toc[i]
         local indent = string.rep("  ", math.max(0, (item.depth or 1) - 1))
-        out[#out + 1] = string.format("%d. %s%s (page %s)", i, indent, item.title or "", tostring(item.page or "?"))
+        -- Mint a point locator at the chapter's start xpointer so the model can
+        -- read({from = loc}) to begin reading at that chapter. Only when the entry
+        -- carries an xpointer (CRE/EPUB TOC entries do): read resolves a loc: only
+        -- through a stored xpointer, so for paging docs / xpointer-less entries we
+        -- omit the token rather than mint one read could not honor.
+        if type(item.xpointer) == "string" and item.xpointer ~= "" then
+            local tok = mintLocator(ui, { kind = "point", xp = item.xpointer })
+            out[#out + 1] = string.format("%d. %s%s (page %s) (%s)",
+                i, indent, item.title or "", tostring(item.page or "?"), tok)
+        else
+            out[#out + 1] = string.format("%d. %s%s (page %s)",
+                i, indent, item.title or "", tostring(item.page or "?"))
+        end
     end
     if #toc > limit then
         out[#out + 1] = string.format("…and %d more entries.", #toc - limit)
     end
     return truncate(table.concat(out, "\n")), T(_("%1 entries"), #toc)
-end
-
-local function tool_read_chapter(ui, input)
-    local err, summary = rollingOnly(ui, "read_chapter")
-    if err then return err, summary end
-    local toc = ui.document:getToc()
-    if not toc or #toc == 0 then
-        return "This book has no table of contents to identify chapters.", _("no chapters")
-    end
-    local idx = tonumber(input.chapter_index)
-    if not idx or idx < 1 or idx > #toc then
-        return string.format("Error: 'chapter_index' must be between 1 and %d.", #toc)
-    end
-    local entry = toc[idx]
-    local start_page = entry.page or 1
-    local page_count = ui.document:getPageCount()
-    local end_page = page_count
-    for j = idx + 1, #toc do
-        if (toc[j].depth or 1) <= (entry.depth or 1) then
-            end_page = math.max(start_page, (toc[j].page or page_count) - 1)
-            break
-        end
-    end
-    local text, s, e, capped = readPageRangeText(ui, start_page, end_page)
-    if not text or text == "" then
-        return string.format("Could not read chapter %d (%s).", idx, entry.title or ""), _("no text")
-    end
-    local header
-    if capped then
-        header = string.format(
-            "Chapter %d: %s spans pages %d–%d. Showing pages %d–%d only (20-page limit); "
-                .. "read the rest with read_page_range starting at page %d.",
-            idx, entry.title or "", start_page, end_page, s, e, e + 1)
-    else
-        header = string.format("Chapter %d: %s (pages %d–%d)", idx, entry.title or "", s, e)
-    end
-    return truncate(header .. "\n\n" .. text), T(_("~%1 words"), wordCount(text))
 end
 
 local DEFAULT_READ_LIMIT = 1500
@@ -837,9 +778,7 @@ end
 local DISPATCH = {
     grep = tool_grep,
     read = tool_read,
-    read_page_range = tool_read_page_range,
     get_toc = tool_get_toc,
-    read_chapter = tool_read_chapter,
     book_context = tool_book_context,
     get_highlights = tool_get_highlights,
     navigate = tool_navigate,
@@ -871,32 +810,9 @@ function Tools.getSpecs()
             },
         },
         {
-            name = "read_page_range",
-            description = "Read the text of a range of pages to expand context beyond the highlighted passage. Reflowable (EPUB) books only; at most 20 pages per call.",
-            input_schema = {
-                type = "object",
-                properties = {
-                    start_page = { type = "integer", description = "First page to read (1-based)." },
-                    end_page = { type = "integer", description = "Last page to read (inclusive)." },
-                },
-                required = { "start_page", "end_page" },
-            },
-        },
-        {
             name = "get_toc",
-            description = "Get the book's table of contents as a numbered list of chapters with page numbers and nesting depth.",
+            description = "Get the book's table of contents as a numbered list of chapters with page numbers and nesting depth. Each entry that has one also carries a loc: token you can pass to read (from=loc:N) to start reading at that chapter.",
             input_schema = no_args(),
-        },
-        {
-            name = "read_chapter",
-            description = "Read the text of a chapter identified by its number from get_toc (1-based). Reflowable (EPUB) books only. Long chapters are capped at 20 pages per call; the result reports the chapter's full page range, so read any remainder with read_page_range.",
-            input_schema = {
-                type = "object",
-                properties = {
-                    chapter_index = { type = "integer", description = "1-based index of the chapter as listed by get_toc." },
-                },
-                required = { "chapter_index" },
-            },
         },
         {
             name = "read",

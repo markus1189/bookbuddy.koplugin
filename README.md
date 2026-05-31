@@ -67,7 +67,8 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - **Grounds answers in the real text** with tools that read the book instead of
   guessing:
   - `search_book` — full-text search within the book
-  - `read_page_range` / `read_chapter` — read specific pages or a chapter
+  - `read` — read the book's text in order from a locator (a grep hit, a `get_toc`
+    chapter, or a previous read) or a page number
   - `get_toc` — inspect the table of contents
   - `book_context` — book metadata and the reader's current position
   - `get_highlights` — the reader's own highlights and notes

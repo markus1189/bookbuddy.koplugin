@@ -354,7 +354,7 @@ function Conversation:_loop()
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
             -- Tools run synchronously and are not interruptible mid-call: a Stop
-            -- pressed during a slow tool (a large read_page_range, a wide search) is
+            -- pressed during a slow tool (a large read, a wide grep) is
             -- buffered and honored at the next loop boundary above, after the tool
             -- returns -- not instantly.
             self:_flushNow()
@@ -463,10 +463,6 @@ function Conversation:_toolActionPhrase(tu)
     elseif tu.name == "read" then
         phrase = T(_("Reading from %1"),
             (input.from and tostring(input.from)) or _("your current page"))
-    elseif tu.name == "read_page_range" then
-        phrase = T(_("Read pages %1–%2"), tostring(input.start_page), tostring(input.end_page))
-    elseif tu.name == "read_chapter" then
-        phrase = T(_("Read chapter %1"), tostring(input.chapter_index))
     elseif tu.name == "get_toc" then
         phrase = _("Fetched the table of contents")
     elseif tu.name == "book_context" then
