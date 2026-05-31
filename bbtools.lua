@@ -148,66 +148,127 @@ local function readPageRangeText(ui, start_page, end_page)
     return text or "", start_page, end_page, capped
 end
 
--- Literal, case-insensitive full-text search over the whole book. Each result
--- item carries item.start / item["end"] -- the xpointers (rolling) or page
--- positions (paging) spanning the match -- which is exactly what create_highlight
--- needs, so both tools go through this one call.
-local function findPassageMatches(ui, query)
-    return ui.document:findAllText(query, true, FINDALL_CONTEXT_WORDS, FINDALL_MAX_HITS, false)
+-- Case-insensitive full-text search over the whole book. With regex=true the
+-- query is treated as a pattern (findAllText's 5th arg, credocument.lua:1442);
+-- otherwise it is a literal substring. Each result item carries item.start /
+-- item["end"] -- the xpointers (rolling) or page positions (paging) spanning the
+-- match -- which is exactly what create_highlight needs, so both tools go through
+-- this one call.
+local function findPassageMatches(ui, query, regex)
+    return ui.document:findAllText(query, true, FINDALL_CONTEXT_WORDS, FINDALL_MAX_HITS, regex and true or false)
 end
 
-local function tool_search_book(ui, input)
+-- The short word-window snippet around a hit (the "words" context mode): the
+-- engine's prev/matched/next text joined and whitespace-collapsed.
+local function snippetWindow(item)
+    local snippet = table.concat({
+        item.prev_text or "",
+        item.matched_word_prefix or "",
+        item.matched_text or "",
+        item.matched_word_suffix or "",
+        item.next_text or "",
+    })
+    return (snippet:gsub("%s+", " "))
+end
+
+-- Anchor a hit to its enclosing sentence for the minted span locator. Returns
+-- xp0, xp1, sentence_text. extendXPointersToSentenceSegment (credocument.lua:982)
+-- returns a SINGLE table { text, pos0, pos1 } or nil; on nil we fall back to the
+-- raw hit start/end span and no sentence text.
+local function sentenceSpan(ui, item)
+    local xp0, xp1, sent = item.start, item["end"], nil
+    if ui.document and ui.document.extendXPointersToSentenceSegment then
+        local ok, seg = pcall(function()
+            return ui.document:extendXPointersToSentenceSegment(item.start, item["end"])
+        end)
+        if ok and type(seg) == "table" and seg.pos0 and seg.pos1 then
+            xp0, xp1, sent = seg.pos0, seg.pos1, seg.text
+        end
+    end
+    return xp0, xp1, sent
+end
+
+-- Search the current book (like Grep). By default only hits at or before the
+-- reader's current page are shown (spoiler-safe); later hits are counted but never
+-- revealed (no page, no text). spoiler=true reveals all; max_page only tightens the
+-- cap to an earlier page. Each visible hit mints a sentence-anchored span locator
+-- the model can pass to read or create_highlight.
+local function tool_grep(ui, input)
     local query = input.query
     if not query or query == "" then
         return "Error: 'query' is required."
     end
+    local regex = input.regex == true
+    local context = input.context == "sentence" and "sentence" or "words"
+    local spoiler = input.spoiler == true
     local max_results = math.min(tonumber(input.max_results) or DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS)
-    local max_page = tonumber(input.max_page)
-    local results = findPassageMatches(ui, query)
+
+    local results = findPassageMatches(ui, query, regex)
     if not results or #results == 0 then
         return string.format("No matches found for %q.", query), _("no matches")
     end
-    -- Drop hits past max_page to avoid spoilers; the page is still searched, just not revealed.
+
+    -- Page cap: default to the reader's current page (spoiler-safe). max_page only
+    -- tightens it to an earlier page; it can never widen past the current page
+    -- unless spoiler=true (which removes the cap entirely).
+    local cur = currentPage(ui)
+    local cap = nil
+    if not spoiler then
+        cap = cur
+        local mp = tonumber(input.max_page)
+        if cap and mp and mp < cap then
+            cap = mp
+        end
+    end
+
+    -- Partition hits into visible / hidden by page vs cap. A nil page is treated as
+    -- visible (we can't prove it's a spoiler).
     local visible, hidden = {}, 0
     for i = 1, #results do
         local item = results[i]
         local page = pageOfResult(ui, item)
-        if max_page and page and tonumber(page) and tonumber(page) > max_page then
+        if cap ~= nil and page ~= nil and tonumber(page) and tonumber(page) > cap then
             hidden = hidden + 1
         else
             item._page = page
             visible[#visible + 1] = item
         end
     end
-    if #visible == 0 then
-        return string.format(
-            "No matches for %q at or before page %d (%d match(es) hidden beyond it to avoid spoilers).",
-            query, max_page, hidden), _("all hidden")
-    end
-    local header = string.format("Found %d match(es) for %q (showing up to %d)", #visible, query, max_results)
-    if hidden > 0 then
-        header = header .. string.format(", %d hidden beyond page %d to avoid spoilers", hidden, max_page)
-    end
-    local out = { header .. ":" }
-    -- Remember exactly the matches the model sees, in display order, so it can
-    -- later highlight one by its number via create_highlight{search_result=N}.
-    -- Stashed on the live ui (tools already receive it) and overwritten each search.
-    local shown = {}
-    for i = 1, math.min(#visible, max_results) do
+
+    -- Build the shown lines. shown[i] stays lock-step with the printed index AND the
+    -- minted loc token, so create_highlight{search_result=i} and the loc:N agree.
+    local shown, out = {}, {}
+    local limit = math.min(#visible, max_results)
+    for i = 1, limit do
         local item = visible[i]
         shown[i] = item
-        local snippet = table.concat({
-            item.prev_text or "",
-            item.matched_word_prefix or "",
-            item.matched_text or "",
-            item.matched_word_suffix or "",
-            item.next_text or "",
-        })
-        snippet = snippet:gsub("%s+", " ")
-        out[#out + 1] = string.format("%d. [page %s] …%s…", i, tostring(item._page), snippet)
+        local xp0, xp1, sent = sentenceSpan(ui, item)
+        local tok = mintLocator(ui, { kind = "span", xp = xp0, xp_end = xp1 })
+        local snippet
+        if context == "sentence" and sent then
+            snippet = (sent:gsub("%s+", " "))
+        else
+            snippet = snippetWindow(item)
+        end
+        out[#out + 1] = string.format("%d. [page %s] (%s) …%s…", i, tostring(item._page), tok, snippet)
     end
     ui._bookbuddy_last_search = { query = query, items = shown }
-    return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #visible)
+
+    if #shown == 0 then
+        if hidden > 0 and not spoiler then
+            return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."),
+                tostring(hidden)), _("all hidden")
+        end
+        return string.format("No matches found for %q.", query), _("no matches")
+    end
+
+    local header = string.format("Found %d match(es) for %q (showing up to %d):", #shown, query, max_results)
+    table.insert(out, 1, header)
+    if hidden > 0 and not spoiler then
+        out[#out + 1] = T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."),
+            tostring(hidden))
+    end
+    return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
 
 local function tool_read_page_range(ui, input)
@@ -672,12 +733,13 @@ local function saveHighlightFromXPointers(ui, pos0, pos1, opts)
 end
 
 -- Create a new highlight in the book. Positions never come from the model (it only
--- ever sees text); they come from KOReader's own search index. The model either
--- names a match from its most recent search_book call (search_result, the precise
--- path -- those xpointers are reused verbatim), or quotes a verbatim passage (text),
--- which we re-search here, disambiguating repeated hits by occurrence/page. Both
--- paths converge on saveHighlightFromXPointers. Reflowable (EPUB) only for now:
--- paging documents need pos tables + pboxes rather than xpointers.
+-- ever sees text); they come from KOReader's own search index. The model can hand a
+-- span locator from a recent grep hit (locator, a "loc:<n>" span -- reused verbatim),
+-- name a match from its most recent grep call (search_result, the precise path --
+-- those xpointers are reused verbatim), or quote a verbatim passage (text), which we
+-- re-search here, disambiguating repeated hits by occurrence/page. All paths converge
+-- on saveHighlightFromXPointers. Reflowable (EPUB) only for now: paging documents
+-- need pos tables + pboxes rather than xpointers.
 local function tool_create_highlight(ui, input)
     local err, summary = rollingOnly(ui, "create_highlight")
     if err then return err, summary end
@@ -692,24 +754,35 @@ local function tool_create_highlight(ui, input)
     end
 
     local pos0, pos1
-    if input.search_result ~= nil then
+    if input.locator ~= nil then
+        -- A span locator from a recent grep hit: its xpointers are reused verbatim.
+        local n = parseLocToken(input.locator)
+        local entry = n and ensureLocators(ui)[n]
+        if not entry then
+            return "Error: that locator is stale; grep again, or give a search_result number or verbatim text."
+        end
+        if entry.kind ~= "span" or not entry.xp_end then
+            return "Error: that locator points at a single position, not a passage, so it cannot be highlighted. Use a grep hit's locator."
+        end
+        pos0, pos1 = entry.xp, entry.xp_end
+    elseif input.search_result ~= nil then
         local last = ui._bookbuddy_last_search
         if not (last and last.items and #last.items > 0) then
-            return "Error: there are no recent search results. Call search_book first, then highlight a match by its number."
+            return "Error: there are no recent search results. Call grep first, then highlight a match by its number."
         end
         local n = tonumber(input.search_result)
         if not isPositiveInteger(n) or n > #last.items then
             return string.format(
-                "Error: 'search_result' must be a whole number between 1 and %d (from your most recent search_book call).",
+                "Error: 'search_result' must be a whole number between 1 and %d (from your most recent grep call).",
                 #last.items)
         end
         local item = last.items[n]
         pos0, pos1 = item.start, item["end"]
     elseif input.text ~= nil and input.text ~= "" then
-        local results = findPassageMatches(ui, input.text)
+        local results = findPassageMatches(ui, input.text, false)
         if not results or #results == 0 then
             return string.format(
-                "No passage matching %q was found to highlight. Use the exact wording from the book, or search_book first.",
+                "No passage matching %q was found to highlight. Use the exact wording from the book, or grep first.",
                 input.text), _("no match")
         end
         local page = input.page ~= nil and tonumber(input.page) or nil
@@ -746,7 +819,7 @@ local function tool_create_highlight(ui, input)
             pos0, pos1 = matches[1].start, matches[1]["end"]
         end
     else
-        return "Error: provide 'search_result' (a number from your most recent search_book) or 'text' (a verbatim passage to highlight)."
+        return "Error: provide 'locator' (a loc: token from a grep hit), 'search_result' (a number from your most recent grep), or 'text' (a verbatim passage to highlight)."
     end
 
     local item
@@ -762,7 +835,7 @@ local function tool_create_highlight(ui, input)
 end
 
 local DISPATCH = {
-    search_book = tool_search_book,
+    grep = tool_grep,
     read = tool_read,
     read_page_range = tool_read_page_range,
     get_toc = tool_get_toc,
@@ -781,16 +854,20 @@ function Tools.getSpecs()
     end
     return {
         {
-            name = "search_book",
-            description = "Full-text search the entire book for a string and return matches with surrounding context and their page numbers. Use max_page to hide matches past a given page so the reader is not spoiled by later content.",
+            name = "grep",
+            description = "Search the current book for text and return matching passages with a little surrounding context, each with a page number and a locator you can pass to read or create_highlight. Literal by default; set regex=true for a pattern. By default only matches at or before the reader's current page are shown (spoiler-safe); later matches are counted but hidden. Set spoiler=true to reveal them, or max_page to tighten the cap to an even earlier page.",
             input_schema = {
                 type = "object",
                 properties = {
-                    query = { type = "string", description = "Text to search for (literal, case-insensitive)." },
+                    query = { type = "string", description = "Text or, with regex=true, a pattern to find (case-insensitive)." },
+                    regex = { type = "boolean", description = "Treat query as a regular expression instead of a literal substring (default false)." },
+                    context = { type = "string", enum = { "words", "sentence" }, description = "How much context to show per hit: a short word window ('words', the default) or the whole sentence ('sentence')." },
                     max_results = { type = "integer", description = "Maximum matches to return (default 8, max 20)." },
-                    max_page = { type = "integer", description = "Hide matches on pages greater than this (1-based) to avoid spoilers. Omit to search the whole book. The count of hidden matches is reported, but their content is not." },
+                    spoiler = { type = "boolean", description = "Allow matches past the reader's current page (default false). Left false, later-page matches are hidden so the reader is not spoiled; only their count is reported." },
+                    max_page = { type = "integer", description = "Hide matches on pages greater than this (1-based). Only tightens the spoiler-safe window to an earlier page; it never reveals past the reader's current page." },
                 },
                 required = { "query" },
+                input_examples = { { query = "Mara" }, { query = "the harbour", max_results = 5 }, { query = "harbour", context = "sentence" } },
             },
         },
         {
@@ -901,9 +978,10 @@ function Tools.getSpecs()
         {
             name = "create_highlight",
             description = "Create a highlight in the book (reflowable/EPUB books only). "
-                .. "Provide EITHER search_result -- the number of a match from your most "
-                .. "recent search_book call (the reliable way; reuses that match's exact "
-                .. "position) -- OR text, a short verbatim passage to find and highlight. "
+                .. "Provide ONE of: locator -- a loc: token of a grep hit (a passage), the "
+                .. "reliable way; OR search_result -- the number of a match from your most "
+                .. "recent grep call (also reuses that match's exact position) -- OR text, a "
+                .. "short verbatim passage to find and highlight. "
                 .. "If the same text occurs more than once, the result lists the pages and "
                 .. "asks you to pick one with occurrence (1-based, in reading order) or page. "
                 .. "Optionally attach a note and choose color/drawer; both default to the "
@@ -912,8 +990,9 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    search_result = { type = "integer", description = "1-based number of a match from your most recent search_book call." },
-                    text = { type = "string", description = "Verbatim passage to find and highlight (use exact wording from the book). Ignored if search_result is given." },
+                    locator = { type = "string", description = "A loc: token of a grep hit (a passage) to highlight, from your most recent grep results." },
+                    search_result = { type = "integer", description = "1-based number of a match from your most recent grep call." },
+                    text = { type = "string", description = "Verbatim passage to find and highlight (use exact wording from the book). Ignored if locator or search_result is given." },
                     occurrence = { type = "integer", description = "Which match of 'text' to highlight when it occurs more than once (1-based, reading order). Defaults to the only/first match." },
                     page = { type = "integer", description = "Restrict the 'text' search to this page (1-based) to disambiguate repeated passages." },
                     note = { type = "string", description = "Optional note to attach to the new highlight." },
@@ -922,6 +1001,7 @@ function Tools.getSpecs()
                 },
             },
             input_examples = {
+                { locator = "loc:3" },
                 { search_result = 2 },
                 { text = "It was the best of times" },
                 { text = "the green light", occurrence = 2, note = "recurring symbol" },

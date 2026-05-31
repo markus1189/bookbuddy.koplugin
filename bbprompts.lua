@@ -27,7 +27,7 @@ Prompts.SYSTEM_PROMPT =
     .. "<spoilers>\n"
     .. "Do not reveal anything beyond the reader's current position unless they explicitly ask. "
     .. "When you search the book, first get the reader's current page from book_context and pass it as "
-    .. "search_book's max_page, so matches from later in the book stay hidden. Quote sparingly.\n"
+    .. "grep's max_page, so matches from later in the book stay hidden. Quote sparingly.\n"
     .. "</spoilers>\n\n"
 
     .. "<web_search>\n"

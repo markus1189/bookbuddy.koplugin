@@ -242,7 +242,7 @@ local stop_during_tool = false
 package.loaded["bbtools"] = {
     getSpecs = function()
         return {
-            { name = "search_book", description = "", input_schema = { type = "object" } },
+            { name = "grep", description = "", input_schema = { type = "object" } },
             { type = "web_search_20250305", name = "web_search", max_uses = 5 },
         }
     end,
@@ -704,7 +704,7 @@ runScenario{
         }, stop_reason = "pause_turn" },
         buildTurnSSE{ blocks = {
             { type = "text", text = "Now let me check the book itself." },
-            { type = "tool_use", id = "toolu_Z", name = "search_book", input = { query = "whales" } },
+            { type = "tool_use", id = "toolu_Z", name = "grep", input = { query = "whales" } },
         }, stop_reason = "tool_use" },
         buildTurnSSE{ blocks = { { type = "text", text = "Here is what I found." } }, stop_reason = "end_turn" },
     },
@@ -803,7 +803,7 @@ runScenario{
     responses = {
         buildTurnSSE{ blocks = {
             { type = "text", text = "Let me check the book." },
-            { type = "tool_use", id = "toolu_Q", name = "search_book", input = { query = "whales" } },
+            { type = "tool_use", id = "toolu_Q", name = "grep", input = { query = "whales" } },
         }, stop_reason = "tool_use" },
         errorSSE(),
         buildTurnSSE{ blocks = { { type = "text", text = "Answer after recovery." } }, stop_reason = "end_turn" },
@@ -827,7 +827,7 @@ runScenario{
     responses = {
         buildTurnSSE{ blocks = {
             { type = "text", text = "Let me check the book." },
-            { type = "tool_use", id = "toolu_S", name = "search_book", input = { query = "whales" } },
+            { type = "tool_use", id = "toolu_S", name = "grep", input = { query = "whales" } },
         }, stop_reason = "tool_use" },
     },
 }
@@ -982,40 +982,91 @@ do
             RealTools.execute("navigate", { page = 5, percent = 50 }, ui):find("only one") ~= nil)
     end
 
-    do -- search_book max_page filtering (paging engine: pageOfResult == item.start)
-        local function hits()
-            return {
-                { start = 5,  matched_text = "whale" },
-                { start = 50, matched_text = "whale" },
-                { start = 150, matched_text = "whale" },
-            }
-        end
-        do -- no max_page: every hit is visible
-            local ui = makeUI{ hits = hits() }
-            local result = RealTools.execute("search_book", { query = "whale" }, ui)
-            check("search: all 3 shown without max_page", result:find("Found 3 match") ~= nil)
-            check("search: page 150 hit present", result:find("page 150") ~= nil)
-        end
-        do -- max_page hides later hits but reports the count
-            local ui = makeUI{ hits = hits() }
-            local result, summary = RealTools.execute("search_book", { query = "whale", max_page = 50 }, ui)
-            check("search: 2 visible at/before page 50", result:find("Found 2 match") ~= nil)
-            check("search: 1 hidden reported", result:find("1 hidden beyond page 50") ~= nil)
-            check("search: spoiler page 150 not revealed", result:find("page 150") == nil)
-            check("search: summary counts visible only", summary ~= nil and summary:find("2 ") ~= nil)
-        end
-        do -- max_page below every hit: nothing visible, all hidden
-            local ui = makeUI{ hits = hits() }
-            local result = RealTools.execute("search_book", { query = "whale", max_page = 1 }, ui)
-            check("search: none at/before page 1", result:find("No matches for") ~= nil)
-            check("search: reports 3 hidden", result:find("3 match%(es%) hidden") ~= nil)
-        end
+    -- grep tool executor: regex/context forwarding, sentence-anchored locators, and
+    -- the page-level spoiler cap. A ROLLING stub so currentPage(ui) is driven by
+    -- getCurrentPage; getPageFromXPointer maps each hit's start xpointer to a page;
+    -- findAllText returns seeded hits and records the regex (5th) arg;
+    -- extendXPointersToSentenceSegment returns o.seg (a table or nil).
+    -- grep tool executor: regex/context forwarding, sentence-anchored locators, and
+    -- the page-level spoiler cap. A ROLLING stub so currentPage(ui) is driven by
+    -- getCurrentPage; getPageFromXPointer maps each hit's start xpointer to a page;
+    -- findAllText returns seeded hits and records the regex (5th) arg;
+    -- extendXPointersToSentenceSegment returns o.seg (a table or nil).
+    print("\n=== Unit: grep tool executor ===")
+    local function makeGrepUI(o)
+        o = o or {}
+        local rec = { regex = nil }
+        local ui = {
+            rolling = {},
+            view = { state = { page = o.current_page or 1 } },
+            document = {
+                getCurrentPage = function() return o.current_page or 1 end,
+                findAllText = function(_, _q, _ci, _nw, _mx, regex) rec.regex = regex; return o.hits end,
+                getPageFromXPointer = function(_, xp) return o.page_of and o.page_of[xp] end,
+                extendXPointersToSentenceSegment = function(_, _p0, _p1) return o.seg end,
+            },
+        }
+        return ui, rec
     end
 
-    -- edit_highlight_note: addressed by the get_highlights display number, which
-    -- skips bare bookmarks, so the annotations array index differs. Build a list
-    -- with a leading bare bookmark to prove the mapping, then a note-less
-    -- highlight (set-if-empty) and a noted highlight (append).
+    -- Scenario 9: context="words" (default), regex flag forwarded, loc minted, last_search lock-step.
+    do
+        local ui, rec = makeGrepUI{
+            current_page = 99,
+            hits = { { start = "xpA", ["end"] = "xpA2", matched_text = "Mara",
+                       prev_text = "when ", next_text = " walked" } },
+            page_of = { xpA = 2 },
+        }
+        local out = RealTools.execute("grep", { query = "Mara", regex = true }, ui)
+        check("9 regex forwarded as 5th findAllText arg", rec.regex == true)
+        check("9 word snippet contains query", out:find("Mara", 1, true) ~= nil)
+        check("9 mints a loc token", out:find("loc:%d") ~= nil)
+        check("9 last_search lock-step with shown hit", ui._bookbuddy_last_search
+              and ui._bookbuddy_last_search.items and #ui._bookbuddy_last_search.items == 1)
+    end
+
+    -- Scenario 10: context="sentence" renders the sentence span and anchors the loc to it.
+    do
+        local ui = makeGrepUI{
+            current_page = 99,
+            hits = { { start = "xpA", ["end"] = "xpA2", matched_text = "harbour" } },
+            page_of = { xpA = 2 },
+            seg = { text = "Mara walked to the harbour.", pos0 = "xpS0", pos1 = "xpS1" },
+        }
+        local out = RealTools.execute("grep", { query = "harbour", context = "sentence" }, ui)
+        check("10 sentence mode shows full sentence",
+              out:find("Mara walked to the harbour", 1, true) ~= nil)
+        local n = tonumber(out:match("loc:(%d+)"))
+        check("10 loc anchored to sentence pos0", n and ui._bookbuddy_locators[n].xp == "xpS0")
+        check("10 loc anchored to sentence pos1", n and ui._bookbuddy_locators[n].xp_end == "xpS1")
+    end
+
+    -- Scenario 15: page-level spoiler cap. Hits on pages 2,4,5; current page 3.
+    do
+        local function ghits() return {
+            { start = "xp2", ["end"] = "xp2b", matched_text = "Mara" },
+            { start = "xp4", ["end"] = "xp4b", matched_text = "Mara" },
+            { start = "xp5", ["end"] = "xp5b", matched_text = "Mara" },
+        } end
+        local page_of = { xp2 = 2, xp4 = 4, xp5 = 5 }
+        -- default: page-2 hit visible, pages 4&5 hidden + counted, pages not leaked.
+        local ui = makeGrepUI{ current_page = 3, hits = ghits(), page_of = page_of }
+        local out = RealTools.execute("grep", { query = "Mara" }, ui)
+        check("15 default cap shows page-2 hit", out:find("page 2", 1, true) ~= nil)
+        check("15 hidden page 4 not leaked", out:find("page 4", 1, true) == nil)
+        check("15 hidden page 5 not leaked", out:find("page 5", 1, true) == nil)
+        check("15 reports a hidden count", out:find("hidden") ~= nil)
+        -- spoiler=true reveals all three.
+        local ui2 = makeGrepUI{ current_page = 3, hits = ghits(), page_of = page_of }
+        local out2 = RealTools.execute("grep", { query = "Mara", spoiler = true }, ui2)
+        check("15 spoiler reveals page 4", out2:find("page 4", 1, true) ~= nil)
+        check("15 spoiler reveals page 5", out2:find("page 5", 1, true) ~= nil)
+        -- max_page below current tightens further: cap=1 hides even page-2 hit.
+        local ui3 = makeGrepUI{ current_page = 3, hits = ghits(), page_of = page_of }
+        local out3 = RealTools.execute("grep", { query = "Mara", max_page = 1 }, ui3)
+        check("15 max_page=1 tightens (page 2 hidden)", out3:find("page 2", 1, true) == nil)
+    end
+
     print("\n=== Unit: edit_highlight_note tool executor ===")
     local function makeHlUI(anns)
         local rec = { events = {}, pdf = {} }
@@ -1082,7 +1133,7 @@ do
     end
 
     -- create_highlight: positions never come from the model. The search_result path
-    -- reuses the xpointers search_book already produced; the text path re-searches
+    -- reuses the xpointers grep already produced; the text path re-searches
     -- and disambiguates by occurrence/page. A rolling (EPUB) ui with the document,
     -- annotation, view and toc surfaces the tool touches.
     print("\n=== Unit: create_highlight tool executor ===")
@@ -1128,7 +1179,7 @@ do
         }
         local ui, rec, anns = makeCreateUI{ hits = hits,
             page_of = { xpA = 3, xpB = 7 }, text_of = { xpA = "the alpha passage" } }
-        RealTools.execute("search_book", { query = "x" }, ui) -- populates ui._bookbuddy_last_search
+        RealTools.execute("grep", { query = "x", spoiler = true }, ui) -- populates ui._bookbuddy_last_search
         local result, summary = RealTools.execute("create_highlight",
             { search_result = 1, color = "red", drawer = "underscore", note = "key bit" }, ui)
         check("create(handle): added exactly one annotation", #anns == 1)
@@ -1225,7 +1276,7 @@ do
             { type = "text", text = "let me look" },
             { type = "server_tool_use", id = "s1", name = "web_search" },
             { type = "web_search_tool_result", tool_use_id = "s1", content = {} },
-            { type = "tool_use", id = "t1", name = "search_book" },
+            { type = "tool_use", id = "t1", name = "grep" },
         } },
         { role = "user", content = {
             { type = "tool_result", tool_use_id = "t1", content = "ok" },
@@ -1258,7 +1309,7 @@ do
     checkValidator("client tool_use with no tool_result", {
         { role = "user", content = "hi" },
         { role = "assistant", content = {
-            { type = "tool_use", id = "t1", name = "search_book" },
+            { type = "tool_use", id = "t1", name = "grep" },
         } },
     }, true)
 end
