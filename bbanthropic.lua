@@ -53,6 +53,32 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     if cfg.enable_thinking then
         body.thinking = { type = "adaptive", display = "summarized" }
     end
+    -- Rolling prompt-cache breakpoint: mark the last block of the last message
+    -- as ephemeral so prior history is served as cache_read, not full input on
+    -- the next turn. Clear any stale message-block breakpoints first so the count
+    -- stays bounded (the system block carries the only other breakpoint).
+    if messages and #messages > 0 then
+        for _, msg in ipairs(messages) do
+            if type(msg.content) == "table" then
+                for _, block in ipairs(msg.content) do
+                    if type(block) == "table" then
+                        block.cache_control = nil
+                    end
+                end
+            end
+        end
+
+        local last_msg = messages[#messages]
+        local content = last_msg.content
+        if type(content) == "string" then
+            content = { { type = "text", text = content } }
+            last_msg.content = content
+        end
+        if type(content) == "table" and #content > 0 then
+            content[#content].cache_control = { type = "ephemeral" }
+        end
+    end
+
     return rapidjson.encode(body)
 end
 

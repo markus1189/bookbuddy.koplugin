@@ -1336,5 +1336,81 @@ do
         (extra:find(BASE, 1, true) or 0) < (extra:find(EXTRA, 1, true) or math.huge))
 end
 
+print("\n=== Unit: rolling cache breakpoint ===")
+do
+    local function check(label, cond)
+        if cond then
+            total_pass = total_pass + 1
+            print("  ok:   " .. label)
+        else
+            total_fail = total_fail + 1
+            print("  FAIL: " .. label)
+        end
+    end
+    local c = {
+        model = "test", max_tokens = 100,
+        additional_system_prompt = "", enable_memory = false, enable_thinking = false,
+    }
+
+    -- Case A: a string-content last message is normalized to a block list and
+    -- carries the rolling ephemeral breakpoint; the system block stays cached.
+    local msgsA = { { role = "user", content = "hello world" } }
+    local decA = json.decode(realBuildBody(msgsA, nil, c))
+    local lastA = decA.messages[#decA.messages]
+    check("A: string content normalized to a block list", type(lastA.content) == "table")
+    check("A: live msgs mutated to block list", type(msgsA[1].content) == "table")
+    local blkA = lastA.content[#lastA.content]
+    check("A: last block is text with original text", blkA.type == "text" and blkA.text == "hello world")
+    check("A: last block carries ephemeral cache_control",
+        blkA.cache_control ~= nil and blkA.cache_control.type == "ephemeral")
+    check("A: system block still cached",
+        decA.system[1] ~= nil and decA.system[1].cache_control ~= nil
+            and decA.system[1].cache_control.type == "ephemeral")
+
+    -- Case B: a list-content last message gets the breakpoint only on its final
+    -- block; earlier blocks are left untouched.
+    local msgsB = {
+        { role = "user", content = "hi" },
+        { role = "assistant", content = { { type = "text", text = "a" }, { type = "text", text = "b" } } },
+    }
+    local decB = json.decode(realBuildBody(msgsB, nil, c))
+    local lastB = decB.messages[#decB.messages]
+    local finalB = lastB.content[#lastB.content]
+    check("B: final block marked", finalB.cache_control ~= nil and finalB.cache_control.type == "ephemeral")
+    check("B: earlier block NOT marked", lastB.content[1].cache_control == nil)
+
+    -- Case C: exactly two cache_control breakpoints total (system + last block).
+    local function countBreakpoints(dec)
+        local n = 0
+        for _, b in ipairs(dec.system) do
+            if b.cache_control then n = n + 1 end
+        end
+        for _, m in ipairs(dec.messages) do
+            if type(m.content) == "table" then
+                for _, b in ipairs(m.content) do
+                    if b.cache_control then n = n + 1 end
+                end
+            end
+        end
+        return n
+    end
+    check("C: exactly two cache_control breakpoints", countBreakpoints(decB) == 2)
+
+    -- Case D: a stale breakpoint on an interior block is cleared each turn, so the
+    -- count never grows beyond two as history accumulates within a conversation.
+    local msgsD = {
+        { role = "user", content = { { type = "text", text = "old", cache_control = { type = "ephemeral" } } } },
+        { role = "assistant", content = { { type = "text", text = "answer" } } },
+        { role = "user", content = "new question" },
+    }
+    local decD = json.decode(realBuildBody(msgsD, nil, c))
+    check("D: stale interior breakpoint cleared", decD.messages[1].content[1].cache_control == nil)
+    local finalD = decD.messages[#decD.messages].content
+    finalD = finalD[#finalD]
+    check("D: only final block marked after clear",
+        finalD.cache_control ~= nil and finalD.cache_control.type == "ephemeral")
+    check("D: still exactly two breakpoints after clear", countBreakpoints(decD) == 2)
+end
+
 print(string.format("\n==== %d check(s) passed, %d failed ====", total_pass, total_fail))
 os.exit(total_fail == 0 and 0 or 1)
