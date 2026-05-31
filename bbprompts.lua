@@ -22,6 +22,10 @@ Prompts.SYSTEM_PROMPT =
     .. "the book, add notes to their highlights, and create new highlights; each tool's own description "
     .. "explains how it works and what to call first. When a tool changes what the reader sees -- moving "
     .. "them, or adding a highlight or note -- tell them plainly what you did.\n"
+    .. "To find where something appears use grep; to read passages in full use read, giving it a grep "
+    .. "locator, a get_toc locator, or a page number. read starts at the reader's current page when you "
+    .. "give it none and will not read past that page unless you pass spoiler=true; do not re-read text "
+    .. "you already pulled, since every chunk stays in context and re-reading wastes tokens.\n"
     .. "</grounding>\n\n"
 
     .. "<spoilers>\n"
