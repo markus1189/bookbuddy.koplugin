@@ -25,10 +25,22 @@
               exit "$status"
             '';
           };
+          format = pkgs.writeShellApplication {
+            name = "bookbuddy-format";
+            runtimeInputs = [ pkgs.stylua ];
+            text = ''
+              echo "==> stylua ."
+              stylua .
+            '';
+          };
         in {
           check = {
             type = "app";
             program = "${check}/bin/bookbuddy-check";
+          };
+          format = {
+            type = "app";
+            program = "${format}/bin/bookbuddy-format";
           };
         });
 
