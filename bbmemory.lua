@@ -23,10 +23,63 @@ local MAX_LINES = 999999
 
 local Memory = {}
 
--- Tool declaration, shaped like the bare server-tool entries in bbtools (no
--- input_schema — the type implies it).
+-- Tool declaration as an ordinary custom tool with an explicit input_schema.
+-- Anthropic's native `memory_20250818` server-tool type (no input_schema; the
+-- API supplies the schema and the model is trained on the protocol) only works
+-- on a first-party Anthropic backend; any other Claude-compatible endpoint or
+-- model rejects or ignores it. Declaring the same commands/params ourselves makes
+-- memory work with any tool-using model. The parameter names match what Store
+-- reads verbatim (path, file_text, old_str, …), and the dispatch in
+-- bbconversation already routes tool_use{name="memory"} to Store:execute, so only
+-- this declaration changes. The description carries the whole protocol because,
+-- unlike the native type, nothing else tells the model how the tool behaves.
 function Memory.spec()
-    return { type = "memory_20250818", name = "memory" }
+    return {
+        name = "memory",
+        description = "A persistent memory store backed by a directory tree under the virtual root "
+            .. "/memories. All paths must start with /memories. Use it to remember durable notes "
+            .. "across conversations. Issue one command per call via the `command` field:\n"
+            .. "- view: show a directory listing (paths and sizes) or, for a file, its contents with "
+            .. "line numbers. `path` is the file or directory; optional `view_range` is a [start, end] "
+            .. "1-based line range for files.\n"
+            .. "- create: create (or overwrite) a file. `path` is the file; `file_text` is its full contents.\n"
+            .. "- str_replace: replace a unique occurrence of `old_str` with `new_str` in the file at "
+            .. "`path`. Fails if `old_str` is absent or appears more than once.\n"
+            .. "- insert: insert `insert_text` into the file at `path` after line `insert_line` "
+            .. "(0 inserts at the top).\n"
+            .. "- delete: delete the file or directory at `path`.\n"
+            .. "- rename: move/rename `old_path` to `new_path`.",
+        input_schema = {
+            type = "object",
+            properties = {
+                command = {
+                    type = "string",
+                    enum = { "view", "create", "str_replace", "insert", "delete", "rename" },
+                    description = "Which memory operation to perform.",
+                },
+                path = {
+                    type = "string",
+                    description = "Target path under /memories (for view, create, str_replace, insert, delete).",
+                },
+                view_range = {
+                    type = "array",
+                    items = { type = "integer" },
+                    description = "Optional [start, end] 1-based line range for `view` on a file.",
+                },
+                file_text = { type = "string", description = "Full file contents for `create`." },
+                old_str = { type = "string", description = "Exact text to replace for `str_replace` (must be unique)." },
+                new_str = { type = "string", description = "Replacement text for `str_replace`." },
+                insert_line = {
+                    type = "integer",
+                    description = "Line number after which to insert for `insert` (0 = beginning of file).",
+                },
+                insert_text = { type = "string", description = "Text to insert for `insert`." },
+                old_path = { type = "string", description = "Source path under /memories for `rename`." },
+                new_path = { type = "string", description = "Destination path under /memories for `rename`." },
+            },
+            required = { "command" },
+        },
+    }
 end
 
 -- Human label for the open book, for the management UI header.
