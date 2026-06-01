@@ -190,10 +190,44 @@ describe("bbanthropic", function()
             assert.are.equal("s1", res.content[2].tool_use_id)
         end)
 
-        it("extracts usage from message_start and overwrites output_tokens from message_delta", function()
+        it("merges usage across message_start and message_delta (native Anthropic shape)", function()
+            -- Native: input_tokens in message_start, the output total in message_delta.
             local res = parse(sse.buildTurnSSE({ blocks = { { type = "text", text = "x" } } }))
             assert.are.equal(10, res.usage.input_tokens)
             assert.are.equal(20, res.usage.output_tokens) -- message_delta running total wins
+        end)
+
+        it("picks up real token counts that a gateway reports only in message_delta", function()
+            -- OpenRouter/Requesty send a stub-zero usage in message_start and the
+            -- authoritative input/cache/output only in message_delta. Reading just
+            -- message_start (as we used to) reported input 0 / cached 0; the per-field
+            -- max must surface the real numbers from message_delta instead.
+            local p = Anthropic.newStreamParser()
+            p:feed("data: " .. json.encode({
+                type = "message_start",
+                message = { usage = {
+                    input_tokens = 0,
+                    output_tokens = 0,
+                    cache_read_input_tokens = json.null, -- OpenRouter nulls these here
+                    cache_creation_input_tokens = json.null,
+                } },
+            }))
+            p:feed("data: " .. json.encode({
+                type = "message_delta",
+                delta = { stop_reason = "end_turn" },
+                usage = {
+                    input_tokens = 13,
+                    output_tokens = 5,
+                    cache_read_input_tokens = 4,
+                    cache_creation_input_tokens = 7,
+                },
+            }))
+            p:feed("data: " .. json.encode({ type = "message_stop" }))
+            local u = p:result().usage
+            assert.are.equal(13, u.input_tokens)
+            assert.are.equal(5, u.output_tokens)
+            assert.are.equal(4, u.cache_read_input_tokens)
+            assert.are.equal(7, u.cache_creation_input_tokens)
         end)
 
         it("coerces null usage fields to 0 (a non-Anthropic endpoint sends them as JSON null)", function()

@@ -204,16 +204,32 @@ local function data_payload(line)
     return (line:sub(6):gsub("^%s+", ""))
 end
 
+-- Merge a usage object into the running totals, keeping the max numeric value
+-- per field. Where the authoritative counts live depends on the backend: native
+-- Anthropic puts input/cache in message_start and the output total in
+-- message_delta, while gateways (OpenRouter, Requesty — both observed routing via
+-- Bedrock) send a stub-zero (OpenRouter: null) usage in message_start and the real
+-- input/cache/output only in message_delta. Reading just one event drops the real
+-- numbers on one side or the other. These counts are monotonic for a single call
+-- (stub 0 → real value), and a field absent from one event coerces to 0, so the
+-- per-field max coalesces both shapes without having to know which backend we hit.
+function Parser:_mergeUsage(u)
+    if type(u) ~= "table" then
+        return
+    end
+    local fields = { "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens" }
+    for _, f in ipairs(fields) do
+        local v = numOr0(u[f])
+        if v > self.usage[f] then
+            self.usage[f] = v
+        end
+    end
+end
+
 function Parser:_event(event)
     local t = event.type
     if t == "message_start" then
-        local u = event.message and event.message.usage
-        if u then
-            self.usage.input_tokens = numOr0(u.input_tokens)
-            self.usage.output_tokens = numOr0(u.output_tokens)
-            self.usage.cache_read_input_tokens = numOr0(u.cache_read_input_tokens)
-            self.usage.cache_creation_input_tokens = numOr0(u.cache_creation_input_tokens)
-        end
+        self:_mergeUsage(event.message and event.message.usage)
     elseif t == "content_block_start" then
         local idx = event.index
         self.blocks[idx] = event.content_block
@@ -269,12 +285,7 @@ function Parser:_event(event)
         if event.delta and event.delta.stop_reason then
             self.stop_reason = event.delta.stop_reason
         end
-        -- message_delta.usage.output_tokens is the running total, so overwrite.
-        -- Only when it's an actual number: a null/missing field must not clobber
-        -- the good total from message_start with 0 (see numOr0).
-        if event.usage and type(event.usage.output_tokens) == "number" then
-            self.usage.output_tokens = event.usage.output_tokens
-        end
+        self:_mergeUsage(event.usage)
     elseif t == "error" then
         self.error = event.error
     elseif t == "message_stop" then
