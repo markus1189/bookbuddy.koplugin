@@ -1,7 +1,3 @@
--- Hardcoded quick-action presets for the chat input dialogs. Each entry is
--- { label, prompt }: the label is the button text, the prompt seeds the input
--- box (prefill-then-edit) when tapped, so the reader can tweak it before
--- sending. Grouped by chat context: book-level, passage-level, and follow-up.
 local _ = require("gettext")
 
 local Presets = {}
@@ -21,23 +17,16 @@ Presets.passage = {
 }
 
 Presets.followup = {
-    -- "Yes" is first so it's the obvious tap when the agent ends a turn with a
-    -- yes/no question. It prefills like the rest, so it's still tap-then-Send.
     { _("Yes"), _("Yes.") },
-    { _("Go on"), _("Go on.") },
-    { _("Simpler"), _("Explain that in simpler terms.") },
-    { _("Example"), _("Give me a concrete example.") },
-    { _("Why?"), _("Why is that?") },
+    { _("Memorize"), _("Write a memory for this.") },
 }
 
--- Build InputDialog button rows that prefill the input box when tapped, chunked
--- `per_row` buttons to a row (e-ink screens are narrow). `get_dialog` is a
--- getter rather than the dialog itself: the dialog reference is only assigned
--- after InputDialog:new() returns, so the callbacks close over the getter.
 function Presets.buttonRows(list, get_dialog, per_row)
     per_row = per_row or 2
+
     local rows = {}
     local row
+
     for i, preset in ipairs(list) do
         if (i - 1) % per_row == 0 then
             row = {}
@@ -49,13 +38,12 @@ function Presets.buttonRows(list, get_dialog, per_row)
             callback = function()
                 local dialog = get_dialog()
                 if dialog then
-                    -- false = leave the cursor at the end so the reader can
-                    -- keep typing straight after the seeded prompt.
                     dialog:setInputText(prompt, nil, false)
                 end
             end,
         }
     end
+
     return rows
 end
 
