@@ -51,18 +51,33 @@ LuaJIT, specs are `tests/*_spec.lua`). The suite stubs KOReader and exercises th
 - `request_validation_spec` — meta-tests proving the request validator rejects bad arrays.
 - `memory_spec` / `update_spec` / `settings_spec` — the pure modules against real/in-memory
   backends.
+- `tools_spec` — the `bbtools` executors' **engine-agnostic** logic against trivial fake `ui`s:
+  input validation, the dispatch contract (which `Event` a tool emits and with what args),
+  occurrence/ambiguity math, and the error guards. Behaviour that needs a real document lives in
+  the Tier 2 real-crengine suite (below), not here.
 
 Shared scaffolding lives in `tests/support/{stubs,sse}.lua` (KOReader doubles + the JSON codec;
 SSE builders, a fake stream, the validator). Add scenarios/specs there and in the matching
 `_spec` when you change the loop, the parser, or a pure module.
 
-Document-coupled **tool-executor** tests (grep/read/navigate/create_highlight/edit_highlight
-against hand-rolled fake `ui`/document objects) are parked in `tests/integration/tools.lua`
-(`luajit tests/integration/tools.lua`) until Tier 2 runs them inside KOReader's real test
-harness. They are *not* part of `nix run .#test` / `.#check`.
+The document-coupled tool-executor coverage is split by what each check actually needs (the old
+hand-rolled-fakes file `tests/integration/tools.lua` has been retired): the engine-agnostic half
+lives in `tools_spec` (above, pure-luajit `.#test`); everything that touches a real document is the
+Tier 2 suite below.
 
 **Tier 2 (real crengine) — `nix run .#test-real`.** Runs BookBuddy's tools against a real
 document (`juliet.epub`) with real crengine — **fully hermetic, no local koreader checkout**.
+Specs live in `tests/integration/real/*_real.lua` (the `_real` suffix, **not** `_spec`, keeps them
+out of the pure-luajit `.#test` whose `.busted` discovers `_spec`); `BB_SPEC` defaults to that whole
+directory and busted discovers them via `--pattern=_real`. They open a live `ReaderUI` over
+`juliet.epub` (shared scaffolding: `tests/integration/real/support.lua`) and assert real behaviour:
+`context_real` (title/author/page-count, TOC with resolvable `loc` tokens), `grep_real` (real
+page-tagged hits, the regex flag, sentence context, the spoiler page-cap vs the reader's real page),
+`read_real` (word-by-word forward stepping, continuation locators, the spoiler refuse/clamp gates,
+real end-of-book), `navigate_real` (page/percent/chapter `GotoXPointer`/back truly moving the page),
+`highlight_real` (the create→list→note→append round-trip through the real annotation store —
+highlights persist to the `.sdr` sidecar under the shared `KO_HOME`, so count-sensitive specs reset
+`annotation.annotations` in `setup()`), and `smoke_real` (the original minimal sanity check).
 The built emulator (libkoreader-cre.so, luajit, frontend, ffi, fonts, data) is nixpkgs' prebuilt
 `koreader` package (the amd64 .deb, `v2025.10`, pulled from the binary cache). The flake overlays
 the test-only bits that package omits: `commonrequire` from the `koreader` source input (pinned to

@@ -25,10 +25,10 @@ describe("BookBuddy tools against a real document", function()
         ReaderUI = require("apps/reader/readerui")
         Screen = require("device").screen
         Tools = require("bbtools")
-        readerui = ReaderUI:new{
+        readerui = ReaderUI:new({
             dimen = Screen:getSize(),
             document = DocumentRegistry:openDocument(sample_epub),
-        }
+        })
     end)
 
     teardown(function()

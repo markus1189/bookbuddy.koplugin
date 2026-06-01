@@ -78,9 +78,12 @@
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
               # Plugin dir + spec default to this flake's (store) copy; override
-              # BB_PLUGIN_DIR / BB_SPEC to run against a worktree instead.
+              # BB_PLUGIN_DIR / BB_SPEC to run against a worktree instead. SPEC
+              # defaults to the whole real-crengine suite directory; busted
+              # discovers *_real.lua within it (the _real pattern, NOT _spec, keeps
+              # these out of the pure-luajit `.#test` whose .busted scans for _spec).
               PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
-              SPEC="''${BB_SPEC:-$PLUGIN_DIR/tests/integration/smoke_real.lua}"
+              SPEC="''${BB_SPEC:-$PLUGIN_DIR/tests/integration/real}"
               KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
               export TESSDATA_PREFIX="${ko}/data"
               export SDL_VIDEODRIVER=dummy
@@ -95,7 +98,7 @@
               echo "==> busted (real crengine, hermetic) $SPEC"
               exec ./luajit -e 'require "busted.runner" {standalone=false}' /dev/null \
                 --helper="$PLUGIN_DIR/tests/integration/busted_helper.lua" \
-                --loaders=lua --lazy -- "$SPEC"
+                --loaders=lua --lazy --pattern=_real -- "$SPEC"
             '';
           };
         in {
