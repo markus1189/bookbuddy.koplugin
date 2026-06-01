@@ -46,17 +46,23 @@ function Stream.run(opts)
     local function process_lines()
         while true do
             local line_end = partial_data:find("[\r\n]")
-            if not line_end then break end
+            if not line_end then
+                break
+            end
             local line = partial_data:sub(1, line_end - 1)
             partial_data = partial_data:sub(line_end + 1)
-            if opts.on_line then opts.on_line(line) end
+            if opts.on_line then
+                opts.on_line(line)
+            end
         end
     end
 
     while not completed do
         -- Hand control back to the UI, then resume on the next tick (true) unless
         -- the cancel closure resumes us first (false).
-        local go_on_func = function() coroutine.resume(_coroutine, true) end
+        local go_on_func = function()
+            coroutine.resume(_coroutine, true)
+        end
         UIManager:scheduleIn(CHECK_INTERVAL_SEC, go_on_func)
         if not coroutine.yield() then
             cancelled = true
@@ -83,7 +89,9 @@ function Stream.run(opts)
                 end
                 readsize = ffiutil.getNonBlockingReadSize(parent_read_fd)
             end
-            if read_error then break end
+            if read_error then
+                break
+            end
         elseif ffiutil.isSubProcessDone(pid) then
             -- Nothing buffered and the child has exited: we've drained the pipe.
             completed = true
@@ -95,7 +103,9 @@ function Stream.run(opts)
         opts.on_line(partial_data)
     end
 
-    if opts.register_cancel then opts.register_cancel(nil) end
+    if opts.register_cancel then
+        opts.register_cancel(nil)
+    end
 
     -- Kill the child (no-op if it already exited) and reap it lazily so a
     -- cancelled or write-blocked subprocess can't linger as a zombie.

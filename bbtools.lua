@@ -45,8 +45,7 @@ local function rollingOnly(ui, tool_name)
     if isRolling(ui) then
         return nil
     end
-    return string.format("%s is only supported for reflowable (EPUB) books in this version.", tool_name),
-        _("EPUB only")
+    return string.format("%s is only supported for reflowable (EPUB) books in this version.", tool_name), _("EPUB only")
 end
 
 -- True when v is a whole number >= 1 -- the shape every 1-based index input must
@@ -67,7 +66,9 @@ local function currentChapter(ui)
     if not ui.toc then
         return nil
     end
-    local ok, title = pcall(function() return ui.toc:getTocTitleOfCurrentPage() end)
+    local ok, title = pcall(function()
+        return ui.toc:getTocTitleOfCurrentPage()
+    end)
     if ok and title and title ~= "" then
         return title
     end
@@ -83,7 +84,9 @@ local function locationLabel(ui, page)
         page = currentPage(ui)
         chapter = currentChapter(ui)
     elseif ui.toc then
-        local ok, title = pcall(function() return ui.toc:getTocTitleByPage(page) end)
+        local ok, title = pcall(function()
+            return ui.toc:getTocTitleByPage(page)
+        end)
         if ok and title and title ~= "" then
             chapter = title
         end
@@ -238,8 +241,8 @@ local function tool_grep(ui, input)
 
     if #shown == 0 then
         if hidden > 0 and not spoiler then
-            return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."),
-                tostring(hidden)), _("all hidden")
+            return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden)),
+                _("all hidden")
         end
         return string.format("No matches found for %q.", query), _("no matches")
     end
@@ -247,8 +250,8 @@ local function tool_grep(ui, input)
     local header = string.format("Found %d match(es) for %q (showing up to %d):", #shown, query, max_results)
     table.insert(out, 1, header)
     if hidden > 0 and not spoiler then
-        out[#out + 1] = T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."),
-            tostring(hidden))
+        out[#out + 1] =
+            T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden))
     end
     return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
@@ -270,11 +273,10 @@ local function tool_get_toc(ui, _input)
         -- omit the token rather than mint one read could not honor.
         if type(item.xpointer) == "string" and item.xpointer ~= "" then
             local tok = mintLocator(ui, { kind = "point", xp = item.xpointer })
-            out[#out + 1] = string.format("%d. %s%s (page %s) (%s)",
-                i, indent, item.title or "", tostring(item.page or "?"), tok)
+            out[#out + 1] =
+                string.format("%d. %s%s (page %s) (%s)", i, indent, item.title or "", tostring(item.page or "?"), tok)
         else
-            out[#out + 1] = string.format("%d. %s%s (page %s)",
-                i, indent, item.title or "", tostring(item.page or "?"))
+            out[#out + 1] = string.format("%d. %s%s (page %s)", i, indent, item.title or "", tostring(item.page or "?"))
         end
     end
     if #toc > limit then
@@ -301,14 +303,20 @@ local function tool_read(ui, input)
     end
     -- Reflowable-only guard: a paging doc (has_pages) or a doc missing the cre
     -- xpointer stepping API can't drive the forward advance loop.
-    if (doc.info and doc.info.has_pages)
-        or not doc.getNextVisibleWordEnd or not doc.compareXPointers
-        or not doc.getTextFromXPointers or not doc.getPageXPointer then
+    if
+        (doc.info and doc.info.has_pages)
+        or not doc.getNextVisibleWordEnd
+        or not doc.compareXPointers
+        or not doc.getTextFromXPointers
+        or not doc.getPageXPointer
+    then
         return _("read works only on reflowable (EPUB) books.")
     end
 
     local from = input.from
-    if from == "" then from = nil end
+    if from == "" then
+        from = nil
+    end
     local spoiler = input.spoiler == true
 
     -- Resolve the start xpointer and its page.
@@ -332,8 +340,8 @@ local function tool_read(ui, input)
                 pg = pg or currentPage(ui)
                 xp_start = doc:getPageXPointer(pg)
                 start_page = pg
-                prefix = T(_("(Your place shifted because the layout changed; resuming from page %1.)"),
-                    tostring(pg)) .. "\n\n"
+                prefix = T(_("(Your place shifted because the layout changed; resuming from page %1.)"), tostring(pg))
+                    .. "\n\n"
             else
                 xp_start = xp
             end
@@ -353,9 +361,15 @@ local function tool_read(ui, input)
     if not spoiler then
         if start_page and cur and start_page > cur then
             -- Start is ahead of the reader: refuse outright, no text, no next.
-            return T(_("That's past where you are in the book (page %1 of your current page %2). "
-                .. "I won't read ahead and risk spoiling it — call read again with spoiler=true "
-                .. "if you really want to."), tostring(start_page), tostring(cur))
+            return T(
+                _(
+                    "That's past where you are in the book (page %1 of your current page %2). "
+                        .. "I won't read ahead and risk spoiling it — call read again with spoiler=true "
+                        .. "if you really want to."
+                ),
+                tostring(start_page),
+                tostring(cur)
+            )
         end
         if cur then
             -- Clamp the forward chunk at the start of the next page.
@@ -396,7 +410,9 @@ local function tool_read(ui, input)
     if doc:compareXPointers(xp_start, xp_end) ~= 1 and not eob and not clamped then
         if doc.getNextVisibleChar then
             local nxt = doc:getNextVisibleChar(xp_end)
-            if nxt then xp_end = nxt end
+            if nxt then
+                xp_end = nxt
+            end
         end
     end
 
@@ -417,8 +433,7 @@ local function tool_read(ui, input)
         trailer = T(_("(More follows — read again with from: %1.)"), nexttok)
     end
 
-    return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer),
-        T(_("~%1 words"), wordCount(text))
+    return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
 end
 
 local function tool_book_context(ui, _input)
@@ -434,7 +449,9 @@ local function tool_book_context(ui, _input)
     local total = tostring(ui.document:getPageCount() or "?")
     lines[#lines + 1] = string.format("Current page: %s of %s", cur, total)
     if ui.toc then
-        local ok, title = pcall(function() return ui.toc:getTocTitleOfCurrentPage() end)
+        local ok, title = pcall(function()
+            return ui.toc:getTocTitleOfCurrentPage()
+        end)
         if ok and title and title ~= "" then
             lines[#lines + 1] = "Current chapter: " .. title
         end
@@ -482,18 +499,27 @@ local function tool_get_highlights(ui, input)
     local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
     local out, shown = {}, 0
     for i = 1, total do
-        if shown >= max_results then break end
+        if shown >= max_results then
+            break
+        end
         shown = shown + 1
         local a = list[i]
         local text = a.text and a.text ~= "" and a.text:gsub("%s+", " ") or nil
         local note = a.note and a.note ~= "" and a.note:gsub("%s+", " ") or nil
         local entry = string.format("%d. [%s | %s]", i, note and "note" or "highlight", highlightLocation(a))
-        if text then entry = entry .. "\n   \"" .. text .. "\"" end
-        if note then entry = entry .. "\n   note: " .. note end
+        if text then
+            entry = entry .. '\n   "' .. text .. '"'
+        end
+        if note then
+            entry = entry .. "\n   note: " .. note
+        end
         out[#out + 1] = entry
     end
-    local header = string.format("%d highlight(s)/note(s) in this book%s:",
-        total, shown < total and string.format(" (showing first %d)", shown) or "")
+    local header = string.format(
+        "%d highlight(s)/note(s) in this book%s:",
+        total,
+        shown < total and string.format(" (showing first %d)", shown) or ""
+    )
     return truncate(header .. "\n" .. table.concat(out, "\n")), T(_("%1 found"), total)
 end
 
@@ -504,16 +530,25 @@ end
 -- was so the model can narrate it. Non-destructive, so no confirmation.
 local function tool_navigate(ui, input)
     local targets = {}
-    if input.page ~= nil then targets[#targets + 1] = "page" end
-    if input.percent ~= nil then targets[#targets + 1] = "percent" end
-    if input.chapter_index ~= nil then targets[#targets + 1] = "chapter_index" end
-    if input.back then targets[#targets + 1] = "back" end
+    if input.page ~= nil then
+        targets[#targets + 1] = "page"
+    end
+    if input.percent ~= nil then
+        targets[#targets + 1] = "percent"
+    end
+    if input.chapter_index ~= nil then
+        targets[#targets + 1] = "chapter_index"
+    end
+    if input.back then
+        targets[#targets + 1] = "back"
+    end
     if #targets == 0 then
         return "Error: provide exactly one of page, percent, chapter_index, or back."
     end
     if #targets > 1 then
         return "Error: provide only one of page, percent, chapter_index, or back (got "
-            .. table.concat(targets, ", ") .. ")."
+            .. table.concat(targets, ", ")
+            .. ")."
     end
     if not ui.link then
         return "Error: navigation is unavailable for this document."
@@ -570,8 +605,7 @@ local function tool_navigate(ui, input)
     end
 
     local to = locationLabel(ui)
-    return string.format("Moved from %s to %s. The reader can tap Back to return here.", from, to),
-        T(_("→ %1"), to)
+    return string.format("Moved from %s to %s. The reader can tap Back to return here.", from, to), T(_("→ %1"), to)
 end
 
 -- Add to (never overwrite) the note on one of the reader's highlights. The
@@ -591,7 +625,10 @@ local function tool_edit_highlight_note(ui, input)
     end
     local idx = tonumber(input.highlight_index)
     if not isPositiveInteger(idx) or idx > #list then
-        return string.format("Error: 'highlight_index' must be a whole number between 1 and %d (see get_highlights).", #list)
+        return string.format(
+            "Error: 'highlight_index' must be a whole number between 1 and %d (see get_highlights).",
+            #list
+        )
     end
     local note = input.note
     if type(note) ~= "string" or note:gsub("%s", "") == "" then
@@ -613,14 +650,18 @@ local function tool_edit_highlight_note(ui, input)
         if had_note then
             ui:handleEvent(Event:new("AnnotationsModified", { a, modify_datetime = true }))
         else -- a bare highlight became a note: keep the highlight/note counters right
-            ui:handleEvent(Event:new("AnnotationsModified",
-                { a, nb_highlights_added = -1, nb_notes_added = 1 }))
+            ui:handleEvent(Event:new("AnnotationsModified", { a, nb_highlights_added = -1, nb_notes_added = 1 }))
         end
     end
 
     local verb = had_note and "Appended to" or "Added"
-    return string.format("%s the note on highlight %d (%s). The note now reads:\n%s",
-            verb, idx, highlightLocation(a), new_note),
+    return string.format(
+        "%s the note on highlight %d (%s). The note now reads:\n%s",
+        verb,
+        idx,
+        highlightLocation(a),
+        new_note
+    ),
         had_note and _("appended note") or _("added note")
 end
 
@@ -633,7 +674,9 @@ local DRAWER_LIST = { "lighten", "underscore", "strikeout", "invert" }
 local COLOR_LIST = { "red", "orange", "yellow", "green", "olive", "cyan", "blue", "purple", "gray" }
 local function toSet(list)
     local set = {}
-    for i = 1, #list do set[list[i]] = true end
+    for i = 1, #list do
+        set[list[i]] = true
+    end
     return set
 end
 local DRAWERS = toSet(DRAWER_LIST)
@@ -655,21 +698,20 @@ local function saveHighlightFromXPointers(ui, pos0, pos1, opts)
     end
     local hl = ui.view and ui.view.highlight
     local item = {
-        page    = pos0, -- xpointer doubles as the location key for rolling books
-        pos0    = pos0,
-        pos1    = pos1,
-        text    = text,
-        drawer  = opts.drawer or (hl and hl.saved_drawer),
-        color   = opts.color or (hl and hl.saved_color),
-        note    = (opts.note and opts.note ~= "") and opts.note or nil,
+        page = pos0, -- xpointer doubles as the location key for rolling books
+        pos0 = pos0,
+        pos1 = pos1,
+        text = text,
+        drawer = opts.drawer or (hl and hl.saved_drawer),
+        color = opts.color or (hl and hl.saved_color),
+        note = (opts.note and opts.note ~= "") and opts.note or nil,
         chapter = ui.toc and ui.toc:getTocTitleByPage(pos0) or nil,
     }
     local index = ui.annotation:addItem(item)
     if ui.view and ui.view.footer and ui.view.footer.maybeUpdateFooter then
         ui.view.footer:maybeUpdateFooter()
     end
-    ui:handleEvent(Event:new("AnnotationsModified",
-        { item, nb_highlights_added = 1, index_modified = index }))
+    ui:handleEvent(Event:new("AnnotationsModified", { item, nb_highlights_added = 1, index_modified = index }))
     return item
 end
 
@@ -683,7 +725,9 @@ end
 -- need pos tables + pboxes rather than xpointers.
 local function tool_create_highlight(ui, input)
     local err, summary = rollingOnly(ui, "create_highlight")
-    if err then return err, summary end
+    if err then
+        return err, summary
+    end
     if not ui.annotation then
         return "Error: highlights are not available for this document."
     end
@@ -715,7 +759,8 @@ local function tool_create_highlight(ui, input)
         if not isPositiveInteger(n) or n > #last.items then
             return string.format(
                 "Error: 'search_result' must be a whole number between 1 and %d (from your most recent grep call).",
-                #last.items)
+                #last.items
+            )
         end
         local item = last.items[n]
         pos0, pos1 = item.start, item["end"]
@@ -724,7 +769,9 @@ local function tool_create_highlight(ui, input)
         if not results or #results == 0 then
             return string.format(
                 "No passage matching %q was found to highlight. Use the exact wording from the book, or grep first.",
-                input.text), _("no match")
+                input.text
+            ),
+                _("no match")
         end
         local page = input.page ~= nil and tonumber(input.page) or nil
         local matches = {}
@@ -745,17 +792,28 @@ local function tool_create_highlight(ui, input)
                 return "Error: 'occurrence' must be a whole number (1 for the first match)."
             end
             if occ > #matches then
-                return string.format("Only %d match(es) for %q%s; cannot highlight occurrence %d.",
-                    #matches, input.text, page and (" on page " .. page) or "", occ)
+                return string.format(
+                    "Only %d match(es) for %q%s; cannot highlight occurrence %d.",
+                    #matches,
+                    input.text,
+                    page and (" on page " .. page) or "",
+                    occ
+                )
             end
             pos0, pos1 = matches[occ].start, matches[occ]["end"]
         elseif #matches > 1 then
             -- Ambiguous: name the pages and make the model choose rather than guess.
             local pages = {}
-            for i = 1, math.min(#matches, 10) do pages[i] = tostring(matches[i]._page) end
+            for i = 1, math.min(#matches, 10) do
+                pages[i] = tostring(matches[i]._page)
+            end
             return string.format(
                 "Found %d matches for %q (pages %s). Specify 'occurrence' (1-based, in reading order) or narrow with 'page'.",
-                #matches, input.text, table.concat(pages, ", ")), _("ambiguous")
+                #matches,
+                input.text,
+                table.concat(pages, ", ")
+            ),
+                _("ambiguous")
         else
             pos0, pos1 = matches[1].start, matches[1]["end"]
         end
@@ -764,14 +822,14 @@ local function tool_create_highlight(ui, input)
     end
 
     local item
-    item, err = saveHighlightFromXPointers(ui, pos0, pos1,
-        { note = input.note, color = input.color, drawer = input.drawer })
+    item, err =
+        saveHighlightFromXPointers(ui, pos0, pos1, { note = input.note, color = input.color, drawer = input.drawer })
     if not item then
         return err
     end
     local snippet = item.text:gsub("%s+", " ")
     local note_part = item.note and ("\nNote: " .. item.note) or ""
-    return string.format("Highlighted on %s:\n\"%s\"%s", highlightLocation(item), snippet, note_part),
+    return string.format('Highlighted on %s:\n"%s"%s', highlightLocation(item), snippet, note_part),
         _("highlight added")
 end
 
@@ -798,15 +856,35 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    query = { type = "string", description = "Text or, with regex=true, a pattern to find (case-insensitive)." },
-                    regex = { type = "boolean", description = "Treat query as a regular expression instead of a literal substring (default false)." },
-                    context = { type = "string", enum = { "words", "sentence" }, description = "How much context to show per hit: a short word window ('words', the default) or the whole sentence ('sentence')." },
+                    query = {
+                        type = "string",
+                        description = "Text or, with regex=true, a pattern to find (case-insensitive).",
+                    },
+                    regex = {
+                        type = "boolean",
+                        description = "Treat query as a regular expression instead of a literal substring (default false).",
+                    },
+                    context = {
+                        type = "string",
+                        enum = { "words", "sentence" },
+                        description = "How much context to show per hit: a short word window ('words', the default) or the whole sentence ('sentence').",
+                    },
                     max_results = { type = "integer", description = "Maximum matches to return (default 8, max 20)." },
-                    spoiler = { type = "boolean", description = "Allow matches past the reader's current page (default false). Left false, later-page matches are hidden so the reader is not spoiled; only their count is reported." },
-                    max_page = { type = "integer", description = "Hide matches on pages greater than this (1-based). Only tightens the spoiler-safe window to an earlier page; it never reveals past the reader's current page." },
+                    spoiler = {
+                        type = "boolean",
+                        description = "Allow matches past the reader's current page (default false). Left false, later-page matches are hidden so the reader is not spoiled; only their count is reported.",
+                    },
+                    max_page = {
+                        type = "integer",
+                        description = "Hide matches on pages greater than this (1-based). Only tightens the spoiler-safe window to an earlier page; it never reveals past the reader's current page.",
+                    },
                 },
                 required = { "query" },
-                input_examples = { { query = "Mara" }, { query = "the harbour", max_results = 5 }, { query = "harbour", context = "sentence" } },
+                input_examples = {
+                    { query = "Mara" },
+                    { query = "the harbour", max_results = 5 },
+                    { query = "harbour", context = "sentence" },
+                },
             },
         },
         {
@@ -824,9 +902,18 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    from = { type = "string", description = "A locator (loc:… from grep/get_toc/a previous read) OR a page number as a string. Omit to start at the reader's current page." },
-                    limit = { type = "integer", description = "Approximate characters to return (default 1500, max 4000). Smaller is cheaper." },
-                    spoiler = { type = "boolean", description = "Allow reading past the reader's current page (default false). Left false, a read that would go beyond where the reader is stops there, and a read that starts ahead is refused, to avoid spoilers." },
+                    from = {
+                        type = "string",
+                        description = "A locator (loc:… from grep/get_toc/a previous read) OR a page number as a string. Omit to start at the reader's current page.",
+                    },
+                    limit = {
+                        type = "integer",
+                        description = "Approximate characters to return (default 1500, max 4000). Smaller is cheaper.",
+                    },
+                    spoiler = {
+                        type = "boolean",
+                        description = "Allow reading past the reader's current page (default false). Left false, a read that would go beyond where the reader is stops there, and a read that starts ahead is refused, to avoid spoilers.",
+                    },
                 },
             },
             input_examples = {
@@ -848,7 +935,10 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    max_results = { type = "integer", description = "Maximum highlights/notes to return (default 100, max 500)." },
+                    max_results = {
+                        type = "integer",
+                        description = "Maximum highlights/notes to return (default 100, max 500).",
+                    },
                 },
             },
         },
@@ -885,8 +975,14 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    highlight_index = { type = "integer", description = "1-based number of the highlight as listed by get_highlights." },
-                    note = { type = "string", description = "Note text to add. Appended below any existing note for that highlight." },
+                    highlight_index = {
+                        type = "integer",
+                        description = "1-based number of the highlight as listed by get_highlights.",
+                    },
+                    note = {
+                        type = "string",
+                        description = "Note text to add. Appended below any existing note for that highlight.",
+                    },
                 },
                 required = { "highlight_index", "note" },
             },
@@ -906,14 +1002,37 @@ function Tools.getSpecs()
             input_schema = {
                 type = "object",
                 properties = {
-                    locator = { type = "string", description = "A loc: token of a grep hit (a passage) to highlight, from your most recent grep results." },
-                    search_result = { type = "integer", description = "1-based number of a match from your most recent grep call." },
-                    text = { type = "string", description = "Verbatim passage to find and highlight (use exact wording from the book). Ignored if locator or search_result is given." },
-                    occurrence = { type = "integer", description = "Which match of 'text' to highlight when it occurs more than once (1-based, reading order). Defaults to the only/first match." },
-                    page = { type = "integer", description = "Restrict the 'text' search to this page (1-based) to disambiguate repeated passages." },
+                    locator = {
+                        type = "string",
+                        description = "A loc: token of a grep hit (a passage) to highlight, from your most recent grep results.",
+                    },
+                    search_result = {
+                        type = "integer",
+                        description = "1-based number of a match from your most recent grep call.",
+                    },
+                    text = {
+                        type = "string",
+                        description = "Verbatim passage to find and highlight (use exact wording from the book). Ignored if locator or search_result is given.",
+                    },
+                    occurrence = {
+                        type = "integer",
+                        description = "Which match of 'text' to highlight when it occurs more than once (1-based, reading order). Defaults to the only/first match.",
+                    },
+                    page = {
+                        type = "integer",
+                        description = "Restrict the 'text' search to this page (1-based) to disambiguate repeated passages.",
+                    },
                     note = { type = "string", description = "Optional note to attach to the new highlight." },
-                    color = { type = "string", enum = COLOR_LIST, description = "Optional highlight color. Defaults to the reader's saved color." },
-                    drawer = { type = "string", enum = DRAWER_LIST, description = "Optional highlight style. Defaults to the reader's saved style." },
+                    color = {
+                        type = "string",
+                        enum = COLOR_LIST,
+                        description = "Optional highlight color. Defaults to the reader's saved color.",
+                    },
+                    drawer = {
+                        type = "string",
+                        enum = DRAWER_LIST,
+                        description = "Optional highlight style. Defaults to the reader's saved style.",
+                    },
                 },
             },
             input_examples = {

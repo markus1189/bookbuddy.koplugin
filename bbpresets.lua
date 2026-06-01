@@ -7,27 +7,27 @@ local _ = require("gettext")
 local Presets = {}
 
 Presets.book = {
-    { _("Overview"),   _("Give me a brief overview of this book.") },
+    { _("Overview"), _("Give me a brief overview of this book.") },
     { _("Characters"), _("Who are the main characters so far?") },
-    { _("Themes"),     _("What are the main themes of this book?") },
-    { _("Recap"),      _("Recap what has happened up to where I am.") },
+    { _("Themes"), _("What are the main themes of this book?") },
+    { _("Recap"), _("Recap what has happened up to where I am.") },
 }
 
 Presets.passage = {
-    { _("Explain"),        _("Explain this passage and its significance in the book.") },
+    { _("Explain"), _("Explain this passage and its significance in the book.") },
     { _("Why it matters"), _("Why is this passage significant?") },
-    { _("Define"),         _("Define any difficult terms or references in this passage.") },
-    { _("Simpler"),        _("Explain this passage in simpler terms.") },
+    { _("Define"), _("Define any difficult terms or references in this passage.") },
+    { _("Simpler"), _("Explain this passage in simpler terms.") },
 }
 
 Presets.followup = {
     -- "Yes" is first so it's the obvious tap when the agent ends a turn with a
     -- yes/no question. It prefills like the rest, so it's still tap-then-Send.
-    { _("Yes"),     _("Yes.") },
-    { _("Go on"),   _("Go on.") },
+    { _("Yes"), _("Yes.") },
+    { _("Go on"), _("Go on.") },
     { _("Simpler"), _("Explain that in simpler terms.") },
     { _("Example"), _("Give me a concrete example.") },
-    { _("Why?"),    _("Why is that?") },
+    { _("Why?"), _("Why is that?") },
 }
 
 -- Build InputDialog button rows that prefill the input box when tapped, chunked

@@ -35,15 +35,15 @@ local function stripMarkdown(text)
     if not text or text == "" then
         return text
     end
-    text = text:gsub("```[%w%-]*\n?", "")          -- fenced code markers
-    text = text:gsub("%*%*(.-)%*%*", "%1")          -- **bold**
-    text = text:gsub("%*(%S.-%S)%*", "%1")          -- *italic* (multi-char)
-    text = text:gsub("%*(%S)%*", "%1")              -- *i* (single char)
-    text = text:gsub("~~(.-)~~", "%1")              -- ~~strike~~
-    text = text:gsub("`(.-)`", "%1")                -- `inline code`
+    text = text:gsub("```[%w%-]*\n?", "") -- fenced code markers
+    text = text:gsub("%*%*(.-)%*%*", "%1") -- **bold**
+    text = text:gsub("%*(%S.-%S)%*", "%1") -- *italic* (multi-char)
+    text = text:gsub("%*(%S)%*", "%1") -- *i* (single char)
+    text = text:gsub("~~(.-)~~", "%1") -- ~~strike~~
+    text = text:gsub("`(.-)`", "%1") -- `inline code`
     text = text:gsub("%[(.-)%]%((.-)%)", "%1 (%2)") -- [text](url) -> text (url)
-    text = text:gsub("^#+%s*", "")                  -- heading on the first line
-    text = text:gsub("(\n)#+%s*", "%1")             -- headings on later lines
+    text = text:gsub("^#+%s*", "") -- heading on the first line
+    text = text:gsub("(\n)#+%s*", "%1") -- headings on later lines
     return text
 end
 
@@ -148,22 +148,27 @@ function Conversation:ask(question)
         if not (self.selected_text and self.selected_text ~= "") then
             -- Book-level chat: no highlighted passage, just the book context and
             -- the reader's question (started from the menu, not a selection).
-            seed = T(
-                "<book_context>\n%1\n</book_context>\n\n<question>\n%2\n</question>",
-                context, question)
+            seed = T("<book_context>\n%1\n</book_context>\n\n<question>\n%2\n</question>", context, question)
         elseif self.note and self.note ~= "" then
             seed = T(
                 "<book_context>\n%1\n</book_context>\n\n"
                     .. "<highlighted_passage>\n%2\n</highlighted_passage>\n\n"
                     .. "<reader_note>\n%3\n</reader_note>\n\n"
                     .. "<question>\n%4\n</question>",
-                context, self.selected_text, self.note, question)
+                context,
+                self.selected_text,
+                self.note,
+                question
+            )
         else
             seed = T(
                 "<book_context>\n%1\n</book_context>\n\n"
                     .. "<highlighted_passage>\n%2\n</highlighted_passage>\n\n"
                     .. "<question>\n%3\n</question>",
-                context, self.selected_text, question)
+                context,
+                self.selected_text,
+                question
+            )
         end
         self.messages[#self.messages + 1] = { role = "user", content = seed }
     else
@@ -174,7 +179,9 @@ function Conversation:ask(question)
 end
 
 function Conversation:run()
-    if NetworkMgr:willRerunWhenOnline(function() self:run() end) then
+    if NetworkMgr:willRerunWhenOnline(function()
+        self:run()
+    end) then
         return
     end
     Trapper:wrap(function()
@@ -233,11 +240,13 @@ function Conversation:_loop()
         -- balanced (the prior round appended both the assistant tool_use and the user
         -- tool_result), so a later ask() can resend it.
         local co = coroutine.running()
-        UIManager:nextTick(function() coroutine.resume(co) end)
+        UIManager:nextTick(function()
+            coroutine.resume(co)
+        end)
         coroutine.yield()
         if self.stop_requested then
             self:_closeViewer()
-            UIManager:show(InfoMessage:new{ text = _("BookBuddy request cancelled.") })
+            UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
             return
         end
 
@@ -250,8 +259,7 @@ function Conversation:_loop()
         local tools = (not last_round) and self.tool_specs or nil
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
-        logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages,
-            "tools:", tools and #tools or 0)
+        logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages, "tools:", tools and #tools or 0)
         self:_ensureStreamingViewer()
 
         -- Each entry is created on its first delta so a turn that produces no
@@ -260,7 +268,7 @@ function Conversation:_loop()
         -- _renderAssistantTurn); mark where this turn's entries begin.
         local turn_transcript_start = #self.transcript
         local entry, thinking_entry
-        local parser = Anthropic.newStreamParser{
+        local parser = Anthropic.newStreamParser({
             on_thinking = function()
                 -- We don't surface the summarized thinking text anymore, just a
                 -- "Thinking..." status that flips to "Done" once the answer
@@ -274,7 +282,9 @@ function Conversation:_loop()
                 end
             end,
             on_text = function(t)
-                if thinking_entry then thinking_entry.done = true end
+                if thinking_entry then
+                    thinking_entry.done = true
+                end
                 if not entry then
                     entry = { role = "assistant", text = "" }
                     self.transcript[#self.transcript + 1] = entry
@@ -282,26 +292,30 @@ function Conversation:_loop()
                 entry.text = entry.text .. t
                 self:_scheduleFlush()
             end,
-        }
+        })
 
-        local r = Stream.run{
+        local r = Stream.run({
             child_fn = Anthropic.streamChildFn(body, cfg),
-            on_line = function(line) parser:feed(line) end,
-            register_cancel = function(fn) self._cancel = fn end,
-        }
+            on_line = function(line)
+                parser:feed(line)
+            end,
+            register_cancel = function(fn)
+                self._cancel = fn
+            end,
+        })
         self:_cancelFlush()
 
         if r.cancelled then
             self:_dropDanglingTail()
             self:_closeViewer()
-            UIManager:show(InfoMessage:new{ text = _("BookBuddy request cancelled.") })
+            UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
             return
         end
         if r.read_error then
             logger.warn("BookBuddy: streaming connection failed")
             self:_dropDanglingTail()
             self:_closeViewer()
-            UIManager:show(InfoMessage:new{ text = _("BookBuddy: the streaming connection failed.") })
+            UIManager:show(InfoMessage:new({ text = _("BookBuddy: the streaming connection failed.") }))
             return
         end
 
@@ -428,10 +442,15 @@ function Conversation:_dropDanglingTail()
         local dangling = (last.role == "user")
         if last.role == "assistant" and type(last.content) == "table" then
             for _, b in ipairs(last.content) do
-                if b.type == "tool_use" then dangling = true break end
+                if b.type == "tool_use" then
+                    dangling = true
+                    break
+                end
             end
         end
-        if not dangling then break end
+        if not dangling then
+            break
+        end
         m[#m] = nil
     end
 end
@@ -461,8 +480,7 @@ function Conversation:_toolActionPhrase(tu)
     if tu.name == "search_book" then
         phrase = T(_("Searched book for %1"), string.format("%q", input.query or ""))
     elseif tu.name == "read" then
-        phrase = T(_("Reading from %1"),
-            (input.from and tostring(input.from)) or _("your current page"))
+        phrase = T(_("Reading from %1"), (input.from and tostring(input.from)) or _("your current page"))
     elseif tu.name == "get_toc" then
         phrase = _("Fetched the table of contents")
     elseif tu.name == "book_context" then
@@ -625,7 +643,7 @@ function Conversation:_ensureStreamingViewer()
         UIManager:close(self.viewer)
         self.viewer = nil
     end
-    self.viewer = ChatViewer.build{
+    self.viewer = ChatViewer.build({
         title = _("BookBuddy"),
         text = self:_transcriptText(),
         on_stop = function()
@@ -634,10 +652,12 @@ function Conversation:_ensureStreamingViewer()
             -- call has no stream to cancel (_cancel is nil) and is picked up at the
             -- next loop boundary.
             self.stop_requested = true
-            if self._cancel then self._cancel() end
+            if self._cancel then
+                self._cancel()
+            end
         end,
         scroll_to_bottom = true,
-    }
+    })
     self.streaming_viewer = true
     UIManager:show(self.viewer)
 end
@@ -682,24 +702,30 @@ function Conversation:_render()
         UIManager:close(self.viewer)
         self.viewer = nil
     end
-    self.viewer = ChatViewer.build{
+    self.viewer = ChatViewer.build({
         title = _("BookBuddy"),
         text = self:_transcriptText(),
-        on_followup = function() self:_promptFollowup() end,
+        on_followup = function()
+            self:_promptFollowup()
+        end,
         scroll_to_bottom = true,
-    }
+    })
     self.streaming_viewer = false
     UIManager:show(self.viewer)
 end
 
 function Conversation:_promptFollowup()
     local dialog
-    local buttons = Presets.buttonRows(Presets.followup, function() return dialog end)
+    local buttons = Presets.buttonRows(Presets.followup, function()
+        return dialog
+    end)
     buttons[#buttons + 1] = {
         {
             text = _("Cancel"),
             id = "close",
-            callback = function() UIManager:close(dialog) end,
+            callback = function()
+                UIManager:close(dialog)
+            end,
         },
         {
             text = _("Send"),
@@ -713,12 +739,12 @@ function Conversation:_promptFollowup()
             end,
         },
     }
-    dialog = InputDialog:new{
+    dialog = InputDialog:new({
         title = _("Reply"),
         input = "",
         input_hint = _("Type your reply"),
         buttons = buttons,
-    }
+    })
     UIManager:show(dialog)
     dialog:onShowKeyboard()
 end
@@ -735,7 +761,7 @@ function Conversation:_showError(res)
     else
         msg = T(_("BookBuddy API error: %1"), tostring(res.error_message or _("unknown error")))
     end
-    UIManager:show(InfoMessage:new{ text = msg })
+    UIManager:show(InfoMessage:new({ text = msg }))
 end
 
 return Conversation

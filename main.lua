@@ -11,10 +11,10 @@ local Settings = require("bbsettings")
 local Conversation = require("bbconversation")
 local Presets = require("bbpresets")
 
-local BookBuddy = WidgetContainer:extend{
+local BookBuddy = WidgetContainer:extend({
     name = "bookbuddy",
     is_doc_only = true,
-}
+})
 
 function BookBuddy:init()
     self.settings = Settings:new(self.name)
@@ -38,7 +38,9 @@ function BookBuddy:init()
                     -- A fresh selection has no note. Keep the note's wording intact
                     -- (cleanupSelectedText is for extracted document text, not prose).
                     local note = sel.note
-                    if note == "" then note = nil end
+                    if note == "" then
+                        note = nil
+                    end
                     this:onClose()
                     self:promptAndStart(text, note)
                 end,
@@ -67,9 +69,9 @@ function BookBuddy:onBookBuddyAskSelection()
     local hl = self.ui and self.ui.highlight
     local sel = hl and hl.selected_text
     if not (sel and sel.text and sel.text ~= "") then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new({
             text = _("Select some text first, then chat with BookBuddy about it."),
-        })
+        }))
         return true
     end
     local text = util.cleanupSelectedText(sel.text)
@@ -91,7 +93,9 @@ function BookBuddy:addToMainMenu(menu_items)
     -- needed. Omit keep_menu_open so the menu closes when the chat opens.
     table.insert(menu.sub_item_table, 1, {
         text = _("Chat about this book"),
-        callback = function() self:promptAndStart(nil) end,
+        callback = function()
+            self:promptAndStart(nil)
+        end,
     })
     menu_items.bookbuddy = menu
 end
@@ -100,9 +104,9 @@ end
 -- on it, if any), then start a chat.
 function BookBuddy:promptAndStart(text, note)
     if not self.settings:isConfigured() then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new({
             text = _("BookBuddy is not configured yet.\nOpen the menu → BookBuddy to set your Portkey API key."),
-        })
+        }))
         return
     end
 
@@ -129,9 +133,9 @@ function BookBuddy:promptAndStart(text, note)
     end
 
     local dialog
-    local buttons = Presets.buttonRows(
-        has_text and Presets.passage or Presets.book,
-        function() return dialog end)
+    local buttons = Presets.buttonRows(has_text and Presets.passage or Presets.book, function()
+        return dialog
+    end)
     buttons[#buttons + 1] = {
         {
             text = _("Cancel"),
@@ -155,23 +159,23 @@ function BookBuddy:promptAndStart(text, note)
                         question = _("Explain this passage and its significance in the book.")
                     end
                 end
-                local conversation = Conversation:new{
+                local conversation = Conversation:new({
                     ui = self.ui,
                     settings = self.settings,
                     selected_text = text,
                     note = note,
-                }
+                })
                 conversation:ask(question)
             end,
         },
     }
-    dialog = InputDialog:new{
+    dialog = InputDialog:new({
         title = _("Chat with BookBuddy"),
         description = description,
         input = "",
         input_hint = input_hint,
         buttons = buttons,
-    }
+    })
     UIManager:show(dialog)
     dialog:onShowKeyboard()
 end

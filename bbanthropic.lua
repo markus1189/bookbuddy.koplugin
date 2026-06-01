@@ -112,10 +112,14 @@ function Anthropic.streamChildFn(body_json, cfg)
         -- keep the fd open to append a status marker, then close it by hand.
         local pipe = {
             write = function(self, chunk)
-                if chunk then ffiutil.writeToFD(child_write_fd, chunk) end
+                if chunk then
+                    ffiutil.writeToFD(child_write_fd, chunk)
+                end
                 return self
             end,
-            close = function() return true end,
+            close = function()
+                return true
+            end,
         }
 
         local headers = {
@@ -132,13 +136,16 @@ function Anthropic.streamChildFn(body_json, cfg)
         -- Block (between-chunk) timeout only; no total cap, since a long reply can
         -- legitimately stream for minutes. The user cancels via the Stop button.
         socketutil:set_timeout(120, -1)
-        local code, resp_headers = socket.skip(1, http.request{
-            url = cfg.base_url .. "/v1/messages",
-            method = "POST",
-            headers = headers,
-            source = ltn12.source.string(body_json),
-            sink = ltn12.sink.file(pipe),
-        })
+        local code, resp_headers = socket.skip(
+            1,
+            http.request({
+                url = cfg.base_url .. "/v1/messages",
+                method = "POST",
+                headers = headers,
+                source = ltn12.source.string(body_json),
+                sink = ltn12.sink.file(pipe),
+            })
+        )
         socketutil:reset_timeout()
 
         if resp_headers == nil then
@@ -160,8 +167,8 @@ function Anthropic.newStreamParser(o)
     return setmetatable({
         on_text = o.on_text,
         on_thinking = o.on_thinking,
-        blocks = {},        -- index (0-based) -> content block table
-        json_accum = {},    -- index -> accumulated tool_use input JSON string
+        blocks = {}, -- index (0-based) -> content block table
+        json_accum = {}, -- index -> accumulated tool_use input JSON string
         max_index = -1,
         stop_reason = nil,
         -- Anthropic-shaped so bbconversation's existing accumulation works as-is.
@@ -171,11 +178,11 @@ function Anthropic.newStreamParser(o)
             cache_read_input_tokens = 0,
             cache_creation_input_tokens = 0,
         },
-        error = nil,           -- mid-stream error event { type, message }
+        error = nil, -- mid-stream error event { type, message }
         non200 = false,
         network_error = false,
         code = nil,
-        error_body = {},       -- buffered raw JSON lines of a non-200 body
+        error_body = {}, -- buffered raw JSON lines of a non-200 body
         done = false,
     }, Parser)
 end
@@ -200,7 +207,9 @@ function Parser:_event(event)
     elseif t == "content_block_start" then
         local idx = event.index
         self.blocks[idx] = event.content_block
-        if idx > self.max_index then self.max_index = idx end
+        if idx > self.max_index then
+            self.max_index = idx
+        end
         local bt = event.content_block and event.content_block.type
         if bt == "tool_use" or bt == "server_tool_use" then
             self.json_accum[idx] = ""
@@ -211,18 +220,28 @@ function Parser:_event(event)
         if d then
             if d.type == "text_delta" and d.text then
                 local b = self.blocks[idx]
-                if b then b.text = (b.text or "") .. d.text end
-                if self.on_text then self.on_text(d.text) end
+                if b then
+                    b.text = (b.text or "") .. d.text
+                end
+                if self.on_text then
+                    self.on_text(d.text)
+                end
             elseif d.type == "thinking_delta" and d.thinking then
                 local b = self.blocks[idx]
-                if b then b.thinking = (b.thinking or "") .. d.thinking end
-                if self.on_thinking then self.on_thinking(d.thinking) end
+                if b then
+                    b.thinking = (b.thinking or "") .. d.thinking
+                end
+                if self.on_thinking then
+                    self.on_thinking(d.thinking)
+                end
             elseif d.type == "signature_delta" and d.signature then
                 -- Accumulate onto the thinking block; the API requires the
                 -- signature back verbatim when the turn's thinking is resent
                 -- alongside tool_use, so it must survive in self.blocks[idx].
                 local b = self.blocks[idx]
-                if b then b.signature = (b.signature or "") .. d.signature end
+                if b then
+                    b.signature = (b.signature or "") .. d.signature
+                end
             elseif d.type == "input_json_delta" and d.partial_json then
                 self.json_accum[idx] = (self.json_accum[idx] or "") .. d.partial_json
             end
@@ -252,7 +271,9 @@ function Parser:_event(event)
 end
 
 function Parser:feed(line)
-    if self.done then return end
+    if self.done then
+        return
+    end
     local payload = data_payload(line)
     if payload then
         if payload == "[DONE]" then

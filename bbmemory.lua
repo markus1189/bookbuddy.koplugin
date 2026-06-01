@@ -132,10 +132,14 @@ end
 
 -- Recursively collect entries under a directory, up to VIEW_MAX_DEPTH levels.
 local function collectTree(real_dir, vpath_dir, depth, acc)
-    if depth > VIEW_MAX_DEPTH then return end
+    if depth > VIEW_MAX_DEPTH then
+        return
+    end
     local names = {}
     local ok, iter, dir_obj = pcall(lfs.dir, real_dir)
-    if not ok then return end
+    if not ok then
+        return
+    end
     for name in iter, dir_obj do
         if name ~= "." and name ~= ".." and name:sub(1, 1) ~= "." and name ~= "node_modules" then
             names[#names + 1] = name
@@ -156,7 +160,9 @@ end
 function Store:_view(input)
     local vpath = input.path or VIRTUAL_ROOT
     local real, err = self:_resolve(vpath)
-    if not real then return err end
+    if not real then
+        return err
+    end
     if real == self.base_dir then
         util.makePath(self.base_dir)
     end
@@ -166,7 +172,10 @@ function Store:_view(input)
     end
     if mode == "directory" then
         local lines = {
-            T("Here're the files and directories up to 2 levels deep in %1, excluding hidden items and node_modules:", vpath),
+            T(
+                "Here're the files and directories up to 2 levels deep in %1, excluding hidden items and node_modules:",
+                vpath
+            ),
             friendlySize(lfs.attributes(real, "size")) .. "\t" .. vpath,
         }
         local acc = {}
@@ -193,7 +202,9 @@ end
 function Store:_create(input)
     local vpath = input.path
     local real, err = self:_resolve(vpath)
-    if not real then return err end
+    if not real then
+        return err
+    end
     if lfs.attributes(real, "mode") ~= nil then
         return T("Error: File %1 already exists", vpath)
     end
@@ -208,7 +219,9 @@ end
 function Store:_strReplace(input)
     local vpath = input.path
     local real, err = self:_resolve(vpath)
-    if not real then return err end
+    if not real then
+        return err
+    end
     if lfs.attributes(real, "mode") ~= "file" then
         return T("Error: The path %1 does not exist. Please provide a valid path.", vpath)
     end
@@ -222,7 +235,9 @@ function Store:_strReplace(input)
     local idx = 1
     while true do
         local s_, e_ = content:find(old_str, idx, true)
-        if not s_ then break end
+        if not s_ then
+            break
+        end
         positions[#positions + 1] = s_
         idx = e_ + 1
     end
@@ -234,8 +249,11 @@ function Store:_strReplace(input)
         for _, pos in ipairs(positions) do
             nums[#nums + 1] = tostring(lineOfOffset(content, pos))
         end
-        return T("No replacement was performed. Multiple occurrences of old_str `%1` in lines: %2. Please ensure it is unique",
-            old_str, table.concat(nums, ", "))
+        return T(
+            "No replacement was performed. Multiple occurrences of old_str `%1` in lines: %2. Please ensure it is unique",
+            old_str,
+            table.concat(nums, ", ")
+        )
     end
     local at = positions[1]
     local new_content = content:sub(1, at - 1) .. new_str .. content:sub(at + #old_str)
@@ -251,7 +269,9 @@ end
 function Store:_insert(input)
     local vpath = input.path
     local real, err = self:_resolve(vpath)
-    if not real then return err end
+    if not real then
+        return err
+    end
     if lfs.attributes(real, "mode") ~= "file" then
         return T("Error: The path %1 does not exist", vpath)
     end
@@ -261,19 +281,34 @@ function Store:_insert(input)
     local n = #lines
     local insert_line = tonumber(input.insert_line)
     if not insert_line or insert_line < 0 or insert_line > n then
-        return T("Error: Invalid `insert_line` parameter: %1. It should be within the range of lines of the file: [0, %2]",
-            tostring(input.insert_line), tostring(n))
+        return T(
+            "Error: Invalid `insert_line` parameter: %1. It should be within the range of lines of the file: [0, %2]",
+            tostring(input.insert_line),
+            tostring(n)
+        )
     end
     local text = input.insert_text or ""
-    if text:sub(-1) == "\n" then text = text:sub(1, -2) end
+    if text:sub(-1) == "\n" then
+        text = text:sub(1, -2)
+    end
     local ins = splitLines(text)
-    if #ins == 0 then ins = { "" } end
+    if #ins == 0 then
+        ins = { "" }
+    end
     local result = {}
-    for i = 1, insert_line do result[#result + 1] = lines[i] end
-    for i = 1, #ins do result[#result + 1] = ins[i] end
-    for i = insert_line + 1, n do result[#result + 1] = lines[i] end
+    for i = 1, insert_line do
+        result[#result + 1] = lines[i]
+    end
+    for i = 1, #ins do
+        result[#result + 1] = ins[i]
+    end
+    for i = insert_line + 1, n do
+        result[#result + 1] = lines[i]
+    end
     local new_content = table.concat(result, "\n")
-    if had_trailing_nl or content == "" then new_content = new_content .. "\n" end
+    if had_trailing_nl or content == "" then
+        new_content = new_content .. "\n"
+    end
     local ok, werr = util.writeToFile(new_content, real)
     if not ok then
         return T("Error: could not write %1: %2", vpath, tostring(werr))
@@ -284,7 +319,9 @@ end
 function Store:_delete(input)
     local vpath = input.path
     local real, err = self:_resolve(vpath)
-    if not real then return err end
+    if not real then
+        return err
+    end
     local mode = lfs.attributes(real, "mode")
     if not mode then
         return T("Error: The path %1 does not exist", vpath)
@@ -300,9 +337,13 @@ end
 function Store:_rename(input)
     local old_vpath, new_vpath = input.old_path, input.new_path
     local old_real, oerr = self:_resolve(old_vpath)
-    if not old_real then return oerr end
+    if not old_real then
+        return oerr
+    end
     local new_real, nerr = self:_resolve(new_vpath)
-    if not new_real then return nerr end
+    if not new_real then
+        return nerr
+    end
     if lfs.attributes(old_real, "mode") == nil then
         return T("Error: The path %1 does not exist", old_vpath)
     end
@@ -348,7 +389,9 @@ function Memory.summaryText(ui)
         return header .. "\n\n" .. _("(no memory stored yet)")
     end
     local files = {}
-    util.findFiles(base, function(path) files[#files + 1] = path end, true)
+    util.findFiles(base, function(path)
+        files[#files + 1] = path
+    end, true)
     table.sort(files)
     if #files == 0 then
         return header .. "\n\n" .. _("(no memory stored yet)")
