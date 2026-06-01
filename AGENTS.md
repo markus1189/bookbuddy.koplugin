@@ -61,6 +61,17 @@ against hand-rolled fake `ui`/document objects) are parked in `tests/integration
 (`luajit tests/integration/tools.lua`) until Tier 2 runs them inside KOReader's real test
 harness. They are *not* part of `nix run .#test` / `.#check`.
 
+**Tier 2 (real crengine) — `nix run .#test-real`.** Runs BookBuddy's tools against a real
+document (`juliet.epub`) with real crengine — **fully hermetic, no local koreader checkout**.
+The built emulator (libkoreader-cre.so, luajit, frontend, ffi, fonts, data) is nixpkgs' prebuilt
+`koreader` package (the amd64 .deb, `v2025.10`, pulled from the binary cache). The flake overlays
+the test-only bits that package omits: `commonrequire` from the `koreader` source input (pinned to
+the same `v2025.10`), `juliet.epub` from the `koreader-test-data` input, busted from a nixpkgs
+luaEnv, a vendored `tests/integration/busted_helper.lua`, and SDL2 + libstdc++ from nixpkgs. To bump
+the koreader version, move `nixpkgs#koreader` and the `koreader` input in lockstep. Spec/plugin dir
+default to the flake source; override with `BB_SPEC` / `BB_PLUGIN_DIR` to run a worktree copy.
+x86_64-linux only (nixpkgs#koreader repackages the amd64 .deb). Background: `.plans/spike-sdl3-pin.md`.
+
 ## Lint
 `.luacheckrc` is copied from KOReader (same globals/ignores):
 ```

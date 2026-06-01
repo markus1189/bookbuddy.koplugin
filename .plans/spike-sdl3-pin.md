@@ -4,6 +4,54 @@
 > over a real book). Time-boxed de-risk, not production test code. Tier 1 (`tier1-busted.md`)
 > does **not** depend on this and can proceed in parallel.
 
+> **STATUS: ✅ SPIKE DONE — all three DODs green.** The glibc ABI clash was caused by feeding the
+> emulator an *arbitrary-nixpkgs* SDL3 (3.4.8, needs glibc 2.42) when koreader-base links
+> **glibc-2.40-66**. The fix needs no rebuild: koreader's own `tools/shell.nix` pins
+> **nixos-25.05**, which ships **sdl3-3.2.20** (glibc-2.40 match) *and already* exports
+> `LD_LIBRARY_PATH=${pkgs.sdl3}/lib`. Running inside `nix-shell tools/shell.nix`:
+> - **DOD #1** — upstream `spec/front/unit/readersearch_spec.lua` (real `juliet.epub`): **16/0/0**, exit 0.
+> - **DOD #2** — BookBuddy smoke spec (`tests/integration/_smoke_spec.lua`): **2/0/0**. Real `ReaderUI`
+>   over `juliet.epub`; `book_context` returned a real crengine page count, `grep "Verona"` returned a
+>   real `[page N] (loc:K)` hit.
+> - **DOD #3** — both runs were cold (fresh `KO_HOME`, no hand-tweaking); the runner
+>   `tests/integration/run_smoke.sh` reproduces green from a clean shell.
+>
+> ### Env strategy DECISION — (a): SDL3 from koreader's `tools/shell.nix`
+> Reject (b)/(c): no `nix-ld`/FHS shim and no base rebuild are needed; the glibc-coherent SDL3 is the
+> one the build shell already provides. Recipe (all in `tests/integration/run_smoke.sh`):
+> - **cwd:** the emulator install dir `…/koreader-emulator-x86_64-unknown-linux-gnu-debug/koreader`.
+> - **SDL3:** enter `nix-shell "$KOREADER_DIR/tools/shell.nix"` → `LD_LIBRARY_PATH` points at
+>   `…-sdl3-3.2.20-lib/lib` (glibc-2.40). Do **not** add stray SDL3 paths.
+> - **env:** `KO_HOME=$(mktemp -d)`, `TESSDATA_PREFIX=$PWD/data`, `SDL_VIDEODRIVER=dummy`.
+> - `LUA_CPATH='?.so;common/?.so;spec/rocks/lib/lua/5.1/?.so'`
+> - `LUA_PATH='?.lua;common/?.lua;frontend/?.lua;spec/front/unit/?.lua;spec/rocks/share/lua/5.1/?.lua;spec/rocks/share/lua/5.1/?/init.lua;$PLUGIN_DIR/?.lua'`
+>   — the trailing `$PLUGIN_DIR/?.lua` makes `require("bbtools")` resolve by short name; bbtools pulls in
+>   only KOReader modules (Event/logger/util/gettext/ffi-util/rapidjson), no `bb*` siblings, so no plugin
+>   symlink into `plugins/` is required for a direct-`require` smoke spec.
+> - **runner:** `./luajit -e 'require "busted.runner" {standalone=false}' /dev/null --helper=spec/helper.lua
+>   --loaders=lua --lazy -- <abs path to spec>` (busted takes an absolute spec path; the spec itself loads
+>   `commonrequire`/`disable_plugins`).
+>
+> ### Spec for the Tier-2 `.#test-real` flake app — SUPERSEDED, now fully hermetic
+> The original plan located a prebuilt checkout via `$KOREADER_DIR` + `nix-shell tools/shell.nix`.
+> **That dependency is gone.** `nix run .#test-real` now needs **no local koreader checkout**:
+> - Built emulator = **`nixpkgs#koreader`** (the amd64 .deb, `v2025.10`, from the binary cache) →
+>   `${koreader}/lib/koreader` provides libs/luajit/frontend/ffi/fonts/data.
+> - Overlaid test-only bits: `commonrequire` from the `koreader` **source** input (pinned to the same
+>   `v2025.10`); `juliet.epub` from the `koreader-test-data` input (via `BB_SAMPLE_EPUB`); busted from
+>   `luajit.withPackages [busted luafilesystem]`; a vendored `tests/integration/busted_helper.lua`
+>   (3 lines — replaces koreader-base's test-runner helper, so **no submodules** are fetched).
+> - **The .deb links SDL2, not SDL3** (and is patchelf'd to glibc-2.42), so the whole glibc-2.40 / 25.05
+>   SDL3 pin is dropped: `LD_LIBRARY_PATH = nixpkgs SDL2 + libstdc++`. cwd = the koreader store root so
+>   crengine's `libs/?` FFI search resolves.
+> Result: `2/0/0` green from a clean machine with only the binary cache. Tradeoff: test stack tracks
+> `nixpkgs#koreader`'s release cadence — bump it and the `koreader` source input in lockstep.
+> Still-open (unchanged): whether a future spec using `load_plugin` needs the plugin symlinked into
+> `plugins/` vs. the current direct `require("bbtools")` via `$PLUGIN_DIR/?.lua`.
+
+---
+*Original spike plan below — kept for context.*
+
 ## Context
 Tier 2/3 depend on running BookBuddy's tools inside KOReader's **real** test harness — real
 Device (dummy framebuffer), real crengine, real `juliet.epub` via

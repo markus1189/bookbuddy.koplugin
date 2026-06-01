@@ -1,5 +1,38 @@
 {
   "nodes": {
+    "koreader": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1761993404,
+        "narHash": "sha256-yBC6xRHgsOZVNZeiSaAPvSWrq8HeL4AEX5X1MKk+eXo=",
+        "owner": "koreader",
+        "repo": "koreader",
+        "rev": "8726233277a86575c3139b7bcb1ce735361dafc9",
+        "type": "github"
+      },
+      "original": {
+        "owner": "koreader",
+        "ref": "v2025.10",
+        "repo": "koreader",
+        "type": "github"
+      }
+    },
+    "koreader-test-data": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1734344729,
+        "narHash": "sha256-08wJyuTXPBgb1TIiWSSwGDwRCKkGZkOl9UzM0ksIIco=",
+        "owner": "koreader",
+        "repo": "test-data",
+        "rev": "c3b5d06e1ae8ea088bd898b0e7f9da3753d0d86c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "koreader",
+        "repo": "test-data",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1779560665,
@@ -18,6 +51,8 @@
     },
     "root": {
       "inputs": {
+        "koreader": "koreader",
+        "koreader-test-data": "koreader-test-data",
         "nixpkgs": "nixpkgs"
       }
     }

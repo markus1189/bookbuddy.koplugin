@@ -6,6 +6,10 @@ return {
     default = {
         lua = "luajit",
         ROOT = { "tests" },
+        -- Discovery matches *_spec.lua. Files under tests/integration/ deliberately
+        -- do NOT use the _spec suffix (smoke_real.lua, tools.lua): they need the real
+        -- KOReader/crengine harness and are run by explicit path via `nix run
+        -- .#test-real`, so this pure-luajit suite must not auto-discover them.
         pattern = "_spec",
         lpath = "./?.lua;./tests/?.lua",
     },
