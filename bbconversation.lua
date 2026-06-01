@@ -490,7 +490,7 @@ end
 function Conversation:_toolActionPhrase(tu)
     local input = tu.input or {}
     local phrase
-    if tu.name == "search_book" then
+    if tu.name == "grep" then
         phrase = T(_("Searched book for %1"), string.format("%q", input.query or ""))
     elseif tu.name == "read" then
         phrase = T(_("Reading from %1"), (input.from and tostring(input.from)) or _("your current page"))

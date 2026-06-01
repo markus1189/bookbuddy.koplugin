@@ -391,6 +391,12 @@ describe("conversation", function()
             )
         end)
 
+        it("phrases the grep search tool", function()
+            -- The tool is named grep; the phrase branch must match that name, not
+            -- the old search_book, or the transcript falls back to "Used grep".
+            assert.are.equal('  → Searched book for "whales"', phrase("grep", { query = "whales" }))
+        end)
+
         it("phrases navigate commands", function()
             assert.are.equal("  → Went to page 88", phrase("navigate", { page = 88 }))
             assert.are.equal("  → Went to 50%", phrase("navigate", { percent = 50 }))
