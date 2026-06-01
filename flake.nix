@@ -11,12 +11,14 @@
     in {
       devShells = forAllSystems (pkgs: {
         # luajit runs the headless test harness and syntax checks; luacheck
-        # lints; lua-language-server is for editor LSP. No build/runtime deps:
-        # the plugin's runtime libs come from KOReader, not from here.
+        # lints; stylua formats (config in stylua.toml); lua-language-server
+        # is for editor LSP. No build/runtime deps: the plugin's runtime libs
+        # come from KOReader, not from here.
         default = pkgs.mkShell {
           packages = [
             pkgs.luajit
             pkgs.luaPackages.luacheck
+            pkgs.stylua
             pkgs.lua-language-server
           ];
         };
