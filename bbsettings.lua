@@ -16,10 +16,11 @@ local DEFAULTS = {
     model = "anthropic/claude-opus-4.8",
     max_tokens = 64000,
     max_turns = 20,
-    -- Off by default: per-book memory rides on Anthropic's server-side memory
-    -- tool (memory_20250818), which the common gateways reject (OpenRouter:
-    -- "Unknown server-tool shorthand"; Requesty/Vertex: treats it as a custom
-    -- tool and 400s). Opt in only when pointing at a native Anthropic endpoint.
+    -- Per-book memory is a self-rolled custom tool (a filesystem-backed /memories
+    -- store in bbmemory), not Anthropic's server-side memory_20250818, so it works
+    -- on any tool-using endpoint — gateways included — rather than only a native
+    -- Anthropic backend. Off by default: it's opt-in and spends a little extra each
+    -- conversation recalling and updating notes.
     enable_memory = false,
     -- Adaptive extended thinking. Opus 4.8 supports adaptive thinking only, off
     -- unless requested; its thinking text is omitted unless we ask for the

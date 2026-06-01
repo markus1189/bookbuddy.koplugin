@@ -66,7 +66,7 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   **Send** — handy for sidestepping the on-screen keyboard.
 - **Grounds answers in the real text** with tools that read the book instead of
   guessing:
-  - `search_book` — full-text search within the book
+  - `grep` — full-text search within the book
   - `read` — read the book's text in order from a locator (a grep hit, a `get_toc`
     chapter, or a previous read) or a page number
   - `get_toc` — inspect the table of contents
@@ -75,7 +75,7 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   - `edit_highlight_note` — add a note to one of your highlights; it appends to any
     existing note and never overwrites or deletes what you wrote
   - `create_highlight` — mark a passage in the book (reflowable/EPUB only), by a
-    recent `search_book` match or a verbatim snippet, optionally with a note and color
+    recent `grep` match or a verbatim snippet, optionally with a note and color
   - `navigate` — move the reader to a page, percent, or chapter (your spot is saved
     first, so Back returns you)
   - `web_search` — for outside facts only; it's told not to spoil what lies ahead.
@@ -85,9 +85,10 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
   sidecar, so they travel with the book, stay isolated to it, and are still there
   next session — ask it to remember who a character is and it won't forget.
-  Off by default: it uses Anthropic's server-side memory tool, which most
-  gateways (OpenRouter, Requesty/Vertex) reject — enable it only against a
-  native Anthropic endpoint.
+  It's a self-rolled tool (a filesystem-backed `/memories` store), so it works on
+  any tool-using endpoint — gateways included — not just a native Anthropic one.
+  Off by default since it's opt-in and spends a little extra each conversation
+  recalling and updating notes.
 - **Extended (adaptive) thinking** (optional): a `Thinking...` indicator shows
   while the model reasons before it replies.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
