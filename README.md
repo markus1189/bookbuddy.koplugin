@@ -97,8 +97,9 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - Access to a Claude model through any Anthropic-compatible endpoint. The defaults
   target [OpenRouter](https://openrouter.ai) (`https://openrouter.ai/api`, so the
   Messages endpoint is `https://openrouter.ai/api/v1/messages`) with the model slug
-  `anthropic/claude-opus-4.8`, authenticated with an API key sent as an
-  `Authorization: Bearer` token. Point the base URL / model elsewhere — e.g. a
+  `anthropic/claude-opus-4.8`. The key is sent as both an `Authorization: Bearer`
+  token and an `x-api-key` header, so the same key authenticates against gateways
+  *and* against `api.anthropic.com` directly. Point the base URL / model elsewhere — e.g. a
   [Requesty](https://requesty.ai) gateway (`https://router.eu.requesty.ai`,
   `vertex/claude-opus-4-8@eu`) or Anthropic directly
   (`https://api.anthropic.com`, `claude-opus-4-8`) — if your setup differs.
@@ -146,7 +147,8 @@ The target folder already ends in `.koplugin`, so there's no rename to do. Copy 
 
 Open any book, then go to the top menu → **BookBuddy**:
 
-- **Claude API key** — required; sent as an `Authorization: Bearer` token.
+- **Claude API key** — required; sent as both an `Authorization: Bearer` token and
+  an `x-api-key` header (works with gateways and native Anthropic alike).
 - **Base URL** — gateway root; the Messages endpoint is `<base URL>/v1/messages`.
 - **Model** — gateway model slug.
 - **Max tokens** — cap on each reply.

@@ -126,8 +126,11 @@ function Anthropic.streamChildFn(body_json, cfg)
             ["content-type"] = "application/json",
             ["accept"] = "text/event-stream",
             ["anthropic-version"] = ANTHROPIC_VERSION,
-            -- Bearer auth: works against any Claude-compatible endpoint (the
-            -- configured base_url) plus the model slug. The key never leaves cfg.
+            -- Send the key both ways so any Claude-compatible endpoint authenticates:
+            -- gateways (OpenRouter, Requesty) read Authorization: Bearer and ignore the
+            -- extra x-api-key; native api.anthropic.com requires x-api-key and rejects a
+            -- Bearer token. All three return 200 with both present. The key never leaves cfg.
+            ["x-api-key"] = cfg.api_key,
             ["authorization"] = "Bearer " .. (cfg.api_key or ""),
             ["content-length"] = tostring(#body_json),
         }

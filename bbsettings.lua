@@ -205,7 +205,7 @@ function Settings:getMenu(ui)
                 self:editText(touchmenu_instance, {
                     key = "api_key",
                     title = _("Claude API key"),
-                    description = _("Sent as an Authorization: Bearer token."),
+                    description = _("Sent as both an Authorization: Bearer token and an x-api-key header."),
                     input_type = "password",
                 })
             end,
