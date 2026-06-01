@@ -1,4 +1,4 @@
--- Anthropic Messages API client (streaming) routed through a Portkey gateway.
+-- Anthropic Messages API client (streaming) against a configurable endpoint.
 -- buildBody/decode run in the main process (rapidjson keeps the object/array
 -- distinction across decode→encode so tool_use inputs round-trip correctly).
 -- streamChildFn() returns a closure meant to run inside a forked subprocess: it
@@ -126,10 +126,9 @@ function Anthropic.streamChildFn(body_json, cfg)
             ["content-type"] = "application/json",
             ["accept"] = "text/event-stream",
             ["anthropic-version"] = ANTHROPIC_VERSION,
-            ["x-portkey-api-key"] = cfg.portkey_api_key,
-            -- Anthropic mandates x-api-key; Portkey authenticates via
-            -- x-portkey-api-key plus the model slug, so this is an ignored placeholder.
-            ["x-api-key"] = "dummy",
+            -- Bearer auth: works against any Claude-compatible endpoint (the
+            -- configured base_url) plus the model slug. The key never leaves cfg.
+            ["authorization"] = "Bearer " .. (cfg.api_key or ""),
             ["content-length"] = tostring(#body_json),
         }
 

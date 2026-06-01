@@ -84,8 +84,8 @@
             name = "bookbuddy-eval-driver";
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
-              if [ -z "''${BB_PORTKEY_API_KEY:-}" ]; then
-                echo "BB_PORTKEY_API_KEY must be set (e.g. \$(pass api/portkey-playground))" >&2
+              if [ -z "''${BB_API_KEY:-}" ]; then
+                echo "BB_API_KEY must be set (e.g. \$(pass api/openrouter))" >&2
                 exit 2
               fi
               PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
@@ -145,18 +145,18 @@
           # opt-in; NOT in `.#check`). Runs promptfoo (Node) with a CLEAN env from a
           # writable scratch cwd; the `exec:` wrapper (above) supplies the koreader
           # runtime per provider call. `file://asserts/*` resolve relative to the
-          # config dir, not cwd. Requires BB_PORTKEY_API_KEY in the host env (never
+          # config dir, not cwd. Requires BB_API_KEY in the host env (never
           # embedded in the store); BB_EVAL_MODEL / BB_MAX_TURNS pass through.
           evalRun = pkgs.writeShellApplication {
             name = "bookbuddy-eval";
             runtimeInputs = [ pkgs.promptfoo evalExec pkgs.coreutils ];
             text = ''
-              if [ -z "''${BB_PORTKEY_API_KEY:-}" ]; then
-                echo "BB_PORTKEY_API_KEY must be set (e.g. \$(pass api/portkey-playground))" >&2
+              if [ -z "''${BB_API_KEY:-}" ]; then
+                echo "BB_API_KEY must be set (e.g. \$(pass api/openrouter))" >&2
                 exit 2
               fi
               BB_PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"; export BB_PLUGIN_DIR
-              export BB_EVAL_MODEL="''${BB_EVAL_MODEL:-@vertex-eu-global/anthropic.claude-opus-4-8}"
+              export BB_EVAL_MODEL="''${BB_EVAL_MODEL:-anthropic/claude-opus-4.8}"
               export PROMPTFOO_DISABLE_TELEMETRY=1
               export PROMPTFOO_DISABLE_UPDATE=1
               CONFIG="$BB_PLUGIN_DIR/tests/eval/promptfooconfig.yaml"

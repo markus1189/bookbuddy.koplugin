@@ -105,7 +105,7 @@ end
 function BookBuddy:promptAndStart(text, note)
     if not self.settings:isConfigured() then
         UIManager:show(InfoMessage:new({
-            text = _("BookBuddy is not configured yet.\nOpen the menu → BookBuddy to set your Portkey API key."),
+            text = _("BookBuddy is not configured yet.\nOpen the menu → BookBuddy to set your Claude API key."),
         }))
         return
     end

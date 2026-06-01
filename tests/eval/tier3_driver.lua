@@ -50,11 +50,11 @@ end
 
 -- 4. Settings shim: getConfig() is the whole surface bbconversation/bbanthropic
 --    touch. A cheaper eval model, thinking + memory OFF, a modest turn budget.
---    The Portkey key flows in from the environment and is never logged or echoed.
+--    The API key flows in from the environment and is never logged or echoed.
 local config = {
-    base_url = os.getenv("BB_BASE_URL") or "https://api.portkey.ai",
-    portkey_api_key = os.getenv("BB_PORTKEY_API_KEY"),
-    model = os.getenv("BB_EVAL_MODEL") or "@vertex-eu-global/anthropic.claude-opus-4-8",
+    base_url = os.getenv("BB_BASE_URL") or "https://openrouter.ai/api",
+    api_key = os.getenv("BB_API_KEY"),
+    model = os.getenv("BB_EVAL_MODEL") or "anthropic/claude-opus-4.8",
     max_tokens = tonumber(os.getenv("BB_MAX_TOKENS")) or 8000,
     max_turns = tonumber(os.getenv("BB_MAX_TURNS")) or 8,
     additional_system_prompt = "",

@@ -41,7 +41,7 @@ describe("conversation", function()
         chatviewer.last_text = nil
         bbtools.state.stop_during_tool = sc.stop_during_tool or false
         cfg.base_url = "https://example"
-        cfg.portkey_api_key = "k"
+        cfg.api_key = "k"
         cfg.model = "test"
         cfg.max_tokens = 1024
         cfg.max_turns = sc.max_turns or 20

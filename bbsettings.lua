@@ -12,8 +12,8 @@ local Memory = require("bbmemory")
 local Updater = require("bbupdate")
 
 local DEFAULTS = {
-    base_url = "https://api.portkey.ai",
-    model = "@vertex-eu-global/anthropic.claude-opus-4-8",
+    base_url = "https://openrouter.ai/api",
+    model = "anthropic/claude-opus-4.8",
     max_tokens = 64000,
     max_turns = 20,
     enable_memory = true,
@@ -50,7 +50,7 @@ end
 function Settings:getConfig()
     return {
         base_url = self:get("base_url"),
-        portkey_api_key = self:get("portkey_api_key"),
+        api_key = self:get("api_key"),
         model = self:get("model"),
         max_tokens = tonumber(self:get("max_tokens")) or DEFAULTS.max_tokens,
         max_turns = math.max(1, tonumber(self:get("max_turns")) or DEFAULTS.max_turns),
@@ -61,7 +61,7 @@ function Settings:getConfig()
 end
 
 function Settings:isConfigured()
-    local key = self:get("portkey_api_key")
+    local key = self:get("api_key")
     return key ~= nil and key ~= ""
 end
 
@@ -194,14 +194,14 @@ function Settings:getMenu(ui)
     local items = {
         {
             text_func = function()
-                return T(_("Portkey API key: %1"), self:isConfigured() and _("set") or _("not set"))
+                return T(_("Claude API key: %1"), self:isConfigured() and _("set") or _("not set"))
             end,
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:editText(touchmenu_instance, {
-                    key = "portkey_api_key",
-                    title = _("Portkey API key"),
-                    description = _("Sent as the x-portkey-api-key header."),
+                    key = "api_key",
+                    title = _("Claude API key"),
+                    description = _("Sent as an Authorization: Bearer token."),
                     input_type = "password",
                 })
             end,
@@ -228,7 +228,7 @@ function Settings:getMenu(ui)
                 self:editText(touchmenu_instance, {
                     key = "model",
                     title = _("Model"),
-                    description = _("Portkey model slug, e.g. @vertex-eu-global/anthropic.claude-opus-4-8."),
+                    description = _("Model slug for the endpoint, e.g. anthropic/claude-opus-4.8."),
                 })
             end,
         },

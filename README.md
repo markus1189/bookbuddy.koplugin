@@ -91,11 +91,14 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 ## Requirements
 
 - KOReader (recent enough to have `Device:unpackArchive` and the modern `NetworkMgr`).
-- Access to a Claude model through an Anthropic-compatible gateway. The defaults
-  target a [Portkey](https://portkey.ai) gateway (`https://api.portkey.ai`, endpoint
-  `/v1/messages`) with the model slug `@vertex-eu-global/anthropic.claude-opus-4-8`,
-  authenticated with a Portkey API key sent as the `x-portkey-api-key` header. Point
-  the base URL / model elsewhere if your setup differs.
+- Access to a Claude model through any Anthropic-compatible endpoint. The defaults
+  target [OpenRouter](https://openrouter.ai) (`https://openrouter.ai/api`, so the
+  Messages endpoint is `https://openrouter.ai/api/v1/messages`) with the model slug
+  `anthropic/claude-opus-4.8`, authenticated with an API key sent as an
+  `Authorization: Bearer` token. Point the base URL / model elsewhere — e.g. a
+  [Requesty](https://requesty.ai) gateway (`https://router.eu.requesty.ai`,
+  `vertex/claude-opus-4-8@europe-west1`) or Anthropic directly
+  (`https://api.anthropic.com`, `claude-opus-4-8`) — if your setup differs.
 
 ## Installation (first time)
 
@@ -124,7 +127,7 @@ inside KOReader's `plugins/` directory. You only do this once — afterwards the
 
 5. **Restart KOReader.**
 
-6. Open a book → top menu → **BookBuddy** → set your Portkey API key (see
+6. Open a book → top menu → **BookBuddy** → set your Claude API key (see
    [Configuration](#configuration)). You're ready to highlight a passage and ask.
 
 ### Or, if you use git
@@ -140,7 +143,7 @@ The target folder already ends in `.koplugin`, so there's no rename to do. Copy 
 
 Open any book, then go to the top menu → **BookBuddy**:
 
-- **Portkey API key** — required; sent as `x-portkey-api-key`.
+- **Claude API key** — required; sent as an `Authorization: Bearer` token.
 - **Base URL** — gateway root; the Messages endpoint is `<base URL>/v1/messages`.
 - **Model** — gateway model slug.
 - **Max tokens** — cap on each reply.

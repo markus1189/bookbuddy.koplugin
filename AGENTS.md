@@ -90,7 +90,7 @@ x86_64-linux only (nixpkgs#koreader repackages the amd64 .deb). Background: `.pl
 **Tier 3 (real model — promptfoo agent evals) — `nix run .#eval`.** Drives the genuine
 `bbconversation` loop against a **real model** over the Tier-2 harness, graded by
 [promptfoo](https://promptfoo.dev). Non-hermetic, credentialed, billed — an opt-in, **NOT** in
-`.#check`; needs `BB_PORTKEY_API_KEY` in the env. Files under `tests/eval/`; x86_64-linux only.
+`.#check`; needs `BB_API_KEY` in the env. Files under `tests/eval/`; x86_64-linux only.
 Full design and knobs: `.plans/tier3-promptfoo.md`.
 
 ## Lint
