@@ -48,6 +48,7 @@ describe("conversation", function()
         cfg.additional_system_prompt = ""
         cfg.enable_memory = false
         cfg.enable_thinking = false
+        cfg.enable_web_search = true
 
         local selected_text
         if not sc.book_level then
@@ -78,6 +79,34 @@ describe("conversation", function()
     local function seed()
         return captured[1] and captured[1].messages[1] and captured[1].messages[1].content or ""
     end
+
+    local function hasWebSearch(specs)
+        for _, t in ipairs(specs) do
+            if type(t) == "table" and t.type == "web_search_20250305" then
+                return true
+            end
+        end
+        return false
+    end
+
+    describe("web search toggle", function()
+        it("keeps the web_search tool unless web search is explicitly disabled", function()
+            cfg.enable_web_search = true
+            local on = Conversation:new({ ui = {}, settings = stubSettings })
+            assert.is_true(hasWebSearch(on.tool_specs))
+
+            cfg.enable_web_search = nil -- absent flag keeps the default-on behaviour
+            local dflt = Conversation:new({ ui = {}, settings = stubSettings })
+            assert.is_true(hasWebSearch(dflt.tool_specs))
+        end)
+
+        it("drops the web_search tool when web search is disabled", function()
+            cfg.enable_web_search = false
+            local off = Conversation:new({ ui = {}, settings = stubSettings })
+            assert.is_false(hasWebSearch(off.tool_specs))
+            cfg.enable_web_search = true -- restore for any later scenario
+        end)
+    end)
 
     it("S1: completes a web search, then a follow-up", function()
         run({

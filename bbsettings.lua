@@ -25,6 +25,11 @@ local DEFAULTS = {
     -- unless requested; its thinking text is omitted unless we ask for the
     -- summarized display, which is what makes reasoning visible (see bbanthropic).
     enable_thinking = true,
+    -- Server-side web search (web_search_20250305) only runs on first-party
+    -- Anthropic backends; gateways routed to Vertex/Bedrock silently ignore it
+    -- (and Claude Code likewise hides WebSearch there). On by default; turn it
+    -- off when your endpoint can't execute it, so we don't advertise a dead tool.
+    enable_web_search = true,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.
@@ -61,6 +66,7 @@ function Settings:getConfig()
         additional_system_prompt = self:get("additional_system_prompt"),
         enable_memory = self:get("enable_memory") and true or false,
         enable_thinking = self:get("enable_thinking") and true or false,
+        enable_web_search = self:get("enable_web_search") and true or false,
     }
 end
 
@@ -306,6 +312,22 @@ function Settings:getMenu(ui)
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:set("enable_thinking", not (self:get("enable_thinking") and true or false))
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        },
+        {
+            text = _("Web search"),
+            help_text = _(
+                "Let BookBuddy search the web for outside facts. Uses Anthropic's server-side web search, which only runs on a native Anthropic endpoint (or a gateway that routes to one, like OpenRouter's Anthropic models). Endpoints routed through Vertex or Bedrock silently ignore it, so turn it off there."
+            ),
+            checked_func = function()
+                return self:get("enable_web_search") and true or false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("enable_web_search", not (self:get("enable_web_search") and true or false))
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()
                 end

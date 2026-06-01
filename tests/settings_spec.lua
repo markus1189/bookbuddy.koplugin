@@ -59,6 +59,7 @@ describe("bbsettings", function()
             assert.are.equal("https://openrouter.ai/api", c.base_url)
             assert.is_false(c.enable_memory)
             assert.is_true(c.enable_thinking)
+            assert.is_true(c.enable_web_search)
             assert.are.equal("", c.additional_system_prompt)
         end)
 

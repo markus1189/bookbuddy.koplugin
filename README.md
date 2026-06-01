@@ -78,7 +78,10 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
     recent `search_book` match or a verbatim snippet, optionally with a note and color
   - `navigate` — move the reader to a page, percent, or chapter (your spot is saved
     first, so Back returns you)
-  - `web_search` — for outside facts only; it's told not to spoil what lies ahead
+  - `web_search` — for outside facts only; it's told not to spoil what lies ahead.
+    Anthropic's server-side search, so it only runs on a native-Anthropic-backed
+    endpoint (native API, or OpenRouter's `anthropic/` models); toggle it off on
+    Vertex/Bedrock-routed gateways, which silently ignore it
 - **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
   sidecar, so they travel with the book, stay isolated to it, and are still there
   next session — ask it to remember who a character is and it won't forget.
@@ -156,7 +159,7 @@ Open any book, then go to the top menu → **BookBuddy**:
 - **Additional system prompt** — optional text appended to BookBuddy's built-in
   system prompt; add your own preferences (tone, language, focus) without restating
   the built-in instructions. Leave empty for the default behavior.
-- **Per-book memory** / **Extended thinking** — toggles.
+- **Per-book memory** / **Extended thinking** / **Web search** — toggles.
 
 Settings persist via KOReader's `LuaSettings` (in `bookbuddy.lua` under your settings
 directory).

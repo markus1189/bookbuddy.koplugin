@@ -106,6 +106,19 @@ function Conversation:new(o)
     o.messages = {}
     o.transcript = {}
     o.tool_specs = Tools.getSpecs()
+    -- Web search is a server-side tool that only executes on a first-party
+    -- Anthropic backend; endpoints routed through Vertex/Bedrock silently no-op
+    -- it. When the user turns it off, stop advertising it (mirrors how Claude
+    -- Code hides WebSearch on those platforms). Only an explicit false removes it,
+    -- so callers that don't set the flag keep the default-on behaviour.
+    if o.settings and o.settings:getConfig().enable_web_search == false then
+        for i = #o.tool_specs, 1, -1 do
+            local t = o.tool_specs[i]
+            if type(t) == "table" and t.type == "web_search_20250305" then
+                table.remove(o.tool_specs, i)
+            end
+        end
+    end
     -- Per-conversation read state lives on the shared ui, which outlives a single
     -- Conversation, so a new chat must clear it or it inherits stale locators and
     -- search results. (Also fixes the long-standing _bookbuddy_last_search leak.)
