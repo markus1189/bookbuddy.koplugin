@@ -127,6 +127,27 @@ file-hash caching, which we disable with `--no-cache` anyway.)
   skeleton. The two deterministic asserts (trace + no-markdown) need no extra creds and gate the
   skeleton today. Add the rubric next, via an env-fed grader provider (`defaultTest.options.provider`).
 
+## Step 4 — `BB_START_PAGE` knob (DONE; verified free) — unlocks the spoiler matrix
+
+The reader is now positionable before the turn, so spoiler gates have a real "current page"
+boundary that scenarios control. Three entry paths, in precedence order:
+- **per-test var** `start_page` (promptfoo passes the test context as the driver's argv[3] = JSON;
+  `resolveStartPage()` reads `ctx.vars.start_page`) — the matrix enabler;
+- **`BB_START_PAGE` env** — global fallback for the isolation harness (`.#eval-driver` passes only
+  the task, no context arg);
+- default (page ~1) if neither is set.
+
+Navigation reuses `Tools.execute("navigate", {page=N})` (`GotoPage`, synchronous — the Tier-2
+navigate_real spec proves the reader truly lands there). `metadata` now carries `start_page` +
+`current_page` so asserts can classify a hit as behind (legal) vs. ahead (spoiler) of the reader.
+
+**`BB_DRY_RUN`** (new): position + seed, then emit reader state and skip the model call — a zero-cost
+smoke path for scenario wiring. It immediately earned its keep: it caught that the `bb-tier3-exec`
+wrapper forwarded only `$1` (dropping promptfoo's argv[3] context), so per-test vars silently never
+reached the driver. Fixed to forward `"$@"`; re-verified via a dry-run *through* promptfoo
+(`start_page: 77 -> current_page: 77`). **Lesson for the fan-out: dry-run every new scenario's wiring
+(`BB_DRY_RUN=1`, dummy key) before spending on a real run.**
+
 ### (historical) original Step 2/3 sketch — superseded by the notes above
 ### 1. Headless driver — `tests/eval/tier3_driver.lua` (the core risk)
 A self-contained luajit script, run inside the koreader runtime (same env as `test-real`):

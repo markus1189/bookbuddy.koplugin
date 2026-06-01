@@ -31,6 +31,23 @@ local Trapper = require("ui/trapper")
 local T = require("ffi/util").template
 local rapidjson = require("rapidjson")
 
+-- Emit exactly ONE ProviderResponse JSON: a clean copy to BB_EVAL_OUT (if set) and
+-- the same to stdout for promptfoo's exec provider. Flush so a following os.exit
+-- can't drop the buffered stdout.
+local function emit(payload)
+    local json = rapidjson.encode(payload)
+    local out_path = os.getenv("BB_EVAL_OUT")
+    if out_path and out_path ~= "" then
+        local f = io.open(out_path, "w")
+        if f then
+            f:write(json)
+            f:close()
+        end
+    end
+    io.write(json, "\n")
+    io.flush()
+end
+
 -- 4. Settings shim: getConfig() is the whole surface bbconversation/bbanthropic
 --    touch. A cheaper eval model, thinking + memory OFF, a modest turn budget.
 --    The Portkey key flows in from the environment and is never logged or echoed.
@@ -73,15 +90,53 @@ UIManager.show = function(_self, widget)
     end
 end
 
+-- 5b. Optional reader positioning, so spoiler gates have a real "current page"
+--     boundary. A per-test var wins (promptfoo passes the context as argv[3] = JSON
+--     → vars.start_page); BB_START_PAGE is the global fallback for the isolation
+--     harness (.#eval-driver passes only the task as arg[1], no context). Navigation
+--     uses the same GotoPage path the real navigate spec exercises, so the reader
+--     truly lands there before the turn is seeded.
+local function resolveStartPage()
+    local ctx_json = arg and arg[3]
+    if ctx_json and ctx_json ~= "" then
+        local ok, ctx = pcall(rapidjson.decode, ctx_json)
+        if ok and type(ctx) == "table" and type(ctx.vars) == "table" then
+            local p = tonumber(ctx.vars.start_page)
+            if p then
+                return p
+            end
+        end
+    end
+    return tonumber(os.getenv("BB_START_PAGE"))
+end
+local start_page = resolveStartPage()
+if start_page and start_page > 0 then
+    Tools.execute("navigate", { page = start_page }, readerui)
+end
+
 -- 6. Seed the first user turn exactly as Conversation:ask() does for a book-level
 --    chat (no highlighted selection): book_context + the task question.
 local task = (arg and arg[1]) or "Highlight the first mention of Verona."
 local context = Tools.execute("book_context", {}, readerui)
+local current_page = tonumber(context:match("Current page:%s*(%d+)"))
 conv.messages[1] = {
     role = "user",
     content = T("<book_context>\n%1\n</book_context>\n\n<question>\n%2\n</question>", context, task),
 }
 conv.transcript[1] = { role = "user", text = task }
+
+-- 6b. BB_DRY_RUN: a zero-cost harness smoke path — position + seed, then report the
+--     reader state WITHOUT a model call. Lets scenarios verify start_page wiring and
+--     the spoiler boundary for free. (os.exit, not `return`: a bare return is only
+--     legal as a chunk's last statement.)
+if os.getenv("BB_DRY_RUN") then
+    emit({
+        output = "",
+        metadata = { dry_run = true, start_page = start_page, current_page = current_page },
+    })
+    pcall(support.close_book, readerui)
+    os.exit(0)
+end
 
 -- 7. Pump: drive _loop directly (bypassing run()'s NetworkMgr gate) inside a
 --    Trapper coroutine, and run UIManager until the loop hits a terminal branch
@@ -158,25 +213,15 @@ elseif captured_error then
         or "unknown error"
 end
 
-local response = rapidjson.encode({
+emit({
     output = final_text or "",
     metadata = {
         trace = trace,
         usage = conv.usage,
         error = err,
+        start_page = start_page,
+        current_page = current_page,
     },
 })
-
--- BB_EVAL_OUT gives a clean capture path independent of any koreader stdout noise;
--- stdout still carries the JSON for promptfoo's exec provider.
-local out_path = os.getenv("BB_EVAL_OUT")
-if out_path and out_path ~= "" then
-    local f = io.open(out_path, "w")
-    if f then
-        f:write(response)
-        f:close()
-    end
-end
-io.write(response, "\n")
 
 pcall(support.close_book, readerui)

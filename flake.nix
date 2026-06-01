@@ -119,7 +119,9 @@
             name = "bb-tier3-exec";
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
-              task="''${1:-}"
+              # promptfoo passes argv (prompt, optionsJSON, contextJSON); forward
+              # ALL of them so the driver can read arg[1]=task AND arg[3]=context
+              # (→ vars.start_page). Forwarding only $1 silently drops per-test vars.
               PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
               KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
               export TESSDATA_PREFIX="${ko}/data"
@@ -135,7 +137,7 @@
               cd "${ko}" || exit 1
               # BB_EVAL_OUT captures clean JSON; the driver's stdout (koreader
               # ffi-load noise + the same JSON) goes to stderr so it can't pollute.
-              BB_EVAL_OUT="$out" ./luajit "$PLUGIN_DIR/tests/eval/tier3_driver.lua" "$task" 1>&2 || true
+              BB_EVAL_OUT="$out" ./luajit "$PLUGIN_DIR/tests/eval/tier3_driver.lua" "$@" 1>&2 || true
               cat "$out"
             '';
           };
