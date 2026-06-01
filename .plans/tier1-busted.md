@@ -1,5 +1,12 @@
 # Tier 1 — pure-luajit busted unit tests
 
+> **STATUS: ✅ DONE.** busted suite wired into `.#test`/`.#check`; shared scaffolding in
+> `tests/support/{stubs,sse}.lua`; specs for conversation/anthropic/request-validation/memory/
+> update/settings (64 checks, green). `harness.lua` deleted; its document-coupled tool-executor
+> tests moved to `tests/integration/tools.lua` (parked for Tier 2, 111 checks). `.busted` lives
+> at the repo root (not `tests/`) because busted only auto-discovers config in the cwd. Test-only
+> `Updater._test` export added to `bbupdate.lua`; `AGENTS.md` updated.
+
 > One of three tiers in the BookBuddy testing concept. Tier 1 = pure-luajit unit tests in
 > `.#check`; Tier 2 = real-crengine in-tree tool tests; Tier 3 = promptfoo agent evals.
 > Tier 1 is **independent** and can proceed now (no koreader build needed). Tier 2/3 are gated

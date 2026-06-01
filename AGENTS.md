@@ -27,21 +27,39 @@ of guessing**:
   book's `.sdr` sidecar (`bbmemory.lua`).
 
 ## Dev environment
-`flake.nix` provides a dev shell with `luajit`, `luacheck`, and `lua-language-server`.
-With [direnv](https://direnv.net) it loads automatically on `cd` (`.envrc` is `use flake`);
-otherwise run `nix develop`. The commands below assume that shell. Without Nix, substitute
-`nix run nixpkgs#luajit -- …` and `nix run nixpkgs#luaPackages.luacheck -- …`.
+`flake.nix` provides a dev shell with `luajit`, `busted`, `luafilesystem`, `luacheck`, and
+`lua-language-server`. With [direnv](https://direnv.net) it loads automatically on `cd`
+(`.envrc` is `use flake`); otherwise run `nix develop`. The commands below assume that shell.
+Without Nix, substitute `nix run nixpkgs#luajit -- …` and `nix run nixpkgs#luaPackages.luacheck -- …`.
 
 ## Tests
-Headless harness — no device or network needed. From the plugin root:
+Headless [busted](https://lunarmodules.github.io/busted/) suite — no device or network needed.
+From the plugin root:
 ```
-luajit tests/harness.lua
+nix run .#test                      # whole suite
+nix run .#test -- tests/memory_spec.lua   # a single spec
 ```
-It stubs KOReader, drives the real multi-turn tool loop in `bbconversation.lua` /
-`bbanthropic.lua`, validates the Vertex request rules (role alternation, `server_tool_use`
-↔ `web_search_tool_result` pairing, client `tool_use`/`tool_result` pairing), and
-unit-checks the memory/navigate tools. It exits non-zero on failure. Add scenarios there
-when you change the conversation loop or tools.
+(Or `busted` directly inside the dev shell.) Config is `.busted` at the repo root (runs under
+LuaJIT, specs are `tests/*_spec.lua`). The suite stubs KOReader and exercises the real code:
+- `conversation_spec` — the multi-turn tool loop (`bbconversation`): request shape, `pause_turn`
+  resume, tool pairing, stop-during-tool, error recovery; plus tool-action phrasing and markdown
+  stripping. Scenarios are driven by scripted SSE, validated against the Vertex request rules
+  (role alternation, `server_tool_use` ↔ `web_search_tool_result` pairing, client
+  `tool_use`/`tool_result` pairing).
+- `anthropic_spec` — `buildBody` (system-prompt assembly, rolling cache breakpoints) and
+  `newStreamParser` SSE reassembly/usage extraction.
+- `request_validation_spec` — meta-tests proving the request validator rejects bad arrays.
+- `memory_spec` / `update_spec` / `settings_spec` — the pure modules against real/in-memory
+  backends.
+
+Shared scaffolding lives in `tests/support/{stubs,sse}.lua` (KOReader doubles + the JSON codec;
+SSE builders, a fake stream, the validator). Add scenarios/specs there and in the matching
+`_spec` when you change the loop, the parser, or a pure module.
+
+Document-coupled **tool-executor** tests (grep/read/navigate/create_highlight/edit_highlight
+against hand-rolled fake `ui`/document objects) are parked in `tests/integration/tools.lua`
+(`luajit tests/integration/tools.lua`) until Tier 2 runs them inside KOReader's real test
+harness. They are *not* part of `nix run .#test` / `.#check`.
 
 ## Lint
 `.luacheckrc` is copied from KOReader (same globals/ignores):

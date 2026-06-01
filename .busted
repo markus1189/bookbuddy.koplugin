@@ -1,0 +1,12 @@
+-- busted config. Lives at the repo root (not tests/) because busted only
+-- auto-discovers .busted in the working directory, and `nix run .#check`/`.#test`
+-- run from here. Runs under LuaJIT (KOReader's runtime). Specs live in tests/ and
+-- match *_spec.lua; modules under test are required by short name via lpath.
+return {
+    default = {
+        lua = "luajit",
+        ROOT = { "tests" },
+        pattern = "_spec",
+        lpath = "./?.lua;./tests/?.lua",
+    },
+}

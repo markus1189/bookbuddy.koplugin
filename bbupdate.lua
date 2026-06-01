@@ -249,4 +249,13 @@ function Updater.install(old_version, new_version)
     end)
 end
 
+-- Test-only handle on the file-local semver/url helpers (parseVersion, isNewer,
+-- composeBranchZipUrl). Not used by the plugin at runtime; exists so the busted
+-- suite can unit-check them without a network or device.
+Updater._test = {
+    parseVersion = parseVersion,
+    isNewer = isNewer,
+    composeBranchZipUrl = composeBranchZipUrl,
+}
+
 return Updater
