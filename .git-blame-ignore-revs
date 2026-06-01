@@ -1,0 +1,5 @@
+# Mechanical reformats — skip in git blame.
+# Use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# BookBuddy: reformat all Lua sources with stylua
+a13a384b407d85ae9c227c4a8198b32aabd0167c
