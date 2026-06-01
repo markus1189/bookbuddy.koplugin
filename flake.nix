@@ -9,6 +9,29 @@
       forAllSystems = f:
         nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
     in {
+      # `nix run .#check` — formatting (stylua) + lint (luacheck). Runs both
+      # and reports all failures, exiting non-zero if either complains.
+      apps = forAllSystems (pkgs:
+        let
+          check = pkgs.writeShellApplication {
+            name = "bookbuddy-check";
+            runtimeInputs = [ pkgs.stylua pkgs.luaPackages.luacheck ];
+            text = ''
+              status=0
+              echo "==> stylua --check ."
+              stylua --check . || status=1
+              echo "==> luacheck ."
+              luacheck . || status=1
+              exit "$status"
+            '';
+          };
+        in {
+          check = {
+            type = "app";
+            program = "${check}/bin/bookbuddy-check";
+          };
+        });
+
       devShells = forAllSystems (pkgs: {
         # luajit runs the headless test harness and syntax checks; luacheck
         # lints; stylua formats (config in stylua.toml); lua-language-server
