@@ -82,6 +82,9 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
   sidecar, so they travel with the book, stay isolated to it, and are still there
   next session — ask it to remember who a character is and it won't forget.
+  Off by default: it uses Anthropic's server-side memory tool, which most
+  gateways (OpenRouter, Requesty/Vertex) reject — enable it only against a
+  native Anthropic endpoint.
 - **Extended (adaptive) thinking** (optional): a `Thinking...` indicator shows
   while the model reasons before it replies.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
@@ -97,7 +100,7 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   `anthropic/claude-opus-4.8`, authenticated with an API key sent as an
   `Authorization: Bearer` token. Point the base URL / model elsewhere — e.g. a
   [Requesty](https://requesty.ai) gateway (`https://router.eu.requesty.ai`,
-  `vertex/claude-opus-4-8@europe-west1`) or Anthropic directly
+  `vertex/claude-opus-4-8@eu`) or Anthropic directly
   (`https://api.anthropic.com`, `claude-opus-4-8`) — if your setup differs.
 
 ## Installation (first time)

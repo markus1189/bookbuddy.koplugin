@@ -321,7 +321,7 @@ function Conversation:_loop()
 
         local res = parser:result()
         if not res.ok then
-            logger.warn("BookBuddy: API error", res.code, res.error_message)
+            logger.warn("BookBuddy: API error", res.code, res.error_message, res.error_body)
             self:_dropDanglingTail()
             self:_closeViewer()
             self:_showError(res)

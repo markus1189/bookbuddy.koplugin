@@ -305,15 +305,20 @@ end
 
 -- Returns the reassembled reply, shaped like a decoded non-streaming response:
 --   success: { ok=true, content=<blocks>, stop_reason, usage }
---   failure: { ok=false, network_error?, code?, error_message? }
+--   failure: { ok=false, network_error?, code?, error_message?, error_body? }
 function Parser:result()
     if self.network_error then
         return { ok = false, network_error = true, code = self.code }
     end
     if self.non200 then
-        local data = Anthropic.decode(table.concat(self.error_body))
+        local raw = table.concat(self.error_body)
+        local data = Anthropic.decode(raw)
         local msg = data and data.error and data.error.message
-        return { ok = false, code = self.code, error_message = msg }
+        -- Gateways routinely bury the actionable validation detail in a nested
+        -- field (e.g. OpenRouter's error.metadata.raw names the offending
+        -- tools.N.type) while error.message stays generic ("Invalid Anthropic
+        -- Messages API request"). Keep the whole raw body so the log can show it.
+        return { ok = false, code = self.code, error_message = msg, error_body = (raw ~= "" and raw) or nil }
     end
     if self.error then
         return { ok = false, error_message = self.error.message or self.error.type }

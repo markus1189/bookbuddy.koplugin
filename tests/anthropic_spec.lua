@@ -203,5 +203,26 @@ describe("bbanthropic", function()
             assert.is_false(res.ok)
             assert.are.equal("boom", res.error_message)
         end)
+
+        it("captures the raw error body on a non-200 so buried gateway detail is logged", function()
+            -- The top-level message is generic; the actionable reason (which tool
+            -- type the gateway rejected) lives in a nested field. result() keeps the
+            -- whole body in error_body so bbconversation can log it.
+            local p = Anthropic.newStreamParser()
+            p:feed(json.encode({
+                error = {
+                    type = "invalid_request_error",
+                    message = "Invalid Anthropic Messages API request",
+                    metadata = { raw = '[{"path":["tools",0,"type"],"message":"Unknown server-tool shorthand"}]' },
+                },
+            }))
+            p:feed("X-BB-NON-200: 400")
+            local res = p:result()
+            assert.is_false(res.ok)
+            assert.are.equal(400, res.code)
+            assert.are.equal("Invalid Anthropic Messages API request", res.error_message)
+            assert.is_truthy(res.error_body)
+            assert.is_truthy(res.error_body:find("Unknown server%-tool shorthand"))
+        end)
     end)
 end)

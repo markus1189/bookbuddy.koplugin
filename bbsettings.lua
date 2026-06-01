@@ -16,7 +16,11 @@ local DEFAULTS = {
     model = "anthropic/claude-opus-4.8",
     max_tokens = 64000,
     max_turns = 20,
-    enable_memory = true,
+    -- Off by default: per-book memory rides on Anthropic's server-side memory
+    -- tool (memory_20250818), which the common gateways reject (OpenRouter:
+    -- "Unknown server-tool shorthand"; Requesty/Vertex: treats it as a custom
+    -- tool and 400s). Opt in only when pointing at a native Anthropic endpoint.
+    enable_memory = false,
     -- Adaptive extended thinking. Opus 4.8 supports adaptive thinking only, off
     -- unless requested; its thinking text is omitted unless we ask for the
     -- summarized display, which is what makes reasoning visible (see bbanthropic).
