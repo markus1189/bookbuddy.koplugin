@@ -3,3 +3,6 @@
 
 # BookBuddy: reformat all Lua sources with stylua
 a13a384b407d85ae9c227c4a8198b32aabd0167c
+
+# BookBuddy: reformat tests/harness.lua with stylua
+530f7bcfa92e5f231be1abd42476e1676c3569d3
