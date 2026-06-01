@@ -73,6 +73,96 @@
           luaEnv = pkgs.luajit.withPackages (ps: [ ps.busted ps.luafilesystem ]);
           testRealLibs =
             pkgs.lib.makeLibraryPath [ pkgs.SDL2 pkgs.stdenv.cc.cc.lib ];
+          # `nix run .#eval-driver -- "<task>"` — Tier 3 sanity-isolation harness
+          # (.plans/tier3-promptfoo.md, Verification #3): run the headless eval
+          # driver alone in the koreader runtime and print its ProviderResponse
+          # JSON. Reuses test-real's exact env block, then adds the credentialed,
+          # billed real-model call — so it is deliberately NOT wired into `.#check`.
+          # Pass BB_PLUGIN_DIR=$(pwd) to run a worktree copy (the driver lives under
+          # tests/eval/, which flakes don't see until tracked).
+          evalDriver = pkgs.writeShellApplication {
+            name = "bookbuddy-eval-driver";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              if [ -z "''${BB_PORTKEY_API_KEY:-}" ]; then
+                echo "BB_PORTKEY_API_KEY must be set (e.g. \$(pass api/portkey-playground))" >&2
+                exit 2
+              fi
+              PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
+              KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
+              export TESSDATA_PREFIX="${ko}/data"
+              export SDL_VIDEODRIVER=dummy
+              # Unlike test-real, the driver makes a real HTTPS call, so the forked
+              # subprocess loads common/ssl.so, whose NEEDED libssl.so.60/libcrypto.so.57
+              # are koreader's vendored OpenSSL in ${ko}/libs. Append that dir (after the
+              # nixpkgs libs, so ABI-critical SDL2/libstdc++ still resolve to nixpkgs).
+              export LD_LIBRARY_PATH="${testRealLibs}:${ko}/libs''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export BB_SAMPLE_EPUB="${koreader-test-data}/juliet.epub"
+              export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
+              export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
+              cd "${ko}" || exit 1
+              echo "==> tier3 eval driver (real crengine + real model)" >&2
+              exec ./luajit "$PLUGIN_DIR/tests/eval/tier3_driver.lua" "$@"
+            '';
+          };
+          # `bb-tier3-exec` — the promptfoo `exec:` provider entrypoint (Tier 3,
+          # .plans/tier3-promptfoo.md Step 2/3). promptfoo invokes it via execFile
+          # (NO shell, PATH-resolved) with argv (prompt, optionsJSON, contextJSON);
+          # we use only $1 = the task. This wrapper OWNS the full koreader runtime
+          # env (mirrors test-real) PLUS the TLS libs for the driver's HTTPS
+          # subprocess — kept HERE, not in the `.#eval` app, so the Node/promptfoo
+          # process runs with a clean env (no koreader libstdc++/openssl shadowing
+          # Node's). It emits ONLY the driver's JSON envelope on stdout (clean for
+          # promptfoo); the driver's own stdout/stderr are redirected to our stderr.
+          # A fresh per-call KO_HOME gives each run (incl. `repeat`) an empty .sdr.
+          evalExec = pkgs.writeShellApplication {
+            name = "bb-tier3-exec";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              task="''${1:-}"
+              PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
+              KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
+              export TESSDATA_PREFIX="${ko}/data"
+              export SDL_VIDEODRIVER=dummy
+              # nixpkgs libs first (ABI-coherent SDL2/libstdc++), then koreader's
+              # vendored OpenSSL in ${ko}/libs for common/ssl.so (libssl.so.60).
+              export LD_LIBRARY_PATH="${testRealLibs}:${ko}/libs"
+              export BB_SAMPLE_EPUB="${koreader-test-data}/juliet.epub"
+              export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
+              export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
+              out="$(mktemp -t bb-eval.XXXXXX.json)"
+              trap 'rm -f "$out"' EXIT
+              cd "${ko}" || exit 1
+              # BB_EVAL_OUT captures clean JSON; the driver's stdout (koreader
+              # ffi-load noise + the same JSON) goes to stderr so it can't pollute.
+              BB_EVAL_OUT="$out" ./luajit "$PLUGIN_DIR/tests/eval/tier3_driver.lua" "$task" 1>&2 || true
+              cat "$out"
+            '';
+          };
+          # `nix run .#eval` — Tier 3 promptfoo runner (the credentialed, billed
+          # opt-in; NOT in `.#check`). Runs promptfoo (Node) with a CLEAN env from a
+          # writable scratch cwd; the `exec:` wrapper (above) supplies the koreader
+          # runtime per provider call. `file://asserts/*` resolve relative to the
+          # config dir, not cwd. Requires BB_PORTKEY_API_KEY in the host env (never
+          # embedded in the store); BB_EVAL_MODEL / BB_MAX_TURNS pass through.
+          evalRun = pkgs.writeShellApplication {
+            name = "bookbuddy-eval";
+            runtimeInputs = [ pkgs.promptfoo evalExec pkgs.coreutils ];
+            text = ''
+              if [ -z "''${BB_PORTKEY_API_KEY:-}" ]; then
+                echo "BB_PORTKEY_API_KEY must be set (e.g. \$(pass api/portkey-playground))" >&2
+                exit 2
+              fi
+              BB_PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"; export BB_PLUGIN_DIR
+              export BB_EVAL_MODEL="''${BB_EVAL_MODEL:-@vertex-eu-global/anthropic.claude-opus-4-8}"
+              export PROMPTFOO_DISABLE_TELEMETRY=1
+              export PROMPTFOO_DISABLE_UPDATE=1
+              CONFIG="$BB_PLUGIN_DIR/tests/eval/promptfooconfig.yaml"
+              WORK="$(mktemp -d -t bb-eval-run.XXXXXX)"; cd "$WORK" || exit 1
+              echo "==> promptfoo eval (real crengine + real model) $CONFIG" >&2
+              exec promptfoo eval --no-cache -j 1 -c "$CONFIG" "$@"
+            '';
+          };
           testReal = pkgs.writeShellApplication {
             name = "bookbuddy-test-real";
             runtimeInputs = [ pkgs.coreutils ];
@@ -119,6 +209,14 @@
           test-real = {
             type = "app";
             program = "${testReal}/bin/bookbuddy-test-real";
+          };
+          eval-driver = {
+            type = "app";
+            program = "${evalDriver}/bin/bookbuddy-eval-driver";
+          };
+          eval = {
+            type = "app";
+            program = "${evalRun}/bin/bookbuddy-eval";
           };
         });
 

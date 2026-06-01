@@ -1,0 +1,43 @@
+# Tier 3 — promptfoo agent eval (walking skeleton). Drives the GENUINE
+# bbconversation loop against a real model over real crengine, via the `exec:`
+# provider: tests/eval/tier3_driver.lua, wrapped by `bb-tier3-exec` (defined in
+# flake.nix, which owns the koreader runtime env). NON-hermetic, credentialed,
+# billed — run ONLY via `nix run .#eval`; NEVER part of `.#check`.
+#
+# Output contract (verified against promptfoo's scriptCompletion provider): the
+# `exec:` provider does NOT JSON-parse stdout and sets no metadata — `output` is
+# the raw envelope STRING {"output": <prose>, "metadata": {"trace", "usage",
+# "error"}}. Every assertion parses it itself (see asserts/*.js). `file://` paths
+# resolve relative to THIS config's directory.
+description: BookBuddy Tier 3 agent evals (real crengine + real model)
+
+# One prompt: pass the task straight through. The exec provider receives it as
+# argv[1]; the driver seeds it as the first user turn (like Conversation:ask()).
+prompts:
+  - '{{task}}'
+
+# Named wrapper on PATH (flake `runtimeInputs`). execFile resolves it via PATH;
+# it sets up the koreader runtime and emits ONLY the driver's JSON envelope.
+providers:
+  - 'exec:bb-tier3-exec'
+
+tests:
+  - description: Highlights the first mention of Verona (Prologue, page 6 / loc:1)
+    vars:
+      task: Highlight the first mention of Verona.
+    assert:
+      # Deterministic trace grade: a create_highlight on the first Verona,
+      # ideally preceded by a grep/book_context. Reads metadata.trace.
+      - type: javascript
+        value: file://asserts/created_highlight_verona.js
+      # Product constraint: replies are plain text, no markdown. Grade the PROSE
+      # (env.output), not the JSON envelope (whose tool names contain '_').
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
+# Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
+# we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
+evaluateOptions:
+  repeat: 2
