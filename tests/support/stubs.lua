@@ -19,6 +19,14 @@ local M = {}
 local json = {}
 M.json = json
 
+-- A null sentinel mirroring rapidjson's: rapidjson decodes a JSON null to a
+-- (truthy, non-number) userdata value, NOT Lua nil. Use real userdata via
+-- newproxy so arithmetic on it throws exactly as it does in production — this is
+-- what lets the suite catch "x or 0" / "if x then" guards that fail to coerce a
+-- null token. json.encode emits "null" for it and json.decode returns it for the
+-- "null" token, and the rapidjson stub exposes it as rapidjson.null.
+json.null = newproxy and newproxy(false) or setmetatable({}, { __tostring = function() return "null" end })
+
 local function utf8char(cp)
     if cp < 0x80 then
         return string.char(cp)
@@ -48,7 +56,7 @@ end
 
 function json.encode(v)
     local t = type(v)
-    if v == nil then
+    if v == nil or v == json.null then
         return "null"
     elseif t == "boolean" then
         return v and "true" or "false"
@@ -192,7 +200,7 @@ function json.decode(str)
             return false
         elseif c == "n" then
             pos = pos + 4
-            return nil
+            return json.null
         else
             local s, e = str:find("^%-?%d+%.?%d*[eE]?[%+%-]?%d*", pos)
             if not s then
@@ -230,6 +238,7 @@ function M.install()
         object = function(t)
             return t or {}
         end,
+        null = json.null,
     }
     package.loaded["logger"] = { dbg = noop, warn = noop, info = noop, error = noop }
     package.loaded["gettext"] = function(s)

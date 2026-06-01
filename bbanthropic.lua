@@ -189,6 +189,14 @@ function Anthropic.newStreamParser(o)
     }, Parser)
 end
 
+-- Coerce a usage field to a number. A non-Anthropic endpoint may send a token
+-- count as JSON null, which rapidjson decodes to a userdata sentinel (truthy, so
+-- `x or 0` keeps it); arithmetic on it later then throws. Anything that is not a
+-- Lua number — null sentinel, missing, string — becomes 0.
+local function numOr0(v)
+    return type(v) == "number" and v or 0
+end
+
 local function data_payload(line)
     if line:sub(1, 5) ~= "data:" then
         return nil
@@ -201,10 +209,10 @@ function Parser:_event(event)
     if t == "message_start" then
         local u = event.message and event.message.usage
         if u then
-            self.usage.input_tokens = u.input_tokens or 0
-            self.usage.output_tokens = u.output_tokens or 0
-            self.usage.cache_read_input_tokens = u.cache_read_input_tokens or 0
-            self.usage.cache_creation_input_tokens = u.cache_creation_input_tokens or 0
+            self.usage.input_tokens = numOr0(u.input_tokens)
+            self.usage.output_tokens = numOr0(u.output_tokens)
+            self.usage.cache_read_input_tokens = numOr0(u.cache_read_input_tokens)
+            self.usage.cache_creation_input_tokens = numOr0(u.cache_creation_input_tokens)
         end
     elseif t == "content_block_start" then
         local idx = event.index
@@ -262,7 +270,9 @@ function Parser:_event(event)
             self.stop_reason = event.delta.stop_reason
         end
         -- message_delta.usage.output_tokens is the running total, so overwrite.
-        if event.usage and event.usage.output_tokens then
+        -- Only when it's an actual number: a null/missing field must not clobber
+        -- the good total from message_start with 0 (see numOr0).
+        if event.usage and type(event.usage.output_tokens) == "number" then
             self.usage.output_tokens = event.usage.output_tokens
         end
     elseif t == "error" then

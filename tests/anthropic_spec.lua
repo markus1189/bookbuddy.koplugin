@@ -196,6 +196,37 @@ describe("bbanthropic", function()
             assert.are.equal(20, res.usage.output_tokens) -- message_delta running total wins
         end)
 
+        it("coerces null usage fields to 0 (a non-Anthropic endpoint sends them as JSON null)", function()
+            -- rapidjson decodes null to a truthy userdata sentinel, so the old
+            -- `u.x or 0` kept it and bbconversation's `total + u.x` threw
+            -- "arithmetic on a userdata value". numOr0 must turn it into 0.
+            local p = Anthropic.newStreamParser()
+            p:feed("data: " .. json.encode({
+                type = "message_start",
+                message = {
+                    usage = {
+                        input_tokens = 7,
+                        output_tokens = 0,
+                        cache_read_input_tokens = json.null,
+                        cache_creation_input_tokens = json.null,
+                    },
+                },
+            }))
+            -- A null output_tokens in message_delta must not clobber the total either.
+            p:feed("data: " .. json.encode({
+                type = "message_delta",
+                delta = { stop_reason = "end_turn" },
+                usage = { output_tokens = json.null },
+            }))
+            p:feed("data: " .. json.encode({ type = "message_stop" }))
+            local u = p:result().usage
+            assert.are.equal(7, u.input_tokens)
+            assert.are.equal(0, u.cache_read_input_tokens)
+            assert.are.equal(0, u.cache_creation_input_tokens)
+            -- The accumulation bbconversation does must not throw on any field.
+            assert.are.equal(7, 0 + u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens)
+        end)
+
         it("surfaces a mid-stream error event as a failed result", function()
             local p = Anthropic.newStreamParser()
             p:feed("data: " .. json.encode({ type = "error", error = { type = "overloaded_error", message = "boom" } }))
