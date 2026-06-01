@@ -87,6 +87,12 @@ the koreader version, move `nixpkgs#koreader` and the `koreader` input in lockst
 default to the flake source; override with `BB_SPEC` / `BB_PLUGIN_DIR` to run a worktree copy.
 x86_64-linux only (nixpkgs#koreader repackages the amd64 .deb). Background: `.plans/spike-sdl3-pin.md`.
 
+**Tier 3 (real model — promptfoo agent evals) — `nix run .#eval`.** Drives the genuine
+`bbconversation` loop against a **real model** over the Tier-2 harness, graded by
+[promptfoo](https://promptfoo.dev). Non-hermetic, credentialed, billed — an opt-in, **NOT** in
+`.#check`; needs `BB_PORTKEY_API_KEY` in the env. Files under `tests/eval/`; x86_64-linux only.
+Full design and knobs: `.plans/tier3-promptfoo.md`.
+
 ## Lint
 `.luacheckrc` is copied from KOReader (same globals/ignores):
 ```
