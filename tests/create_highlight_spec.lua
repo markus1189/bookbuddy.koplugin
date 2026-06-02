@@ -7,27 +7,10 @@
 local stubs = require("support.stubs")
 local noop = stubs.noop
 
--- bbtools requires ui/event (not part of stubs.install): a recording Event double.
-local function installEvent()
-    package.loaded["ui/event"] = {
-        new = function(_, handler, a, b)
-            return { handler = handler, args = { a, b } }
-        end,
-    }
-end
-
--- Load a fresh real bbtools with all its load-time deps stubbed.
-local function loadTools()
-    stubs.install()
-    installEvent()
-    package.loaded["bbtools"] = nil
-    return require("bbtools")
-end
-
 describe("create_highlight (pure)", function()
     local Tools
     setup(function()
-        Tools = loadTools()
+        Tools = stubs.load_tools()
     end)
 
     -- A rolling (EPUB) reader whose document re-searches via findAllText; positions

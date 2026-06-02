@@ -5,28 +5,10 @@
 
 local stubs = require("support.stubs")
 
--- bbtools requires ui/event (not part of stubs.install): a recording Event double
--- whose .handler/.args let us assert exactly what a tool dispatched.
-local function installEvent()
-    package.loaded["ui/event"] = {
-        new = function(_, handler, a, b)
-            return { handler = handler, args = { a, b } }
-        end,
-    }
-end
-
--- Load a fresh real bbtools with all its load-time deps stubbed.
-local function loadTools()
-    stubs.install()
-    installEvent()
-    package.loaded["bbtools"] = nil
-    return require("bbtools")
-end
-
 describe("navigate (pure)", function()
     local Tools
     setup(function()
-        Tools = loadTools()
+        Tools = stubs.load_tools()
     end)
 
     -- A fake reader: paging engine unless o.rolling; records pushes/back calls and

@@ -333,6 +333,26 @@ function M.install()
     return handle
 end
 
+-- bbtools requires "ui/event" (not part of install()): a recording Event double
+-- whose .handler/.args let a spec assert exactly what a tool dispatched.
+function M.install_event()
+    package.loaded["ui/event"] = {
+        new = function(_, handler, a, b)
+            return { handler = handler, args = { a, b } }
+        end,
+    }
+end
+
+-- Load a fresh real bbtools with all its load-time deps stubbed (the shared
+-- KOReader doubles plus the recording Event double). Used by the pure per-tool
+-- executor specs (navigate/read/grep/get_toc/create_highlight/edit_highlight_note).
+function M.load_tools()
+    M.install()
+    M.install_event()
+    package.loaded["bbtools"] = nil
+    return require("bbtools")
+end
+
 -- A no-op-ish bbmemory double for specs that don't exercise real memory.
 function M.install_bbmemory_stub()
     local stub = {
