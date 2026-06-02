@@ -29,6 +29,15 @@ Required by in-tree path (`require("ui/uimanager")`, etc.). Read the source, don
 - `nix run .#test [-- tests/foo_spec.lua]` — pure busted, stubbed KOReader. Config `.busted`, specs `tests/*_spec.lua`. Scaffolding: `tests/support/{stubs,sse}.lua`.
 - `nix run .#test-real` — Tier 2, real crengine over `juliet.epub`, hermetic. Specs `tests/integration/real/*_real.lua`; override `BB_SPEC`/`BB_PLUGIN_DIR`.
 - `nix run .#eval` — Tier 3, real model via promptfoo. Billed, opt-in, needs `BB_API_KEY`. `tests/eval/`. See `.plans/tier3-promptfoo.md`.
+  Agent gateway: `BB_BASE_URL`/`BB_API_KEY`/`BB_EVAL_MODEL`. The `llm-rubric` prose grader is independent: `BB_GRADER_BASE_URL`/`BB_GRADER_API_KEY`/`BB_GRADER_MODEL` (defaults reuse the agent's key/OpenRouter; override all three for a separate grader). Full agent+grader run via Requesty:
+  ```sh
+  BB_PLUGIN_DIR=$(pwd) \
+  BB_BASE_URL=https://router.eu.requesty.ai BB_API_KEY=$(pass api/requesty/playground) \
+  BB_EVAL_MODEL=vertex/claude-opus-4-8@eu \
+  BB_GRADER_BASE_URL=https://router.eu.requesty.ai/v1 \
+  BB_GRADER_MODEL=vertex/claude-sonnet-4-6@europe-west1 \
+    nix run .#eval -- --filter-pattern C1   # drop the filter to run all scenarios
+  ```
 
 ## Lint / syntax
 `luacheck .` — syntax-only: `luajit -bl <file>.lua /dev/null`

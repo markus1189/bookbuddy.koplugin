@@ -127,7 +127,7 @@
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
               if [ -z "''${BB_API_KEY:-}" ]; then
-                echo "BB_API_KEY must be set (e.g. \$(pass api/openrouter))" >&2
+                echo "BB_API_KEY must be set (e.g. from: pass api/openrouter, or pass api/requesty/playground)" >&2
                 exit 2
               fi
               PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
@@ -238,7 +238,7 @@
             runtimeInputs = [ pkgs.promptfoo evalExec pkgs.coreutils ];
             text = ''
               if [ -z "''${BB_API_KEY:-}" ]; then
-                echo "BB_API_KEY must be set (e.g. \$(pass api/openrouter))" >&2
+                echo "BB_API_KEY must be set (e.g. from: pass api/openrouter, or pass api/requesty/playground)" >&2
                 exit 2
               fi
               BB_PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"; export BB_PLUGIN_DIR
