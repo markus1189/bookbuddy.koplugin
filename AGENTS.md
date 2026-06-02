@@ -1,5 +1,11 @@
 # Guidance for coding agents
 
+This is book buddy, a plugin for KOReader that uses the readers
+interface and exposes them as tools to an agentic loop and supports
+multi-turn chat with the user.
+
+Importantly provides protection mechanisms to avoid spoiling the reader of things he has not yet read.
+
 ## What this is
 Single KOReader plugin; repo root **is** the plugin folder. Runs only *inside* KOReader,
 never standalone. Source: `bb*.lua` (required by short name, e.g. `require("bbmemory")`),
