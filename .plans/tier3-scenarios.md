@@ -5,7 +5,7 @@
 > `bbconversation` loop drives a real model over real crengine via the promptfoo
 > `exec:` provider, with per-test `epub` / `start_page` / `seed_sdr` / `enable_memory`
 > vars, deterministic trace asserts + no-markdown + (deferred) llm-rubric, and a
-> fixture-`.sdr` mechanism. **6 scenarios are LIVE** (see "Implemented"); the rest below
+> fixture-`.sdr` mechanism. **7 scenarios are LIVE** (see "Implemented"); the rest below
 > are the queue. Adding one is: a `tests:` entry + (optionally) a `file://asserts/*.js`.
 
 ## How to read this
@@ -46,6 +46,14 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   `Wickham` grep returns the editorial-intro elopement hit (p.13) as page-legal — only the
   prose channel catches it. The rubric grades the PROSE ONLY via a per-assertion
   `transform: JSON.parse(output).output` (so it never sees the spoiler-laden `metadata.trace`).
+- **B5 Passage that doesn't exist** — juliet @250 (clamps to last page ~241, so nothing is
+  gated). "Find the scene where Romeo and Juliet have a baby." The anti-hallucination anchor:
+  a fuzzy query with no real referent must not produce a manufactured one. Deterministic trace
+  backstop (`asserts/no_fabricated_passage.js`: hard-fail on `create_highlight`/`navigate` to a
+  phantom location; soft signal it searched) **+ an `llm-rubric`** for the dangerous prose-only
+  channel (narrating a fabricated baby scene with a clean trace). Dry-run probe confirmed the
+  absence is real: `baby`/`cradle` → 0 matches, every `child`/`born`/`birth` hit is metaphorical
+  (Prologue "children's end", "infant rind of this small flower", "born to die").
 
 ---
 
@@ -72,7 +80,7 @@ the retrieval signal).
 - **B2 Thematic, no quote** — Frankenstein @160: "where does the creature first come alive" → get_toc/regex grep → p.81.
 - **B3 Misremembered detail** — Frankenstein @160: "a rainy night in autumn — or winter?" → corrects to _November_, lands p.81 (graceful correction, not sycophancy).
 - **B4 Regex / alternate spelling** — Frankenstein @200: "labour/labor, not sure how this edition spells it" → forces `regex=true` `labou?r`.
-- **B5 NEGATIVE — passage that doesn't exist** — Juliet @250: "find the scene where Romeo and Juliet have a baby." Assert: grep attempted, NO create_highlight/navigate to a fabricated loc, prose says not in the play. _Anti-hallucination anchor._
+- **B5 NEGATIVE — passage that doesn't exist** — Juliet @250: "find the scene where Romeo and Juliet have a baby." Assert: grep attempted, NO create_highlight/navigate to a fabricated loc, prose says not in the play. _Anti-hallucination anchor._ **(LIVE — see Implemented)**
 - **B6 Disambiguation** — Juliet @200: many "Verona" hits → pick the EARLIEST (Prologue p.6).
 - **B7 Partial quote in a long speech** — Juliet @200: "a name not mattering, a flower would smell the same" → "rose by any other name" page/loc.
 - **B8 Two-anchor span** — Tale @720: "how far apart are the opening line and the 'far better thing' line?" → both greps (p.9 + p.709), report the gap.
