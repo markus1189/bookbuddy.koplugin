@@ -14,10 +14,13 @@ local M = {}
 -- store path; the in-tree emulator layout is the fallback.
 M.sample_epub = os.getenv("BB_SAMPLE_EPUB") or "spec/front/unit/data/juliet.epub"
 
--- Open a fresh real ReaderUI over juliet.epub with real crengine and return
--- (readerui, Tools). commonrequire/disable_plugins mutate package.loaded, so they
--- run lazily here rather than at module load.
-function M.open_book()
+-- Open a fresh real ReaderUI over an epub with real crengine and return
+-- (readerui, Tools). epub_path is optional; it defaults to M.sample_epub (the
+-- BB_SAMPLE_EPUB / in-tree juliet.epub), so existing no-arg callers are unaffected
+-- while the Tier-3 driver can select a book per scenario. commonrequire/
+-- disable_plugins mutate package.loaded, so they run lazily here rather than at
+-- module load.
+function M.open_book(epub_path)
     require("commonrequire")
     disable_plugins()
     local DocumentRegistry = require("document/documentregistry")
@@ -26,7 +29,7 @@ function M.open_book()
     local Tools = require("bbtools")
     local readerui = ReaderUI:new({
         dimen = Screen:getSize(),
-        document = DocumentRegistry:openDocument(M.sample_epub),
+        document = DocumentRegistry:openDocument(epub_path or M.sample_epub),
     })
     return readerui, Tools
 end

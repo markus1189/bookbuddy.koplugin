@@ -67,6 +67,39 @@ unless `spoiler=true` (the model first grepped with `max_page` = current page, g
 hidden", then re-grepped with `spoiler=true`). (Don't hardcode total page count —
 crengine-layout-dependent.)
 
+## Eval book matrix — pinned EPUBs + ground-truth anchors
+
+Four Project Gutenberg novels are pinned alongside juliet for the fan-out, each chosen for a distinct
+agentic-eval surface. They are fetched by `pkgs.fetchurl` (pinned sha256) and symlinked by stable bare
+name into the `evalEpubs` derivation (`flake.nix`); `BB_EPUB_DIR` now points at `evalEpubs` (NOT the
+raw test-data store), so the driver's `resolveEpub` finds each via a per-test `epub` var. A
+Gutenberg-side regeneration changes the hash and fails the build LOUDLY rather than silently drifting
+the anchors below. **All anchors VERIFIED via `BB_DRY_RUN=1 BB_PROBE_GREP="…"` (v2025.10 default
+layout, zero model spend); re-capture the same way. Page numbers are crengine-layout-dependent — stable
+only against the pinned epub + pinned koreader.**
+
+- **`a-tale-of-two-cities.epub`** (#98) — *spoiler-gate champion.* Opener "It was the best of times" →
+  **page 9 / `loc:1`** (Book I, Ch. I). Carton's last line "It is a far, far better thing that I do" →
+  **page 709 / `loc:1`**. The ~700-page span between a benign early anchor and the famous-death anchor
+  makes this the strongest `start_page`/`spoiler=true` matrix in the set.
+- **`frankenstein.epub`** (#84) — *misconception / restraint.* Creation scene "It was on a dreary night
+  of November" → **page 81 / `loc:1`** (Ch. 5). Use for the creator-vs-creature correction and the
+  Walton epistolary frame.
+- **`pride-and-prejudice.epub`** (#1342) — *character graph.* Novel opener "It is a truth universally
+  acknowledged" → **page 35 / `loc:1`** (substantial front matter precedes it). **HAZARD baked into
+  this edition:** an editorial introduction on pages **~13–28** names "Wickham" and discusses Lydia's
+  elopement — i.e. the book's own front matter spoils the plot. A naive `grep "Wickham"` surfaces those
+  intro hits FIRST (pages 13/14/24/25/28); the first *narrative* Wickham is **page 152 / `loc:7`**
+  ("entreated permission to introduce his friend, Mr. Wickham"). Character/spoiler scenarios must anchor
+  on the narrative occurrence and set `start_page` past the intro (≥35).
+- **`jekyll-and-hyde.epub`** (#43) — *compact single-twist gate.* Opener "Mr. Utterson the lawyer was a
+  man of a rugged countenance" → **page 6 / `loc:1`**. The reveal that Jekyll and Hyde are one man has
+  two crisp anchors: Lanyon's transformation scene "there stood Henry Jekyll!" → **page 93 / `loc:1`**,
+  and the thesis line "man is not truly one, but truly two" → **page 97 / `loc:1`**. ~90-page span +
+  the smallest epub in the set → the cheapest spoiler-gate regression test. (Minor: the page-5 TOC
+  lists the chapter title "Henry Jekyll's Full Statement of the Case", a faint structural hint — not a
+  prose spoiler.)
+
 ## Progress
 
 - **Step 1 (driver) — DONE & verified green.** `tests/eval/tier3_driver.lua` runs the genuine
@@ -136,6 +169,12 @@ boundary that scenarios control. Three entry paths, in precedence order:
 - **`BB_START_PAGE` env** — global fallback for the isolation harness (`.#eval-driver` passes only
   the task, no context arg);
 - default (page ~1) if neither is set.
+
+The book itself is parameterized the same way: a per-test `epub` var (resolved by bare name
+against `BB_EPUB_DIR` = the test-data store path, or used as-is when absolute) selects which book
+`open_book()` opens; `BB_SAMPLE_EPUB` (now host-overridable in `.#eval-driver`/`.#eval`) is the
+global fallback. `metadata.epub` reports the resolved path. Both `epub` and `start_page` are declared
+on the promptfoo test's `vars`.
 
 Navigation reuses `Tools.execute("navigate", {page=N})` (`GotoPage`, synchronous — the Tier-2
 navigate_real spec proves the reader truly lands there). `metadata` now carries `start_page` +

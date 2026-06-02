@@ -73,6 +73,48 @@
           luaEnv = pkgs.luajit.withPackages (ps: [ ps.busted ps.luafilesystem ]);
           testRealLibs =
             pkgs.lib.makeLibraryPath [ pkgs.SDL2 pkgs.stdenv.cc.cc.lib ];
+          # Pinned Project Gutenberg EPUBs for the Tier-3 eval book matrix
+          # (.plans/tier3-promptfoo.md), each chosen for a distinct agentic-eval
+          # surface: A Tale of Two Cities (spoiler gate — Carton's sacrifice +
+          # the "best of times" opener), Pride and Prejudice (character graph —
+          # Wickham/Darcy), Frankenstein (misconception/restraint — creator vs
+          # creature, Walton frame), Jekyll and Hyde (compact single-twist gate —
+          # they are one man; short, so cheap regression coverage). fetchurl pins each by sha256, so a
+          # Gutenberg-side regeneration fails the build LOUDLY instead of
+          # silently drifting the page anchors the deterministic asserts key on.
+          gutenbergEpub = { name, id, hash }: pkgs.fetchurl {
+            inherit name hash;
+            url = "https://www.gutenberg.org/cache/epub/${id}/pg${id}.epub";
+          };
+          # One dir holding every eval book by stable bare name, so the driver's
+          # resolveEpub (BB_EPUB_DIR + "/" + a per-test `epub` var) finds each.
+          # juliet.epub (from the test-data input) stays the default/sample; the
+          # four novels join it here. BB_EPUB_DIR points HERE (not at the raw
+          # test-data store) in both Tier-3 runners below.
+          evalEpubs = pkgs.runCommand "bb-eval-epubs" { } ''
+            mkdir -p "$out"
+            ln -s ${koreader-test-data}/juliet.epub "$out/juliet.epub"
+            ln -s ${gutenbergEpub {
+              name = "pride-and-prejudice.epub";
+              id = "1342";
+              hash = "sha256-zWnlty7r4Kz88i+ejySZvw1B/n1/e8Bh7cRtohFDnNw=";
+            }} "$out/pride-and-prejudice.epub"
+            ln -s ${gutenbergEpub {
+              name = "frankenstein.epub";
+              id = "84";
+              hash = "sha256-/Hk2zZBxhqSh701fhYKYlH/6uzPu6NoYCp0KDmY4npo=";
+            }} "$out/frankenstein.epub"
+            ln -s ${gutenbergEpub {
+              name = "a-tale-of-two-cities.epub";
+              id = "98";
+              hash = "sha256-/xrNqoOrcgm/VAspnt4srpFJsTirJSLnUYG4VJtxrS8=";
+            }} "$out/a-tale-of-two-cities.epub"
+            ln -s ${gutenbergEpub {
+              name = "jekyll-and-hyde.epub";
+              id = "43";
+              hash = "sha256-woUESS8i7kY4FCw1FqVWuQaImrsskj1DJiU2AA3z10Y=";
+            }} "$out/jekyll-and-hyde.epub"
+          '';
           # `nix run .#eval-driver -- "<task>"` — Tier 3 sanity-isolation harness
           # (.plans/tier3-promptfoo.md, Verification #3): run the headless eval
           # driver alone in the koreader runtime and print its ProviderResponse
@@ -97,7 +139,12 @@
               # are koreader's vendored OpenSSL in ${ko}/libs. Append that dir (after the
               # nixpkgs libs, so ABI-critical SDL2/libstdc++ still resolve to nixpkgs).
               export LD_LIBRARY_PATH="${testRealLibs}:${ko}/libs''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-              export BB_SAMPLE_EPUB="${koreader-test-data}/juliet.epub"
+              # BB_EPUB_DIR: base for resolving a per-test `epub` var by bare name
+              # (tier3_driver.lua resolveEpub); absolute epub paths bypass it.
+              # BB_SAMPLE_EPUB stays the global default but is host-overridable, so
+              # `BB_SAMPLE_EPUB=/path nix run .#eval-driver` swaps the book sans edits.
+              export BB_EPUB_DIR="${evalEpubs}"
+              export BB_SAMPLE_EPUB="''${BB_SAMPLE_EPUB:-${evalEpubs}/juliet.epub}"
               export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
               export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
               cd "${ko}" || exit 1
@@ -129,7 +176,12 @@
               # nixpkgs libs first (ABI-coherent SDL2/libstdc++), then koreader's
               # vendored OpenSSL in ${ko}/libs for common/ssl.so (libssl.so.60).
               export LD_LIBRARY_PATH="${testRealLibs}:${ko}/libs"
-              export BB_SAMPLE_EPUB="${koreader-test-data}/juliet.epub"
+              # BB_EPUB_DIR: base for resolving a per-test `epub` var by bare name
+              # (tier3_driver.lua resolveEpub); absolute epub paths bypass it.
+              # BB_SAMPLE_EPUB stays the global default but is host-overridable, so
+              # `BB_SAMPLE_EPUB=/path nix run .#eval-driver` swaps the book sans edits.
+              export BB_EPUB_DIR="${evalEpubs}"
+              export BB_SAMPLE_EPUB="''${BB_SAMPLE_EPUB:-${evalEpubs}/juliet.epub}"
               export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
               export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
               out="$(mktemp -t bb-eval.XXXXXX.json)"

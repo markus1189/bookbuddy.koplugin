@@ -24,6 +24,12 @@ providers:
 tests:
   - description: Highlights the first mention of Verona (Prologue, page 6 / loc:1)
     vars:
+      # epub: bare name → resolved against BB_EPUB_DIR (flake export); an absolute
+      # path is used as-is. start_page positions the reader before the turn, so the
+      # p.6 hit sits ahead of p.1 and is spoiler-gated (the ideal trace re-greps with
+      # spoiler=true). Both reach the driver via the exec provider's argv[3] context.
+      epub: juliet.epub
+      start_page: 1
       task: Highlight the first mention of Verona.
     assert:
       # Deterministic trace grade: a create_highlight on the first Verona,

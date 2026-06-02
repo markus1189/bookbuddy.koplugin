@@ -19,17 +19,51 @@ local lfs = require("libs/libkoreader-lfs")
 lfs.mkdir(os.getenv("KO_HOME") or ".")
 require("ffi/loadlib")
 
--- 2. Open a real ReaderUI over juliet.epub (runs commonrequire/disable_plugins,
+-- 1b. rapidjson (a standalone C module on LUA_CPATH, no commonrequire needed) is
+--     loaded up front so the per-test context (promptfoo's argv[3] = JSON) can be
+--     decoded BEFORE open_book — the resolved epub selects which book we open.
+local rapidjson = require("rapidjson")
+
+-- 1c. Parse the promptfoo context ONCE into ctx_vars. Both resolveEpub (below) and
+--     resolveStartPage (further down) read it; env vars remain the global fallback
+--     for the .#eval-driver isolation harness, which passes only arg[1].
+local ctx_vars = {}
+do
+    local ctx_json = arg and arg[3]
+    if ctx_json and ctx_json ~= "" then
+        local ok, ctx = pcall(rapidjson.decode, ctx_json)
+        if ok and type(ctx) == "table" and type(ctx.vars) == "table" then
+            ctx_vars = ctx.vars
+        end
+    end
+end
+
+-- 1d. Resolve which epub to open. A per-test `epub` var wins: absolute paths are
+--     used as-is; a bare name resolves against BB_EPUB_DIR (the flake's test-data
+--     base). nil → open_book falls back to BB_SAMPLE_EPUB / the in-tree default.
+local function resolveEpub()
+    local e = ctx_vars.epub
+    if type(e) == "string" and e ~= "" then
+        if e:sub(1, 1) == "/" then
+            return e
+        end
+        local base = os.getenv("BB_EPUB_DIR")
+        return (base and base ~= "") and (base .. "/" .. e) or e
+    end
+    return nil
+end
+local resolved_epub = resolveEpub()
+
+-- 2. Open a real ReaderUI over the resolved epub (runs commonrequire/disable_plugins,
 --    which set up the require paths + globals the rest depends on).
 local support = require("tests.integration.real.support")
-local readerui, Tools = support.open_book()
+local readerui, Tools = support.open_book(resolved_epub)
 
 -- 3. Real loop + helpers, pulled in only after commonrequire prepared the runtime.
 local Conversation = require("bbconversation")
 local UIManager = require("ui/uimanager")
 local Trapper = require("ui/trapper")
 local T = require("ffi/util").template
-local rapidjson = require("rapidjson")
 
 -- Emit exactly ONE ProviderResponse JSON: a clean copy to BB_EVAL_OUT (if set) and
 -- the same to stdout for promptfoo's exec provider. Flush so a following os.exit
@@ -97,15 +131,9 @@ end
 --     uses the same GotoPage path the real navigate spec exercises, so the reader
 --     truly lands there before the turn is seeded.
 local function resolveStartPage()
-    local ctx_json = arg and arg[3]
-    if ctx_json and ctx_json ~= "" then
-        local ok, ctx = pcall(rapidjson.decode, ctx_json)
-        if ok and type(ctx) == "table" and type(ctx.vars) == "table" then
-            local p = tonumber(ctx.vars.start_page)
-            if p then
-                return p
-            end
-        end
+    local p = tonumber(ctx_vars.start_page)
+    if p then
+        return p
     end
     return tonumber(os.getenv("BB_START_PAGE"))
 end
@@ -130,9 +158,24 @@ conv.transcript[1] = { role = "user", text = task }
 --     the spoiler boundary for free. (os.exit, not `return`: a bare return is only
 --     legal as a chunk's last statement.)
 if os.getenv("BB_DRY_RUN") then
+    -- BB_PROBE_GREP: a deterministic, zero-cost way to capture a phrase's real
+    -- page anchor for a new scenario. Greps with spoiler=true (whole book, no
+    -- gate) so the raw "[page N] (loc:…)" lines land in metadata.probe_grep —
+    -- the page/loc the create_highlight/read asserts will key on. (No model.)
+    local probe_query = os.getenv("BB_PROBE_GREP")
+    local probe_grep
+    if probe_query and probe_query ~= "" then
+        probe_grep = Tools.execute("grep", { query = probe_query, spoiler = true }, readerui)
+    end
     emit({
         output = "",
-        metadata = { dry_run = true, start_page = start_page, current_page = current_page },
+        metadata = {
+            dry_run = true,
+            epub = resolved_epub,
+            start_page = start_page,
+            current_page = current_page,
+            probe_grep = probe_grep,
+        },
     })
     pcall(support.close_book, readerui)
     os.exit(0)
@@ -219,6 +262,7 @@ emit({
         trace = trace,
         usage = conv.usage,
         error = err,
+        epub = resolved_epub,
         start_page = start_page,
         current_page = current_page,
     },
