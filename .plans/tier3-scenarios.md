@@ -148,8 +148,12 @@ Terse, casual, typo'd — as typed on an e-reader. Double as no-markdown tests (
   `vertex/claude-opus-4-8@eu`, grader `vertex/claude-sonnet-4-6@europe-west1`): C1 100% (2/2),
   llm-rubric score 1.0 — and the grader's `reason` cited only the prose (Wickham's charm, the
   Darcy street-encounter), never the trace's "elopement of Lydia and Wickham", proving the
-  transform fed prose-only. Now unblocks the rest of category A/C. (Only the rubric's pass-path
-  is observed; the `threshold` failure-path is untested but the rig is live.)
+  transform fed prose-only. **Fail-path also verified** (same billed gateway, throwaway
+  `echo`-provider config): two spoiling replies both scored 0 / pass=false — a blatant
+  elopement reveal AND a regex-EVADING one ("his sob story is a fabrication… a fortune-hunter",
+  zero forbidden tokens) that the deterministic regex would wave through but the rubric caught.
+  So the grader discriminates pass (1.0) vs fail (0.0) and adds real value beyond the regex.
+  Now unblocks the rest of category A/C.
 - **Forbidden-token regex backstops.** Cheap deterministic companions to the rubric for the
   highest-risk cases (`/guillotine|far,?\s+far better/i`, `/seduc|elope|deceiv/i`).
 
