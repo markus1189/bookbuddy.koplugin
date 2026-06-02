@@ -43,6 +43,83 @@ tests:
           const env = JSON.parse(output);
           return !/[*_#`]/.test(env.output || '');
 
+  # --- Seeded-fixture scenarios -------------------------------------------------
+  # These open the book with a pre-existing .sdr (the `seed_sdr` var, resolved by
+  # bare name against BB_FIXTURE_DIR = tests/eval/fixtures). juliet.sdr is snapshot
+  # from the real annotation/memory stack by `nix run .#eval-seed`; it holds two
+  # Prologue highlights (a NOTE on "In fair Verona", a bare highlight on "ancient
+  # grudge") and one BookBuddy memory note. Regenerate it whenever juliet.epub or
+  # koreader is bumped (the annotation xpointers are layout-dependent).
+
+  - description: Reads back the reader's own (seeded) highlights
+    vars:
+      epub: juliet.epub
+      seed_sdr: juliet.sdr
+      start_page: 6
+      task: What have I highlighted in this book so far?
+    assert:
+      - type: javascript
+        value: file://asserts/get_highlights_roundtrip.js
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
+  - description: Adds a note to an existing (seeded) highlight, not a new one
+    vars:
+      epub: juliet.epub
+      seed_sdr: juliet.sdr
+      start_page: 6
+      task: Add a note to my "ancient grudge" highlight saying it introduces the family feud.
+    assert:
+      - type: javascript
+        value: file://asserts/edited_grudge_note.js
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
+  - description: Recalls a seeded BookBuddy memory note about the reader
+    vars:
+      epub: juliet.epub
+      seed_sdr: juliet.sdr
+      enable_memory: true
+      start_page: 6
+      task: What do you remember about me and how I'm reading this book?
+    assert:
+      - type: javascript
+        value: file://asserts/memory_recall.js
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
+  # Empty-fixture baseline (NO seed_sdr): the same question must honestly report no
+  # highlights rather than inventing any — the negative control for the round-trip.
+  - description: With an empty sidecar, honestly reports no highlights
+    vars:
+      epub: juliet.epub
+      start_page: 6
+      task: What have I highlighted in this book so far?
+    assert:
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          const meta = env.metadata || {};
+          const trace = Array.isArray(meta.trace) ? meta.trace : [];
+          if (!trace.some((t) => t.name === 'get_highlights')) {
+            return { pass: false, score: 0, reason: 'did not call get_highlights' };
+          }
+          // Must not claim any specific highlight exists when the book has none.
+          if (/Verona|grudge/i.test(env.output || '')) {
+            return { pass: false, score: 0, reason: 'fabricated a highlight that was not seeded' };
+          }
+          return { pass: true, score: 1, reason: 'reported empty highlights honestly' };
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:

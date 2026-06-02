@@ -145,11 +145,42 @@
               # `BB_SAMPLE_EPUB=/path nix run .#eval-driver` swaps the book sans edits.
               export BB_EPUB_DIR="${evalEpubs}"
               export BB_SAMPLE_EPUB="''${BB_SAMPLE_EPUB:-${evalEpubs}/juliet.epub}"
+              # BB_FIXTURE_DIR: base for resolving a per-test `seed_sdr` var by bare
+              # name (tier3_driver.lua resolveSeedSdr); absolute paths bypass it.
+              export BB_FIXTURE_DIR="$PLUGIN_DIR/tests/eval/fixtures"
               export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
               export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
               cd "${ko}" || exit 1
               echo "==> tier3 eval driver (real crengine + real model)" >&2
               exec ./luajit "$PLUGIN_DIR/tests/eval/tier3_driver.lua" "$@"
+            '';
+          };
+          # `nix run .#eval-seed` — regenerate a Tier-3 fixture .sdr by snapshotting
+          # the REAL annotation/memory stack (tests/eval/seed_fixture.lua). No API
+          # key / no model call; needs the koreader runtime, a writable temp dir, and
+          # cp. BB_FIXTURE_OUT = destination .sdr (e.g. tests/eval/fixtures/juliet.sdr);
+          # arg[1] / BB_SAMPLE_EPUB = source book; BB_SEED_RECIPE picks the recipe.
+          # Regenerate whenever the pinned epub or koreader bumps (xpointers drift).
+          evalSeed = pkgs.writeShellApplication {
+            name = "bookbuddy-eval-seed";
+            runtimeInputs = [ pkgs.coreutils ];
+            text = ''
+              if [ -z "''${BB_FIXTURE_OUT:-}" ]; then
+                echo "BB_FIXTURE_OUT (destination .sdr dir) must be set" >&2
+                exit 2
+              fi
+              PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
+              KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
+              export TESSDATA_PREFIX="${ko}/data"
+              export SDL_VIDEODRIVER=dummy
+              export LD_LIBRARY_PATH="${testRealLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+              export BB_EPUB_DIR="${evalEpubs}"
+              export BB_SAMPLE_EPUB="''${BB_SAMPLE_EPUB:-${evalEpubs}/juliet.epub}"
+              export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
+              export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
+              cd "${ko}" || exit 1
+              echo "==> tier3 fixture generator (real crengine, no model)" >&2
+              exec ./luajit "$PLUGIN_DIR/tests/eval/seed_fixture.lua" "$@"
             '';
           };
           # `bb-tier3-exec` — the promptfoo `exec:` provider entrypoint (Tier 3,
@@ -182,6 +213,9 @@
               # `BB_SAMPLE_EPUB=/path nix run .#eval-driver` swaps the book sans edits.
               export BB_EPUB_DIR="${evalEpubs}"
               export BB_SAMPLE_EPUB="''${BB_SAMPLE_EPUB:-${evalEpubs}/juliet.epub}"
+              # BB_FIXTURE_DIR: base for resolving a per-test `seed_sdr` var by bare
+              # name (tier3_driver.lua resolveSeedSdr); absolute paths bypass it.
+              export BB_FIXTURE_DIR="$PLUGIN_DIR/tests/eval/fixtures"
               export LUA_PATH="?.lua;frontend/?.lua;common/?.lua;${koreader}/spec/unit/?.lua;$PLUGIN_DIR/?.lua;${luaEnv}/share/lua/5.1/?.lua;${luaEnv}/share/lua/5.1/?/init.lua"
               export LUA_CPATH="?.so;libs/?.so;common/?.so;${luaEnv}/lib/lua/5.1/?.so"
               out="$(mktemp -t bb-eval.XXXXXX.json)"
@@ -267,6 +301,10 @@
           eval-driver = {
             type = "app";
             program = "${evalDriver}/bin/bookbuddy-eval-driver";
+          };
+          eval-seed = {
+            type = "app";
+            program = "${evalSeed}/bin/bookbuddy-eval-seed";
           };
           eval = {
             type = "app";

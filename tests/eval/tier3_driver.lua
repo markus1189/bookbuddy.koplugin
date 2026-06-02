@@ -54,10 +54,46 @@ local function resolveEpub()
 end
 local resolved_epub = resolveEpub()
 
+-- 1e. Resolve an optional fixture .sdr to pre-seed (highlights/notes + memory). A
+--     per-test `seed_sdr` var wins; BB_SEED_SDR is the env fallback. A bare name
+--     resolves against BB_FIXTURE_DIR (the flake exports it = tests/eval/fixtures);
+--     an absolute path is used as-is. nil → no seeding (the empty-.sdr baseline).
+local function resolveSeedSdr()
+    local s = ctx_vars.seed_sdr
+    if type(s) ~= "string" or s == "" then
+        s = os.getenv("BB_SEED_SDR")
+    end
+    if type(s) ~= "string" or s == "" then
+        return nil
+    end
+    if s:sub(1, 1) == "/" then
+        return s
+    end
+    local base = os.getenv("BB_FIXTURE_DIR")
+    return (base and base ~= "") and (base .. "/" .. s) or s
+end
+local seed_sdr = resolveSeedSdr()
+
+-- 1f. Memory is offered to the model only when enabled (bbconversation:135) AND a
+--     writable sidecar exists. Off by default (cheaper, deterministic); a per-test
+--     `enable_memory` var or BB_ENABLE_MEMORY turns it on for memory scenarios.
+local function resolveEnableMemory()
+    local m = ctx_vars.enable_memory
+    if m == nil then
+        return os.getenv("BB_ENABLE_MEMORY") == "1"
+    end
+    return m == true
+end
+local enable_memory = resolveEnableMemory()
+
 -- 2. Open a real ReaderUI over the resolved epub (runs commonrequire/disable_plugins,
---    which set up the require paths + globals the rest depends on).
+--    which set up the require paths + globals the rest depends on). The test env uses
+--    the "dir" sidecar location (centralized under KO_HOME/docsettings), so the
+--    sidecar is writable even though the epub is in the read-only store — seeding a
+--    fixture and memory both just need that, no epub copy. open_book seeds the
+--    sidecar (if seed_sdr) before ReaderUI:new so the annotations load on open.
 local support = require("tests.integration.real.support")
-local readerui, Tools = support.open_book(resolved_epub)
+local readerui, Tools = support.open_book(resolved_epub, { seed_sdr = seed_sdr })
 
 -- 3. Real loop + helpers, pulled in only after commonrequire prepared the runtime.
 local Conversation = require("bbconversation")
@@ -92,7 +128,7 @@ local config = {
     max_tokens = tonumber(os.getenv("BB_MAX_TOKENS")) or 8000,
     max_turns = tonumber(os.getenv("BB_MAX_TURNS")) or 8,
     additional_system_prompt = "",
-    enable_memory = false,
+    enable_memory = enable_memory,
     enable_thinking = false,
 }
 local settings = {
@@ -172,9 +208,12 @@ if os.getenv("BB_DRY_RUN") then
         metadata = {
             dry_run = true,
             epub = resolved_epub,
+            seed_sdr = seed_sdr,
+            enable_memory = enable_memory,
             start_page = start_page,
             current_page = current_page,
             probe_grep = probe_grep,
+            seeded_highlights = Tools.execute("get_highlights", {}, readerui),
         },
     })
     pcall(support.close_book, readerui)
@@ -263,6 +302,8 @@ emit({
         usage = conv.usage,
         error = err,
         epub = resolved_epub,
+        seed_sdr = seed_sdr,
+        enable_memory = enable_memory,
         start_page = start_page,
         current_page = current_page,
     },
