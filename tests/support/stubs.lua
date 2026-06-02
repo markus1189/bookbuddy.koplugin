@@ -25,7 +25,11 @@ M.json = json
 -- what lets the suite catch "x or 0" / "if x then" guards that fail to coerce a
 -- null token. json.encode emits "null" for it and json.decode returns it for the
 -- "null" token, and the rapidjson stub exposes it as rapidjson.null.
-json.null = newproxy and newproxy(false) or setmetatable({}, { __tostring = function() return "null" end })
+json.null = newproxy and newproxy(false) or setmetatable({}, {
+    __tostring = function()
+        return "null"
+    end,
+})
 
 local function utf8char(cp)
     if cp < 0x80 then

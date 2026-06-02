@@ -57,6 +57,7 @@ describe("grep (real)", function()
         assert.are.equal(10, support.current_page(Tools, readerui))
 
         local capped = Tools.execute("grep", { query = "Verona" }, readerui)
+
         -- a hit beyond page 10 must not leak its page number…
         assert.is_nil(capped:find("[page 15]", 1, true))
         assert.is_nil(capped:find("[page 29]", 1, true))

@@ -205,12 +205,14 @@ describe("bbanthropic", function()
             local p = Anthropic.newStreamParser()
             p:feed("data: " .. json.encode({
                 type = "message_start",
-                message = { usage = {
-                    input_tokens = 0,
-                    output_tokens = 0,
-                    cache_read_input_tokens = json.null, -- OpenRouter nulls these here
-                    cache_creation_input_tokens = json.null,
-                } },
+                message = {
+                    usage = {
+                        input_tokens = 0,
+                        output_tokens = 0,
+                        cache_read_input_tokens = json.null, -- OpenRouter nulls these here
+                        cache_creation_input_tokens = json.null,
+                    },
+                },
             }))
             p:feed("data: " .. json.encode({
                 type = "message_delta",
