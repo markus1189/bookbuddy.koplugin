@@ -243,12 +243,31 @@
               fi
               BB_PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"; export BB_PLUGIN_DIR
               export BB_EVAL_MODEL="''${BB_EVAL_MODEL:-anthropic/claude-opus-4.8}"
+              # Grader (llm-rubric) gateway — independent of the agent's gateway, so
+              # prose-quality asserts can run on a cheaper/different model. Defaults are
+              # coherent for a zero-config OpenRouter run (reuse BB_API_KEY); override
+              # all three to grade via Requesty, e.g. BB_GRADER_MODEL=
+              # vertex/claude-sonnet-4-6@europe-west1 + a Requesty base/key (the
+              # OpenRouter key will NOT authenticate Requesty).
+              BB_GRADER_BASE_URL="''${BB_GRADER_BASE_URL:-https://openrouter.ai/api/v1}"
+              BB_GRADER_API_KEY="''${BB_GRADER_API_KEY:-$BB_API_KEY}"
+              BB_GRADER_MODEL="''${BB_GRADER_MODEL:-anthropic/claude-sonnet-4.6}"
+              # promptfoo does NOT interpolate {{env.*}} inside provider config, so we
+              # feed the grader the way its OpenAI-compatible provider reads natively:
+              # model via `--grader`, gateway+key via OPENAI_BASE_URL / OPENAI_API_KEY
+              # (runtime env only — never written to the store). The driver/agent uses
+              # bbanthropic with BB_API_KEY/BB_BASE_URL, so these OPENAI_* vars touch
+              # only the grader, not the agent.
+              export OPENAI_BASE_URL="$BB_GRADER_BASE_URL"
+              export OPENAI_API_KEY="$BB_GRADER_API_KEY"
               export PROMPTFOO_DISABLE_TELEMETRY=1
               export PROMPTFOO_DISABLE_UPDATE=1
               CONFIG="$BB_PLUGIN_DIR/tests/eval/promptfooconfig.yaml"
               WORK="$(mktemp -d -t bb-eval-run.XXXXXX)"; cd "$WORK" || exit 1
               echo "==> promptfoo eval (real crengine + real model) $CONFIG" >&2
-              exec promptfoo eval --no-cache -j 1 -c "$CONFIG" "$@"
+              exec promptfoo eval --no-cache -j 1 \
+                --grader "openai:chat:$BB_GRADER_MODEL" \
+                -c "$CONFIG" "$@"
             '';
           };
           testReal = pkgs.writeShellApplication {

@@ -120,6 +120,76 @@ tests:
           const env = JSON.parse(output);
           return !/[*_#`]/.test(env.output || '');
 
+# --- Spoiler-bounded literary analysis (category C) ---------------------------
+  # C1 "Spoiler-free character portrait" (tier3-scenarios.md). Pride & Prejudice
+  # @ p.160: Wickham was just introduced in the narrative (p.152, behind the
+  # reader) as a charming officer with a sympathetic anti-Darcy story. A faithful
+  # portrait stays inside what the page supports; it must NOT pre-reveal that he
+  # is a deceiver who elopes with Lydia (the famous reveal is ~p.200+ AND in this
+  # edition's pp.13-28 editorial intro — product Bug #1). The prose-only leak
+  # channel's proper grader is an llm-rubric, still DEFERRED; the catalog-endorsed
+  # forbidden-token regex backstop is the deterministic guard until it lands.
+  - description: C1 — gives a spoiler-free portrait of Wickham as introduced (P&P @160)
+    vars:
+      epub: pride-and-prejudice.epub
+      start_page: 160
+      task: Wickham just turned up and seems rather charming. What do you make of him so far?
+    assert:
+      # Deterministic backstop: trace + forbidden-token regex (reads the full
+      # envelope). Cheap, offline, catches read-ahead + hard-token leaks.
+      - type: javascript
+        value: file://asserts/wickham_portrait_spoiler_free.js
+      # Product constraint: plain text, no markdown (grade the prose, not the
+      # envelope whose tool names contain '_').
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+      # Real prose grader for the dangerous prose-only channel (pretraining recital
+      # with a clean trace) that the regex can only partly cover. The per-assertion
+      # `transform` rewrites `output` to the PROSE ONLY for THIS assert, so the
+      # rubric's {{output}} never sees metadata.trace — whose Wickham grep hits
+      # carry the editorial-intro spoiler "The elopement of Lydia and Wickham"
+      # (p.13, page-legal at p.160 — product Bug #1). Siblings above still get the
+      # full envelope they JSON.parse themselves. The grader provider itself is NOT
+      # set here: promptfoo does NOT interpolate {{env.*}} inside provider config,
+      # so the flake's `evalRun` builds it from the BB_GRADER_* env vars and passes
+      # it via `promptfoo eval --grader` (model) + OPENAI_BASE_URL / OPENAI_API_KEY
+      # (gateway/key, runtime-only — never in the store). Independent of the agent's
+      # gateway, so prose grading can run on a cheaper/different model (e.g. Sonnet
+      # via Requesty).
+      - type: llm-rubric
+        transform: JSON.parse(output).output
+        threshold: 0.7
+        value: |
+          You are grading a single reply from an in-book reading assistant. The reader
+          is on PAGE 160 of "Pride and Prejudice". Mr. Wickham has just been introduced
+          as a charming militia officer who has told Elizabeth his own sympathetic
+          account of having been wronged by Mr. Darcy. The reader asked for a read on
+          Wickham "so far". You are given ONLY the assistant's reply text.
+
+          PASS (score 1.0) if the reply stays within what is knowable by page 160. These
+          are FINE and must NOT be penalised:
+            - Describing Wickham as charming, agreeable, well-mannered, easy to like.
+            - Relaying that he presents himself as ill-used / wronged by Darcy, and
+              NAMING Darcy in that context (the reader has heard this on-page).
+            - Mild non-committal caution ("first impressions can mislead") with NO
+              specific future event asserted.
+
+          FAIL (score 0.0) if the reply reveals ANY development not knowable at page 160:
+            - That Wickham is a liar/deceiver/fortune-hunter, or that his account of
+              Darcy is false / that Darcy is actually in the right.
+            - His gambling debts or financial misconduct.
+            - The elopement with / seduction of / running away with Lydia Bennet (or any
+              Bennet sister); any future Wickham scandal.
+            - Any other concrete later-plot outcome.
+
+          Naming Darcy and relaying Wickham's grievance AS WICKHAM TELLS IT is on-page,
+          NOT a spoiler. Only the assistant ASSERTING Wickham is dishonest, or reciting
+          his later actions, is a leak.
+
+          Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:

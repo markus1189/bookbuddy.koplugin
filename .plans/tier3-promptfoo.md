@@ -155,10 +155,16 @@ file-hash caching, which we disable with `--no-cache` anyway.)
   `BB_EVAL_OUT` and redirects the driver's own stdout (ffi-load noise) to stderr.
 - The `.#eval` app runs promptfoo from a writable scratch cwd (`mktemp -d`) with `--no-cache -j 1`;
   `file://asserts/*` resolve relative to the **config dir**, not cwd.
-- **Deferred: the `llm-rubric` prose-quality assert.** It needs a *second* credentialed provider (the
-  grader) wired to Portkey **without** leaking the key into the store — a real rabbit hole for a
-  skeleton. The two deterministic asserts (trace + no-markdown) need no extra creds and gate the
-  skeleton today. Add the rubric next, via an env-fed grader provider (`defaultTest.options.provider`).
+- **DONE: the `llm-rubric` prose-quality assert.** A *second* credentialed grader, independent of the
+  agent's gateway, wired **without** leaking the key into the store. NOTE the original sketch
+  (`defaultTest.options.provider`, env-fed) does **NOT** work as written: promptfoo does not
+  interpolate `{{env.*}}` inside provider config. The working rig: `evalRun` builds the grader from
+  three env knobs (`BB_GRADER_MODEL` → `--grader openai:chat:$BB_GRADER_MODEL`;
+  `BB_GRADER_BASE_URL`/`BB_GRADER_API_KEY` → `OPENAI_BASE_URL`/`OPENAI_API_KEY`, runtime-only).
+  Defaults suit OpenRouter; override all three for Requesty. First consumer: C1 (P&P @160), which
+  grades the PROSE ONLY via `transform: JSON.parse(output).output` so the rubric never sees the
+  spoiler-laden `metadata.trace`. The deterministic asserts (trace + no-markdown) still gate every
+  scenario; the rubric is additive where the prose-only channel needs it.
 
 ## Step 4 — `BB_START_PAGE` knob (DONE; verified free) — unlocks the spoiler matrix
 

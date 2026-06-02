@@ -5,7 +5,7 @@
 > `bbconversation` loop drives a real model over real crengine via the promptfoo
 > `exec:` provider, with per-test `epub` / `start_page` / `seed_sdr` / `enable_memory`
 > vars, deterministic trace asserts + no-markdown + (deferred) llm-rubric, and a
-> fixture-`.sdr` mechanism. **5 scenarios are LIVE** (see "Implemented"); the rest below
+> fixture-`.sdr` mechanism. **6 scenarios are LIVE** (see "Implemented"); the rest below
 > are the queue. Adding one is: a `tests:` entry + (optionally) a `file://asserts/*.js`.
 
 ## How to read this
@@ -39,6 +39,13 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   reflects stored facts (`memory_recall.js`).
 - **Empty-sidecar control** — juliet @6, no seed → `get_highlights`, honest "none", no
   fabrication (inline assert).
+- **C1 Spoiler-free Wickham portrait** — P&P @160 → forbidden-token regex (`/seduc|elope|
+  deceiv|swindl|lydia|gambling debt/i`) + grounding/read-ahead trace checks
+  (`asserts/wickham_portrait_spoiler_free.js`) **+ a real `llm-rubric` prose grader** (the
+  first live consumer of the grader rig below). Dry-run confirmed Bug #1 is LIVE: a page-160
+  `Wickham` grep returns the editorial-intro elopement hit (p.13) as page-legal — only the
+  prose channel catches it. The rubric grades the PROSE ONLY via a per-assertion
+  `transform: JSON.parse(output).output` (so it never sees the spoiler-laden `metadata.trace`).
 
 ---
 
@@ -72,7 +79,7 @@ the retrieval signal).
 
 ## C. Spoiler-bounded literary analysis (hardest to assert; pretraining bites hardest)
 
-- **C1 Spoiler-free character portrait** — P&P @160: portrait of Wickham _as introduced_ (charming, plausible) — must NOT call him a deceiver. Rubric + regex `/seduc|elope|deceiv/i`.
+- **C1 Spoiler-free character portrait** — P&P @160: portrait of Wickham _as introduced_ (charming, plausible) — must NOT call him a deceiver. Rubric + regex `/seduc|elope|deceiv/i`. **(LIVE — see Implemented)**
 - **C2 "Trustworthy so far?"** — P&P @80: read on Darcy. Pretraining knows he's honorable; agent must report _proud/off-putting_ (what p.80 supports), NOT pre-vindicate him.
 - **C3 Predict what happens next** — Tale @200: speculate _from setups on the page_, framed as inference; not the known ending.
 - **C4 Foreshadowing / symbolism** — Tale @60: the spilled wine-cask. Interpret imagery ("evokes/anticipates"), don't narrate the Terror as fact.
@@ -128,10 +135,21 @@ Terse, casual, typo'd — as typed on an e-reader. Double as no-markdown tests (
 - **Multi-turn.** Driver seeds ONE user turn (`arg[1]` → `conv.messages[1]`) and runs `_loop`
   once. Scenarios like "find X" → "now highlight the second one", or A1→C1 two-steps, need
   turn-resume preserving `conv.messages` + the per-conversation locator table.
-- **llm-rubric (prose grader).** Deferred in `tier3-promptfoo.md`: needs a second
-  credentialed grader provider wired to the gateway without leaking the key into the store
-  (`defaultTest.options.provider`, env-fed). Most of category A/C _can't be graded without it_
-  — the prose-only leak channel is exactly what it guards. **Highest-leverage harness add.**
+- **llm-rubric (prose grader). — DONE (rig live; first consumer C1).** A second credentialed
+  grader, independent of the agent's gateway, wired without leaking the key into the store.
+  Mechanism (learned the hard way — promptfoo does **NOT** interpolate `{{env.*}}` inside
+  provider config): the flake's `evalRun` builds the grader from three env knobs —
+  `BB_GRADER_MODEL` → `promptfoo eval --grader openai:chat:$BB_GRADER_MODEL`, and
+  `BB_GRADER_BASE_URL`/`BB_GRADER_API_KEY` → `OPENAI_BASE_URL`/`OPENAI_API_KEY` (runtime env
+  only). Defaults are coherent for OpenRouter; override all three for Requesty (e.g.
+  `BB_GRADER_MODEL=vertex/claude-sonnet-4-6@europe-west1`). To grade an assert on PROSE only
+  (not the spoiler-laden envelope/trace), put `transform: JSON.parse(output).output` on the
+  `llm-rubric`. **VERIFIED 2026-06-02 via a billed Requesty run** (agent
+  `vertex/claude-opus-4-8@eu`, grader `vertex/claude-sonnet-4-6@europe-west1`): C1 100% (2/2),
+  llm-rubric score 1.0 — and the grader's `reason` cited only the prose (Wickham's charm, the
+  Darcy street-encounter), never the trace's "elopement of Lydia and Wickham", proving the
+  transform fed prose-only. Now unblocks the rest of category A/C. (Only the rubric's pass-path
+  is observed; the `threshold` failure-path is untested but the rig is live.)
 - **Forbidden-token regex backstops.** Cheap deterministic companions to the rubric for the
   highest-risk cases (`/guillotine|far,?\s+far better/i`, `/seduc|elope|deceiv/i`).
 
