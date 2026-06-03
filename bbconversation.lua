@@ -984,6 +984,7 @@ function Conversation:_promptFollowup()
         title = _("Reply"),
         input = "",
         input_hint = _("Type your reply"),
+        text_height = Presets.inputLines(2),
         buttons = buttons,
     })
     UIManager:show(dialog)

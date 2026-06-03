@@ -1,7 +1,17 @@
 local _ = require("gettext")
 local T = require("ffi/util").template
+local Font = require("ui/font")
 
 local Presets = {}
+
+-- Pixel height for an N-line InputDialog text box using its default input face
+-- (x_smallinfofont). Mirrors TextBoxWidget's line_height_px formula
+-- (round((1 + 0.3em spacing) * face.size)) so the box shows exactly N lines;
+-- face.size is already DPI-scaled, so this tracks the device.
+function Presets.inputLines(n)
+    local line_px = math.floor(1.3 * Font:getFace("x_smallinfofont").size + 0.5)
+    return line_px * n
+end
 
 Presets.book = {
     { _("Overview"), _("Give me a brief overview of this book.") },

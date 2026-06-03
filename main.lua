@@ -174,6 +174,7 @@ function BookBuddy:promptAndStart(text, note)
         description = description,
         input = "",
         input_hint = input_hint,
+        text_height = Presets.inputLines(2),
         buttons = buttons,
     })
     UIManager:show(dialog)

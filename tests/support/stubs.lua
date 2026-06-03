@@ -318,6 +318,12 @@ function M.install()
             return o or {}
         end,
     }
+    -- bbpresets.inputLines() reads Font:getFace(name).size to size the input box.
+    package.loaded["ui/font"] = {
+        getFace = function(_, _name)
+            return { size = 20 }
+        end,
+    }
 
     local chatviewer = {
         last_text = nil,
