@@ -430,4 +430,4 @@ tests:
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:
-  repeat: 2
+  repeat: 3

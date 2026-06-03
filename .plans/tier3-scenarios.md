@@ -86,7 +86,7 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   page 91"). The spoiler grader PASSED both (blind book ⇒ no pretraining spoilers to leak; it guards
   the get_toc-title / foreshadowing channel). This is the scenario working as intended — the chapter
   literally IS a shipwreck, and an un-nudged half-read that misses the climax is exactly the failure
-  it exists to catch; `repeat: 2` exposes the variance. (The earlier coaxing prompt "…the whole
+  it exists to catch; `repeat: 3` (global) exposes the variance (observed 1/2 at repeat 2). (The earlier coaxing prompt "…the whole
   chapter, make sure I didn't miss anything" passed 2/2 — too easy; the bare prompt is the real test.)
   **Assert gotcha found + fixed:** the read-ahead check must scan only `read`/`grep` results for
   pages past the reader — `get_toc` is ungated-by-design (Bug #2) and lists EVERY chapter's page
