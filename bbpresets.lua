@@ -8,6 +8,8 @@ Presets.book = {
     { _("Characters"), _("Who are the main characters so far?") },
     { _("Themes"), _("What are the main themes of this book?") },
     { _("Recap"), _("Recap what has happened up to where I am.") },
+    { _("Highlights"), _("Let's chat about my current highlights and notes") },
+    { _("Memories"), _("Let's chat about the book memories") },
 }
 
 Presets.passage = {
@@ -20,6 +22,7 @@ Presets.passage = {
 Presets.followup = {
     { _("Yes"), _("Yes.") },
     { _("Memorize"), _("Write a memory for this.") },
+    { _("Highlight"), _("Create a highlight with a note") },
 }
 
 function Presets.buttonRows(list, get_dialog, per_row)
