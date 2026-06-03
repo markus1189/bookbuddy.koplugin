@@ -429,6 +429,123 @@ tests:
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
+  # OBS3 — the ORIGINAL early-stop flake (first seen in eval-JCl, 2026-06-03). Reader at the
+  # START of Ch. VI ("Margaret's Heart", page 101); task is the deliberately VAGUE "summarize
+  # the previous chapter" — no number, no name. That vagueness is the point: it lets the model
+  # satisfice and stop its read loop early (declare a "full arc" after ~12 of Ch. V's 20 pages,
+  # never loading the shipwreck climax). OBS2 hardened the same recap into a named, far-away
+  # chapter and stopped flaking; OBS3 keeps the un-hardened phrasing so the suite stays
+  # sensitive to the early-stop regression the read-tool fix targets. On a book it can't recall,
+  # a complete+correct recap can ONLY come from reading Ch. V (pp.81-100) end-to-end, so prose
+  # completeness is a proxy for read completeness; the biggest beats land LATE (the son's birth,
+  # the minister forcing Peter's door, the wreck of The Solan on the Quarr rocks). Trace teeth:
+  # ungrounded = fail, read-ahead past the reader = fail, plus a soft coverage signal. Two prose
+  # graders: completeness/correctness, and spoilers — the recap must reach Ch. V's climax WITHOUT
+  # revealing or foreshadowing anything past it (the reader is at the very start of the next chapter).
+  - description: OBS3 — early-stop flake; recap of the whole previous chapter on the obscure book (Jan Vedder's Wife @ start of Ch. VI, vague task)
+    vars:
+      epub: jan-vedders-wife.epub
+      start_page: 101           # start of Ch. VI; Ch. V = pp.81-100 (BB_DRY_RUN probe)
+      task: Summarize the previous chapter.
+    assert:
+      # Deterministic: ungrounded recap = fail (blind book), read-ahead = fail; soft coverage score.
+      - type: javascript
+        value: file://asserts/recapped_previous_chapter.js
+      # Product constraint: plain text, no markdown (grade the prose).
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+      # Prose grader. The grader (Sonnet) is ALSO blind to this obscure book, so the rubric
+      # must SUPPLY the ground truth. Prose-only via transform (never the trace). Enforces
+      # completeness — the recap must reach the chapter's late beats and its shipwreck climax.
+      - type: llm-rubric
+        transform: JSON.parse(output).output
+        threshold: 0.7
+        value: |
+          You are grading a recap of ONE chapter from "Jan Vedder's Wife" by Amelia E. Barr
+          (an obscure 1885 novel set in the Shetland Islands). You almost certainly do not
+          know this book — do NOT grade from your own memory. The reader has just started
+          Chapter VI and asked for a recap of the PREVIOUS chapter, Chapter V ("Shipwreck").
+
+          GROUND TRUTH — Chapter V, in order (beginning → end):
+            - After a successful first voyage of his boat The Solan, Jan regrets deceiving his
+              wife Margaret over the £600 he took (the "forced loan") and resolves to repay her
+              once the boat is clear of debt; he tells himself the loan was no big deal.
+            - He returns to Lerwick to find his home dismantled and empty — no smoke, his
+              Newfoundland dog and pet seal Brenda gone. Margaret has moved back to her father
+              Peter Fae's house. Wounded, Jan drinks himself into a stupor at Torr's.
+            - Next morning Peter (having heard of Jan's drunken talk) forbids Jan to see
+              Margaret; her mother Thora relays the refusal. Jan offers a gold chain/locket as
+              a peace-offering; Margaret refuses it — she wants her £600 back, not a trinket.
+            - Jan's loyal friend Snorro takes his side and hides him in a boarded-up corner of
+              the loft over Peter's store; Jan leaves the rejected locket with him. Over the
+              summer Jan keeps sending Margaret money and tokens after each voyage; she returns
+              them all unanswered, and they pile up on Snorro's table.
+            - In October Margaret bears Jan a SON. But when Jan returns, Margaret is reportedly
+              dying; Peter shuts the door in his face and Thora calls Jan his "child's murderer."
+              Jan collapses in despair on the seashore.
+            - The minister, Doctor Balloch, finds him and by his near-papal authority forces
+              Peter to admit Jan and feed him; Jan briefly sees his unconscious wife and holds
+              his infant son. Margaret then hovers between life and death before improving.
+            - Jan sails again, resolved to make it his last voyage — to sell The Solan, repay
+              the £600, even humble himself to Peter, for the child's sake (Snorro counsels
+              against unconditional surrender: "money in the hand that wins").
+            - CLIMAX / ENDING: in November storms, after reaching Kirkwall, The Solan is driven
+              onto the Quarr rocks and totally WRECKED. Only Jan's life is barely saved; he
+              returns to Snorro bruised and in apathy — "shipwrecked as well as the boat" —
+              having lost everything and "even the will to fight his ill fortune any longer."
+
+          PASS (score 1.0) if the recap is CONSISTENT with the ground truth AND covers the
+          chapter's arc THROUGH TO ITS CLIMAX — it must reach the LATE beats, in particular
+          the birth of Jan and Margaret's son AND the wreck of The Solan (Jan barely surviving),
+          not just the opening estrangement. Accurate, reasonably complete recaps PASS; plain
+          flowing prose is expected; it need not mention every minor detail.
+
+          FAIL (score 0.0) if the recap:
+            - Stops early / omits the chapter's climax — e.g. ends at Snorro's loft, or never
+              mentions the son's birth, or never mentions The Solan being wrecked — an
+              incomplete read, OR
+            - Contradicts the ground truth or invents specific plot facts not supported above.
+
+          (Spoilers/foreshadowing are graded separately — judge only completeness & correctness here.)
+
+          Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
+      # Spoiler / foreshadowing grader (prose-only). The reader is at the very START of the
+      # NEXT chapter, so a faithful recap recounts ONLY Chapter V and must not reveal or forecast
+      # anything beyond it. The trace assert already blocks reading Ch. VI+ CONTENT; this catches
+      # the prose channel — narrating a future outcome, predicting the arc, or leaking a later
+      # chapter title (get_toc is ungated, Bug #2). The grader is blind to the book, so the rubric
+      # pins the boundary: Ch. V ENDS at the wreck of The Solan; anything past that is a spoiler.
+      - type: llm-rubric
+        transform: JSON.parse(output).output
+        threshold: 0.7
+        value: |
+          You are checking a recap of Chapter V ("Shipwreck") of "Jan Vedder's Wife" by Amelia
+          E. Barr for SPOILERS. The reader has JUST started the next chapter and has read no
+          further. You do not know this book — judge only against the boundary stated below.
+
+          Chapter V ENDS at its lowest point: Jan's boat The Solan is wrecked on the Quarr rocks,
+          Jan barely survives with nothing left, and Margaret — who has just borne his son and
+          nearly died — is left recovering, their estrangement unresolved. That is exactly as far
+          as the reader has read. A safe recap recounts Chapter V's events and STOPS there; it may
+          note tension already on the page (e.g. that the marriage and Margaret's recovery are left
+          uncertain) without resolving it.
+
+          PASS (score 1.0) if the recap stays within Chapter V and does NOT reveal or strongly
+          telegraph the future.
+
+          FAIL (score 0.0) if the recap:
+            - States or implies any development that happens AFTER Chapter V — e.g. whether the
+              marriage is repaired, what becomes of Jan, Margaret, the baby, Peter, or Snorro, or
+              any later reversal of fortune, OR
+            - Makes confident predictions or heavy-handed foreshadowing about where the story is
+              headed ("this clearly sets up…", "Jan will…", "it is only a matter of time before…"),
+              beyond tension literally present in Chapter V, OR
+            - Reveals or quotes the title or content of any LATER chapter.
+
+          Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:
