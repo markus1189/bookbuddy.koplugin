@@ -5,7 +5,7 @@
 > `bbconversation` loop drives a real model over real crengine via the promptfoo
 > `exec:` provider, with per-test `epub` / `start_page` / `seed_sdr` / `enable_memory`
 > vars, deterministic trace asserts + no-markdown + (deferred) llm-rubric, and a
-> fixture-`.sdr` mechanism. **8 scenarios are LIVE** (see "Implemented"); the rest below
+> fixture-`.sdr` mechanism. **9 scenarios are LIVE** (see "Implemented"); the rest below
 > are the queue. Adding one is: a `tests:` entry + (optionally) a `file://asserts/*.js`.
 
 ## How to read this
@@ -65,6 +65,35 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   of Margaret) — even surfacing a read-only detail (Peter = Margaret's father). The methodology
   note's prediction realized: the empty-trace recital path is gone, so a correct answer is real
   grounded signal and the grounding assert finally has teeth.
+- **OBS2 Complete + spoiler-free recap of the WHOLE previous chapter on the OBSCURE book** —
+  jan-vedders-wife @101 (start of Ch. VI "Margaret's Heart"; Ch. V "Shipwreck" = pp.81-100, ~4090
+  words, captured via BB_DRY_RUN probes). Task is the bare, un-coaxed "**Summarize the previous
+  chapter.**" The coverage anchor: on a book the model is blind to, a faithful recap can only come
+  from reading the chapter end-to-end, so prose completeness proxies read completeness. Ch. V's
+  biggest beats land LATE (Margaret bears a son; she nearly dies and the minister Doctor Balloch
+  forces Peter's door; the CLIMAX is the literal wreck of The Solan on the Quarr rocks) — a recap
+  that stops at Snorro's loft or omits the son/wreck didn't read to the end. Companion to OBS1:
+  `asserts/summarized_full_chapter.js` keeps the same blind-book teeth (ungrounded = fail, read-ahead
+  = fail) and adds a soft trace-coverage score (did the reads reach the Ch. V/VI boundary at p.100?).
+  FOUR channels: trace assert + no-markdown + TWO prose graders — one for completeness/correctness
+  (SUPPLIES the Ch. V ground truth; gates on reaching the son's birth AND the shipwreck) and one for
+  SPOILERS (pins the boundary at the wreck; fails on any post-Ch.-V outcome, confident foreshadowing,
+  or leaked later-chapter title — get_toc is ungated, Bug #2). **VERIFIED billed run, and the eval
+  DISCRIMINATES (1/2)** (agent `vertex/claude-opus-4-8@eu`, grader `vertex/claude-sonnet-4-6@europe-west1`):
+  with the bare prompt the model is NOT reliably thorough — one run read all 6 chunks to the clamp and
+  passed cleanly; the other stopped at p.91 (after the son's birth) and omitted the climax/shipwreck,
+  which the completeness grader correctly FAILED (and the soft coverage signal flagged: "only reached
+  page 91"). The spoiler grader PASSED both (blind book ⇒ no pretraining spoilers to leak; it guards
+  the get_toc-title / foreshadowing channel). This is the scenario working as intended — the chapter
+  literally IS a shipwreck, and an un-nudged half-read that misses the climax is exactly the failure
+  it exists to catch; `repeat: 2` exposes the variance. (The earlier coaxing prompt "…the whole
+  chapter, make sure I didn't miss anything" passed 2/2 — too easy; the bare prompt is the real test.)
+  **Assert gotcha found + fixed:** the read-ahead check must scan only `read`/`grep` results for
+  pages past the reader — `get_toc` is ungated-by-design (Bug #2) and lists EVERY chapter's page
+  (up to ~340 here), so scanning all tool results false-flags the natural "TOC then read the chapter"
+  path as read-ahead. (Latent in OBS1's `grounded_answer_obscure.js` too; it only escapes because its
+  agent reached for `grep`/`book_context` rather than `get_toc`. Worth porting the same narrowing
+  there if OBS1 ever starts using `get_toc`.)
 
 ---
 
