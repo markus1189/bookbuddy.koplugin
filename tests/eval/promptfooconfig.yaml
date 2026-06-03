@@ -249,6 +249,67 @@ tests:
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
+# --- Obscure-book grounding (methodology note) --------------------------------
+  # OBS1 — the first scenario on the obscure-book anchor jan-vedders-wife.epub
+  # (Amelia E. Barr, 1885; pinned in flake.nix). The eval model is demonstrably
+  # BLIND to this book (3/3 closed-book Opus oracles returned unanimous ignorance),
+  # which is the whole point of the catalog methodology note: a character question
+  # it CANNOT answer from pretraining. In B5 the model answered a famous-book
+  # question from pretraining with an EMPTY trace, so the grounding check could only
+  # be a soft 0.8. Here an ungrounded answer is necessarily fabricated — so grounding
+  # is a HARD requirement. start_page 50 puts Snorro's introduction (pp.17-28,
+  # verified via BB_DRY_RUN probe) BEHIND the reader, so it is page-legal to discuss.
+  - description: OBS1 — grounds a character answer in the text on a book the model can't recall (Jan Vedder's Wife @50)
+    vars:
+      epub: jan-vedders-wife.epub
+      start_page: 50
+      task: Who is Michael Snorro, and what's his relationship to Jan? Just from what I've read so far.
+    assert:
+      # Deterministic: grounding is a HARD fail here (not the soft 0.8 of the famous
+      # books) — the model can't know this book, so an empty/ungrounded trace is
+      # fabrication. Also hard-fails on read-ahead. Reads the full envelope.
+      - type: javascript
+        value: file://asserts/grounded_answer_obscure.js
+      # Product constraint: plain text, no markdown (grade the prose).
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+      # Prose grader. CRITICAL: the grader (Sonnet) is ALSO blind to this obscure book,
+      # so the rubric must SUPPLY the ground truth for it to check against — it cannot
+      # verify from its own knowledge. Prose-only via transform (never the trace).
+      - type: llm-rubric
+        transform: JSON.parse(output).output
+        threshold: 0.7
+        value: |
+          You are grading a reply from an in-book reading assistant about a character in
+          "Jan Vedder's Wife" by Amelia E. Barr (an obscure 1885 novel set in the Shetland
+          Islands). You almost certainly do not know this book — do NOT grade from your own
+          memory. GROUND TRUTH about Michael Snorro, from the text up to this point:
+            - He is a young man who works at Peter's store, where he also lives.
+            - He is simple / looked down on by the townsfolk (suspected of being "not all
+              there"), lonely, and unloved — "no one had loved Michael Snorro".
+            - He is Jan Vedder's devoted, loyal friend; Jan confides in him.
+            - He privately judges Margaret (Jan's wife) as selfish.
+
+          PASS (score 1.0) if the reply is CONSISTENT with the ground truth above and is
+          clearly drawn from the book — e.g. it describes Snorro as Jan's loyal/devoted
+          friend, a humble or looked-down-on figure connected to Peter's store. Partial but
+          accurate answers PASS. Honest hedging ("from what you've read so far…") is fine.
+
+          FAIL (score 0.0) if the reply:
+            - Contradicts the ground truth (e.g. makes Snorro a villain, a relative of Jan,
+              a rich man, a sailor, Margaret's suitor), OR
+            - Is vague/evasive in a way that asserts NO concrete, correct detail about Snorro
+              (a content-free non-answer), OR
+            - Invents specific plot facts not supported above (confabulation).
+
+          The model cannot know this book without reading it, so a correct, specific,
+          ground-truth-consistent answer is real signal; a confident wrong one is the
+          hallucination this scenario exists to catch.
+
+          Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:

@@ -5,7 +5,7 @@
 > `bbconversation` loop drives a real model over real crengine via the promptfoo
 > `exec:` provider, with per-test `epub` / `start_page` / `seed_sdr` / `enable_memory`
 > vars, deterministic trace asserts + no-markdown + (deferred) llm-rubric, and a
-> fixture-`.sdr` mechanism. **7 scenarios are LIVE** (see "Implemented"); the rest below
+> fixture-`.sdr` mechanism. **8 scenarios are LIVE** (see "Implemented"); the rest below
 > are the queue. Adding one is: a `tests:` entry + (optionally) a `file://asserts/*.js`.
 
 ## How to read this
@@ -54,6 +54,17 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   channel (narrating a fabricated baby scene with a clean trace). Dry-run probe confirmed the
   absence is real: `baby`/`cradle` → 0 matches, every `child`/`born`/`birth` hit is metaphorical
   (Prologue "children's end", "infant rind of this small flower", "born to die").
+- **OBS1 Grounded character answer on the OBSCURE book** — jan-vedders-wife @50 (Amelia E. Barr,
+  1885; pinned in flake.nix). "Who is Michael Snorro, and what's his relationship to Jan?" The eval
+  model is BLIND to this book (3/3 closed-book oracles unanimous ignorance), so unlike B5 — where on
+  a famous book the agent answered from pretraining with an EMPTY trace — grounding is now a HARD
+  requirement (`asserts/grounded_answer_obscure.js`: empty/ungrounded trace = fail; read-ahead =
+  fail) + an `llm-rubric` that SUPPLIES ground truth (the grader is blind too). **VERIFIED billed
+  run (2/2):** both runs grounded richly (`grep`+`read`, `book_context`+`grep`+`read`) and answered
+  accurately (Snorro: orphan at Peter Fae's store, "not all there", Jan's devoted friend, skeptical
+  of Margaret) — even surfacing a read-only detail (Peter = Margaret's father). The methodology
+  note's prediction realized: the empty-trace recital path is gone, so a correct answer is real
+  grounded signal and the grounding assert finally has teeth.
 
 ---
 
@@ -165,14 +176,24 @@ Terse, casual, typo'd — as typed on an e-reader. Double as no-markdown tests (
 - **Forbidden-token regex backstops.** Cheap deterministic companions to the rubric for the
   highest-risk cases (`/guillotine|far,?\s+far better/i`, `/seduc|elope|deceiv/i`).
 
-## Methodology note (act on this before scaling category C)
+## Methodology note (act on this before scaling category C) — DONE (anchor wired + first consumer)
 
 Every eval model knows these four canonical books from pretraining, so **a clean-trace pass on
-a famous novel doesn't prove the agent read the book — it might be reciting Wikipedia.**
-Add **one pinned obscure public-domain book the model demonstrably does NOT know** and run the
-C-class scenarios against it: there the only way to answer correctly is to use the tools, so a
-correct grounded answer is real signal and a confident wrong answer exposes a hallucination the
-famous books mask. Single highest-leverage addition to the book matrix.
+a famous novel doesn't prove the agent read the book — it might be reciting Wikipedia.** This was
+not theoretical: B5 (Romeo & Juliet) passed with an EMPTY trace — the model recited the correct
+denial from pretraining without grounding, so its deterministic grounding check could only be a
+soft 0.8.
+
+**Resolved:** pinned **`jan-vedders-wife.epub`** (Amelia E. Barr, 1885) as the obscure-book anchor
+(flake.nix `evalEpubs`). Selection was empirical — quizzed candidate obscure novels with 3
+independent closed-book Opus oracles each (self-consistency as a ground-truth-free knowledge probe:
+agreement ⇒ known/reject, divergence-or-ignorance ⇒ blind/keep). Jan Vedder's Wife drew unanimous
+ignorance (no character recall beyond the title); rejected candidates (St. Elmo, The Heir of
+Redclyffe, The Lamplighter) had oracles reciting correct names/endings. First consumer: **OBS1**
+(see Implemented), VERIFIED 2/2 — on this book the agent grounds (`grep`/`read`/`book_context`)
+instead of reciting, so the grounding assert is a HARD fail here, not the famous-book soft 0.8.
+Note the grader is also blind to the book, so its rubric must SUPPLY the ground truth to check
+against. Remaining: port more C-class scenarios (C2/C5/C7…) onto this anchor as the queue advances.
 
 ## Fixture needs per category
 

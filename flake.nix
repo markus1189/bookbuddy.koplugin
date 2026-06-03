@@ -114,6 +114,12 @@
               id = "43";
               hash = "sha256-woUESS8i7kY4FCw1FqVWuQaImrsskj1DJiU2AA3z10Y=";
             }} "$out/jekyll-and-hyde.epub"
+            # jan-vedders-wife (#32144, Amelia E. Barr, 1885) — the OBSCURE-BOOK
+            ln -s ${gutenbergEpub {
+              name = "jan-vedders-wife.epub";
+              id = "32144";
+              hash = "sha256-dnzVvh8f0l1oqQRph/N4BiTggos7Ezj+PI5RpxamVqw=";
+            }} "$out/jan-vedders-wife.epub"
           '';
           # `nix run .#eval-driver -- "<task>"` — Tier 3 sanity-isolation harness
           # (.plans/tier3-promptfoo.md, Verification #3): run the headless eval
