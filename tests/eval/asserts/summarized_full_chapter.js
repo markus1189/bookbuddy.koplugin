@@ -1,25 +1,29 @@
-// Tier 3 assertion — recap the WHOLE previous chapter on the OBSCURE book (OBS2).
+// Tier 3 assertion — summarize ONE SPECIFIC earlier chapter without over-reading (OBS2).
 //
-// Companion to grounded_answer_obscure.js. The reader sits at the START of Chapter VI of
-// "Jan Vedder's Wife" (Amelia E. Barr, 1885) — page 101; the task is to recap the PREVIOUS
-// chapter, Ch. V ("Shipwreck", pp.81-100, ~4090 words). The eval model is demonstrably
-// BLIND to this book (3/3 closed-book Opus oracles returned unanimous ignorance), so a
-// recap can only be faithful if it was actually READ — pretraining cannot supply Ch. V's
-// late beats (Margaret bears a son, the minister forces Peter's door, and the climactic
-// wreck of The Solan on the Quarr rocks). The llm-rubric grades the prose for completeness;
-// THIS deterministic assert grades the TRACE for the two failures the rubric can't see:
+// The reader sits at page 130, partway through Chapter VII of "Jan Vedder's Wife" (Amelia E.
+// Barr, 1885). The task asks for Chapter V ("Shipwreck", pp.81-100, ~4090 words) BY NUMBER
+// only — the model is NOT told the chapter's name. Chapter VI ("Margaret's Heart", pp.101-122)
+// lies BETWEEN the target chapter and the reader — behind the reader, yet OUTSIDE the request:
+// reading into it is over-reading, not a spoiler. The eval model is demonstrably BLIND to this
+// book (3/3 closed-book oracles returned unanimous ignorance), so a faithful recap can only come
+// from actually READING Ch. V to its late beats (the son's birth, the minister forcing Peter's
+// door, the climactic wreck of The Solan on the Quarr rocks).
 //
-//   - HARD FAIL (ungrounded): no grep/read/book_context. On a blind book an ungrounded
-//     recap is fabrication — same teeth as OBS1, not the famous-book soft signal.
-//   - HARD FAIL (read-ahead): any tool with spoiler=true, or a retrieval resolving PAST the
-//     reader's current page. Ch. V is entirely behind page 101, so a faithful recap never
-//     needs to read ahead; doing so IS the spoiler.
+// The llm-rubrics grade the PROSE (completeness; staying within Ch. V). THIS deterministic
+// assert grades the TRACE for the failures prose can't show:
 //
-// It also derives a SOFT coverage score from how far into the chapter the retrievals reached
-// (did the reads get to the chapter boundary, or stop near the opening?). Coverage is
-// informational and does NOT gate — the prose rubric is the authority on completeness, so
-// this stays robust to chunk-size / tool-choice variance (a model may read in few large
-// chunks, or answer partly from get_toc). pass stays true whenever grounded + no read-ahead.
+//   - HARD FAIL (ungrounded): no grep/read/book_context — on a blind book an ungrounded recap
+//     is fabrication.
+//   - HARD FAIL (over-read past the request): a read/grep reaching into Chapter VI (page >= 102,
+//     one page of boundary slack). The task is Ch. V ONLY; with the reader 30 pages past Ch. V
+//     there is NO spoiler clamp at the V/VI boundary, so the model must stop at that line on its
+//     own. Reading on into Ch. VI is exactly the over-reading this scenario is built to catch.
+//   - HARD FAIL (read-ahead past the reader): a retrieval resolving past page 130, or any
+//     spoiler=true input — genuine spoiler discipline, independent of the request.
+//
+// It also derives a SOFT coverage score from how near Ch. V's end (≈ page 100) the reads
+// reached. Coverage is informational and does NOT gate — the prose rubric is the completeness
+// authority, so this stays robust to chunk-size / tool-choice variance.
 //
 // Envelope contract (see grounded_answer_obscure.js / created_highlight_verona.js): promptfoo's
 // `exec:` provider hands `output` as the raw STRING
@@ -42,7 +46,14 @@ module.exports = (output, _context) => {
   const names = trace.map((t) => t.name).join(', ');
   const current = Number(meta.current_page) || 0;
 
-  // Every "[page N]" / "page N" in a tool result, as numbers.
+  // Chapter geometry for "Jan Vedder's Wife": Ch. V = pp.81-100, Ch. VI starts p.101.
+  const CHV_END_PAGE = 100;      // last page of the REQUESTED chapter
+  const CHVI_START_PAGE = 101;   // first page of the next chapter (off-task)
+  const OVERREAD_PAGE = CHVI_START_PAGE + 1; // 102 — a read here is unambiguously inside Ch. VI
+
+  // Every "[page N]" / "page N" in a tool result, as numbers. crengine's bare in-text page
+  // markers ("117") are NOT "page N" and don't count — so this tracks the START page of each
+  // read chunk (the tool header), not every page a chunk spans.
   const pagesIn = (result) =>
     (String(result || '').match(/page\s+(\d+)/gi) || []).map((p) => Number((p.match(/\d+/) || [])[0]));
 
@@ -60,12 +71,29 @@ module.exports = (output, _context) => {
     };
   }
 
-  // --- Hard fail: read-ahead (spoiler discipline) ------------------------------------
-  // Only CONTENT retrieval (read/grep) resolving past the reader is read-ahead. get_toc is
-  // ungated by design (catalog Bug #2) — it lists EVERY chapter's page, so its result always
-  // mentions pages past the reader; that is a table-of-contents listing, not content read
-  // ahead, and must not trip the gate. book_context's "Current page: N of TOTAL" likewise is
-  // not a content read. The spoiler=true input flag still trips on ANY tool.
+  // --- Hard fail: over-read PAST the requested chapter into Ch. VI -------------------
+  // The task is Chapter V only. With the reader at page 130 there is no spoiler clamp at the
+  // V/VI boundary, so a content read reaching page >= 102 means the model kept going into the
+  // next chapter instead of stopping at the end of what it was asked about.
+  const overReadCall = trace.find((t) => {
+    if (t.name === 'read' || t.name === 'grep') {
+      return pagesIn(t.result).some((n) => n >= OVERREAD_PAGE && n <= current);
+    }
+    return false;
+  });
+  if (overReadCall) {
+    const hitPages = pagesIn(overReadCall.result).filter((n) => n >= OVERREAD_PAGE && n <= current);
+    return {
+      pass: false,
+      score: 0,
+      reason: `over-read past Chapter V into Chapter VI via ${overReadCall.name} `
+        + `(input=${JSON.stringify(overReadCall.input || {})}) — a retrieval reached page `
+        + `${hitPages.join(',')}, past the requested chapter's end (≈ page ${CHV_END_PAGE}). The `
+        + `task was Ch. V ONLY, and nothing clamped the read here. Trace: [${names}]`,
+    };
+  }
+
+  // --- Hard fail: read-ahead past the reader (independent spoiler discipline) --------
   const aheadCall = trace.find((t) => {
     if (t.input && t.input.spoiler === true) return true;
     if (t.name === 'read' || t.name === 'grep') {
@@ -78,43 +106,35 @@ module.exports = (output, _context) => {
       pass: false,
       score: 0,
       reason: `grounded but read AHEAD of the reader (page ${current}) via ${aheadCall.name} `
-        + `(input=${JSON.stringify(aheadCall.input || {})}). Ch. V is behind the reader; reading `
-        + `ahead IS the spoiler. Trace: [${names}]`,
+        + `(input=${JSON.stringify(aheadCall.input || {})}). Trace: [${names}]`,
     };
   }
 
-  // --- Soft coverage signal: did the retrievals reach the chapter's end region? ------
-  // Ch. V ends at the page just before the reader's current page (the start of Ch. VI). Two
-  // signals it was read to the boundary: (1) a `read` clamped at the reader's page, which
-  // emits the "Stopped at your current page" trailer — the gold signal that forward reading
-  // ran right up to where the reader is; (2) a read/grep result whose page reaches near the
-  // boundary. (read headers report the chunk's START page, so the page heuristic lags the
-  // true end reached — hence the trailer is primary.)
-  const clampedAtReader = trace.some(
-    (t) => t.name === 'read' && /Stopped at your current page/i.test(String(t.result || ''))
-  );
+  // --- Soft coverage signal: did the reads reach Chapter V's end region (≈ p.100)? ---
+  // read headers report the chunk's START page, so the page heuristic lags the true end
+  // reached; treat reaching within ~2 pages of the boundary as "read to the end".
   let maxPage = 0;
   for (const t of trace) {
     if (t.name === 'read' || t.name === 'grep') {
-      for (const n of pagesIn(t.result)) if (n <= current && n > maxPage) maxPage = n;
+      for (const n of pagesIn(t.result)) if (n <= CHV_END_PAGE && n > maxPage) maxPage = n;
     }
   }
-  const reachedEnd = clampedAtReader || (current > 0 && maxPage >= current - 1);
+  const reachedEnd = maxPage >= CHV_END_PAGE - 2;
   if (!reachedEnd) {
     return {
       pass: true,
       score: 0.8,
-      reason: `grounded, no read-ahead — but retrievals only reached page ${maxPage || '?'} of the `
-        + `reader's ${current}, so coverage to the chapter's end (≈ page ${current - 1}) is unconfirmed `
-        + `from the trace; the prose rubric is the completeness authority. Trace: [${names}]`,
+      reason: `grounded, stayed within Ch. V, no read-ahead — but reads only reached page `
+        + `${maxPage || '?'} of the chapter's ≈ ${CHV_END_PAGE}, so end-to-end coverage is `
+        + `unconfirmed from the trace; the prose rubric is the completeness authority. Trace: [${names}]`,
     };
   }
 
   return {
     pass: true,
     score: 1,
-    reason: `grounded with no read-ahead, and forward reading reached the Ch. V/VI boundary at `
-      + `page ${current} (${clampedAtReader ? 'a read clamped at the reader' : `retrievals reached page ${maxPage}`}) `
-      + `— consistent with reading the whole chapter. Trace: [${names}]`,
+    reason: `grounded, stayed within Chapter V (no drift into Ch. VI), no read-ahead, and reads `
+      + `reached page ${maxPage} near the chapter's end (≈ ${CHV_END_PAGE}) — consistent with `
+      + `reading the whole requested chapter and stopping at its boundary. Trace: [${names}]`,
   };
 };

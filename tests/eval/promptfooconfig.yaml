@@ -310,24 +310,27 @@ tests:
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
-  # OBS2 — recap the WHOLE previous chapter on the obscure book the model is blind to.
-  # Reader at the start of Ch. VI ("Margaret's Heart", page 101, captured via BB_DRY_RUN);
-  # task is to summarize Ch. V ("Shipwreck", pp.81-100, ~4090 words), fully behind the
-  # reader. On a book the model can't recall, a complete+correct recap can ONLY come from
-  # reading the whole chapter end-to-end (pretraining can't fill it), so prose completeness
-  # is a proxy for read completeness. Ch. V is long and its biggest beats land LATE —
-  # Margaret bears a son, she nearly dies and the minister forces Peter's door, and the
-  # CLIMAX is the literal wreck of Jan's boat The Solan on the Quarr rocks. A recap that
-  # stops at Snorro's loft, or omits the son / the wreck, didn't read to the end. Companion
-  # to OBS1: same blind-book grounding teeth (ungrounded = fail, read-ahead = fail), plus a
-  # soft trace-coverage signal. Two prose graders: one for completeness/correctness, one for
-  # spoilers — a recap of the previous chapter must reach Ch. V's climax WITHOUT revealing or
-  # foreshadowing anything past it (the reader is at the very start of the next chapter).
-  - description: OBS2 — complete, correct recap of the whole previous chapter on the obscure book (Jan Vedder's Wife @ start of Ch. VI)
+  # OBS2 — summarize ONE SPECIFIC earlier chapter, on the obscure book the model is blind to,
+  # WITHOUT over-reading past it. Reader at page 130, partway through Ch. VII; the task asks for
+  # Chapter V (= "Shipwreck", pp.81-100, ~4090 words) BY NUMBER ONLY — the model is NOT told the
+  # chapter's name, so it must locate the chapter via the TOC (naming it would leak the climax
+  # and make grounding trivial). Ch. VI ("Margaret's Heart", pp.101-122) sits BETWEEN the target
+  # and the reader — behind the
+  # reader, but OUTSIDE the request: reading into it is over-reading, not a spoiler. With no
+  # spoiler clamp at the V/VI boundary (the reader is 30 pages past it), the model must stop at
+  # the end of Ch. V on its own. On a book it can't recall, a complete+correct recap can ONLY
+  # come from reading Ch. V end-to-end, so prose completeness is a proxy for read completeness.
+  # Ch. V's biggest beats land LATE — Margaret bears a son, she nearly dies and the minister
+  # forces Peter's door, and the CLIMAX is the wreck of Jan's boat The Solan on the Quarr rocks.
+  # A recap that stops at Snorro's loft, or omits the son / the wreck, didn't read to the end.
+  # Trace teeth: ungrounded = fail, over-read into Ch. VI = fail, read-ahead past the reader =
+  # fail, plus a soft coverage signal. Two prose graders: completeness/correctness, and scope —
+  # the summary must reach Ch. V's climax WITHOUT drifting into Ch. VI or later.
+  - description: OBS2 — complete, correct recap of a SPECIFIC earlier chapter with no over-read (Jan Vedder's Wife @ Ch. VII, summarize Ch. V by number)
     vars:
       epub: jan-vedders-wife.epub
-      start_page: 101           # start of Ch. VI; Ch. V = pp.81-100 (BB_DRY_RUN probe)
-      task: Summarize the previous chapter.
+      start_page: 130           # mid Ch. VII; target Ch. V = pp.81-100, Ch. VI (101-122) is off-task headroom
+      task: Summarize Chapter V.
     assert:
       # Deterministic: ungrounded recap = fail (blind book), read-ahead = fail; soft coverage score.
       - type: javascript
@@ -346,8 +349,8 @@ tests:
         value: |
           You are grading a recap of ONE chapter from "Jan Vedder's Wife" by Amelia E. Barr
           (an obscure 1885 novel set in the Shetland Islands). You almost certainly do not
-          know this book — do NOT grade from your own memory. The reader has just started
-          Chapter VI and asked for a recap of the PREVIOUS chapter, Chapter V ("Shipwreck").
+          know this book — do NOT grade from your own memory. The reader is partway through
+          Chapter VII and asked to summarize Chapter V ("Shipwreck") specifically.
 
           GROUND TRUTH — Chapter V, in order (beginning → end):
             - After a successful first voyage of his boat The Solan, Jan regrets deceiving his
@@ -392,26 +395,25 @@ tests:
           (Spoilers/foreshadowing are graded separately — judge only completeness & correctness here.)
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
-      # Spoiler / foreshadowing grader (prose-only). The reader is at the very START of the
-      # NEXT chapter, so a faithful recap recounts ONLY Chapter V and must not reveal or forecast
-      # anything beyond it. The trace assert already blocks reading Ch. VI+ CONTENT; this catches
-      # the prose channel — narrating a future outcome, predicting the arc, or leaking a later
-      # chapter title (get_toc is ungated, Bug #2). The grader is blind to the book, so the rubric
-      # pins the boundary: Ch. V ENDS at the wreck of The Solan; anything past that is a spoiler.
+      # Scope / spoiler grader (prose-only). The task names Chapter V specifically, so a faithful
+      # summary recounts ONLY Chapter V and does not drift into Chapter VI or later. The trace
+      # assert blocks over-reading Ch. VI+ CONTENT; this catches the prose channel — narrating a
+      # later event, predicting the arc, or leaking a later chapter title (get_toc is ungated,
+      # Bug #2). The grader is blind to the book, so the rubric pins the boundary: Ch. V ENDS at
+      # the wreck of The Solan; recounting anything past that is outside the requested chapter.
       - type: llm-rubric
         transform: JSON.parse(output).output
         threshold: 0.7
         value: |
-          You are checking a recap of Chapter V ("Shipwreck") of "Jan Vedder's Wife" by Amelia
-          E. Barr for SPOILERS. The reader has JUST started the next chapter and has read no
-          further. You do not know this book — judge only against the boundary stated below.
+          You are checking a summary of Chapter V ("Shipwreck") of "Jan Vedder's Wife" by Amelia
+          E. Barr for SCOPE. The reader asked for Chapter V SPECIFICALLY. You do not know this
+          book — judge only against the boundary stated below.
 
           Chapter V ENDS at its lowest point: Jan's boat The Solan is wrecked on the Quarr rocks,
           Jan barely survives with nothing left, and Margaret — who has just borne his son and
-          nearly died — is left recovering, their estrangement unresolved. That is exactly as far
-          as the reader has read. A safe recap recounts Chapter V's events and STOPS there; it may
-          note tension already on the page (e.g. that the marriage and Margaret's recovery are left
-          uncertain) without resolving it.
+          nearly died — is left recovering, their estrangement unresolved. A correct summary
+          recounts Chapter V's events and STOPS there; it may note tension already on the page
+          (e.g. that the marriage and Margaret's recovery are left uncertain) without resolving it.
 
           PASS (score 1.0) if the recap stays within Chapter V and does NOT reveal or strongly
           telegraph the future.

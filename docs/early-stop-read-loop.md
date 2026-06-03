@@ -65,46 +65,60 @@ the chapter boundary" vs. "I've read enough, ship it."
 
 ## Fix
 
-A **general** system-prompt addition (not recap-specific) in `bbprompts.lua`, a new
-`<completeness>` block after `<grounding>`. It establishes, for *any* question about a
-span of text:
+The fix lives in the **`read` tool itself** (`bbtools.lua`), not the system prompt — the
+guidance sits next to the tool it governs and costs no system-prompt real estate. Two
+changes:
 
-- read all the text the answer depends on; do not stop early;
-- an outstanding `(More follows — read again with from: …)` marker means the passage
-  is unfinished — keep calling `read` until a *real* end (next TOC chapter,
-  `(End of book reached.)`, or the reader's current page when spoiler-safe);
-- do not describe how something turns out, or call an account "complete"/"the full
-  picture", until actually read to that end — a partial read tempts filling the gap
-  from a half-remembered version of the book.
+1. **Description.** The old tail *"Read only what you need — every chunk you read stays in
+   context"* was the load-bearing rationalization for the early stop (the model judged it
+   had read "enough" and the tool pre-supplied the excuse). Replaced with: *"keep going to
+   the end of what you were asked about; a chunk ending in `(Not the end …)` is not the
+   end, so don't stop or conclude there. Reflowable (EPUB) books only; don't re-read chunks
+   you already pulled."* This keeps the real token win (no re-reads) while deleting the
+   stop-early license.
+2. **Continuation trailer.** The informational *"(More follows — read again with from: N.)"*
+   became the firmer *"(Not the end — call read again with from: N to continue.)"* — the
+   breadcrumb the model used to shrug off now reads as a contract.
+
+Crucially this is scoped to *"the end of what you were asked about"*, so it does **not**
+cause over-reading: asked for one chapter with the reader positioned past it, the model
+stops at that chapter's boundary even though the trailer keeps inviting it on (verified
+below).
 
 ### Grounded in Anthropic's prompting guidance
 
 From the Claude 4 best-practices guide:
 
 - **Define clear success criteria** for a complete answer (§Research and information
-  gathering). The block defines "read to a real end" as the bar.
-- **"do not stop tasks early … complete tasks fully … Never artificially stop any
-  task early"** — Anthropic's canonical persistence phrasing (§Managing context
-  limits), adapted here from "token budget" to "passage boundary."
+  gathering). The description defines "read to the end of what you were asked about" as
+  the bar.
+- **"do not stop tasks early … complete tasks fully … Never artificially stop any task
+  early"** — Anthropic's canonical persistence phrasing (§Managing context limits),
+  adapted from "token budget" to "passage boundary."
 - Opus 4.8 **"favors reasoning over tool calls"**, and the recommended lever is to
   **"explicitly instruct the model about when and how to properly use its tools"**
-  (§Tool usage). Reasoning-instead-of-reading is precisely the failure; the explicit
-  instruction is the prescribed fix.
+  (§Tool usage). Reasoning-instead-of-reading is precisely the failure; an explicit tool
+  description is the prescribed fix.
 
-## Known tension / follow-up
+### Approach not taken (kept in history)
 
-The `read` tool description (`bbtools.lua`) still says *"Read only what you need —
-every chunk you read stays in context"*, and `<grounding>` warns against re-reading.
-These are about token economy and remain correct, but "read only what you need" can
-read as license to stop early. The `<completeness>` block is meant to win that tie for
-span questions (read *forward* fully, once; never *re-read*). If the flake persists,
-the next lever is a more robust, deterministic fix: compute the chapter's `loc` span
-from the TOC and loop `read` in code until `current_page` reaches the next chapter,
-removing the coin flip entirely.
+An earlier commit (`dbf6def`) put the same idea in the system prompt as a general
+`<completeness>` block. It also verified 10/10, but it left the read tool's
+contradictory *"Read only what you need"* line in place — a brittle equilibrium where the
+block only won the tie by outranking the tool text. The read-tool fix removes the
+contradiction at the source, so this commit supersedes it (the block is dropped).
+
+## OBS2 now also guards against over-reading
+
+The OBS2 scenario was retargeted to test *both* failure directions with the same setup:
+reader at **page 130** (mid Ch VII), task **"Summarize Chapter V."** (by number — the
+title "Shipwreck" is withheld so it can't leak the climax or trivialize grounding). Ch V
+ends at p100, leaving ~22 pages of Ch VI as headroom with **no spoiler clamp at the V/VI
+boundary** — so stopping is the model's own judgment, not the clamp's. The trace assert
+(`asserts/summarized_full_chapter.js`) gained a hard **over-read fail** (any read reaching
+p≥102 = drifted into Ch VI) alongside the existing grounding and read-ahead teeth.
 
 ## How to reproduce / verify
-
-Re-run the OBS2 scenario several times (it is non-deterministic, so use the repeat):
 
 ```sh
 BB_PLUGIN_DIR=$(pwd) \
@@ -112,18 +126,19 @@ BB_BASE_URL=https://router.eu.requesty.ai BB_API_KEY=$(pass api/requesty/playgro
 BB_EVAL_MODEL=vertex/claude-opus-4-8@eu \
 BB_GRADER_BASE_URL=https://router.eu.requesty.ai/v1 \
 BB_GRADER_MODEL=vertex/claude-sonnet-4-6@europe-west1 \
-  nix run .#eval -- --filter-pattern OBS2
+  nix run .#eval -- --filter-pattern OBS2 --repeat 10
 ```
 
-A fixed run should show the agent issuing `read` calls all the way to the
-Chapter VI boundary (page 101) before recapping, and the completeness grader passing.
+A fixed run reads Chapter V end-to-end (reaching the wreck climax) and **stops at the
+Ch V/VI boundary** — the trace shows `maxReadHdrPage ≤ 100`, never ≥102.
 
-## Verification result (2026-06-03, `eval-9BM-2026-06-03T07:10:02`)
+## Verification results (2026-06-03)
 
-A 10× billed run of OBS2 with the `<completeness>` fix in place: **10/10 pass.**
-Every single run issued **6** `read` calls ending at `loc:24` (the failing draw had
-stopped at 5, ignoring the `loc:24` breadcrumb). The 6th read reaches page 99 — "Jan,
-the sole survivor of The Solan" — i.e. the shipwreck the old draw never loaded, then
-clamps at "(Stopped at your current page to avoid spoilers.)" at the page-101 Ch VI
-boundary. All 10 recaps mention the wreck. The previously ~1-in-3 flake did not recur
-in any of the 10 draws.
+- **Read-tweak, original OBS2** (`eval-pI2-…T07:23:14`): **10/10 pass.** Every run issued
+  6 reads to `loc:24` and reached the shipwreck — identical to the system-prompt block's
+  10/10 (`eval-9BM-…T07:10:02`).
+- **Read-tweak, over-read OBS2** (`eval-UkM-…T07:51:19`): **10/10 pass.** Every run read
+  Ch V `loc:8`→`loc:24` (6 chunks, last header p98–99, reaching the climax) and **none
+  drifted into Ch VI** (`maxReadHdrPage = 99`), despite 22 pages of headroom and the
+  trailer inviting continuation at every step. The over-reading concern is refuted across
+  10 draws.

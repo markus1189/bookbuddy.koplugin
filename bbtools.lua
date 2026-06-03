@@ -430,7 +430,7 @@ local function tool_read(ui, input)
         trailer = _("(Stopped at your current page to avoid spoilers. Pass spoiler=true to keep reading.)")
     else
         local nexttok = mintLocator(ui, { kind = "point", xp = xp_end })
-        trailer = T(_("(More follows — read again with from: %1.)"), nexttok)
+        trailer = T(_("(Not the end — call read again with from: %1 to continue.)"), nexttok)
     end
 
     return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
@@ -897,8 +897,9 @@ function Tools.getSpecs()
             description = "Read the current book's text in order, starting from a locator (from grep or "
                 .. "get_toc), a page number, or — if you give neither — the reader's current page. "
                 .. "Returns a chunk of text and a 'next' locator; call read again with from=next to "
-                .. "keep going. Reflowable (EPUB) books only. Read only what you need — every chunk "
-                .. "you read stays in context.",
+                .. "keep going to the end of what you were asked about; a chunk ending in "
+                .. "\"(Not the end …)\" means there is more, so don't stop or conclude there. Reflowable "
+                .. "(EPUB) books only; don't re-read chunks you already pulled.",
             input_schema = {
                 type = "object",
                 properties = {
