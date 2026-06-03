@@ -119,14 +119,19 @@ local function emit(payload)
 end
 
 -- 4. Settings shim: getConfig() is the whole surface bbconversation/bbanthropic
---    touch. A cheaper eval model, thinking + memory OFF, a modest turn budget.
+--    touch. A cheaper eval model, thinking + memory OFF. max_turns mirrors the
+--    production default (bbsettings DEFAULTS.max_turns = 20): a tighter budget (the
+--    old 8) manufactured a forced no-tools last round on a ~7-call chapter recap,
+--    where a still-mid-chapter model that the <completeness> block forbids from
+--    concluding returned an empty reply -> "(no response)". The real reader budget
+--    doesn't trip that, so the eval shouldn't either.
 --    The API key flows in from the environment and is never logged or echoed.
 local config = {
     base_url = os.getenv("BB_BASE_URL") or "https://openrouter.ai/api",
     api_key = os.getenv("BB_API_KEY"),
     model = os.getenv("BB_EVAL_MODEL") or "anthropic/claude-opus-4.8",
     max_tokens = tonumber(os.getenv("BB_MAX_TOKENS")) or 8000,
-    max_turns = tonumber(os.getenv("BB_MAX_TURNS")) or 8,
+    max_turns = tonumber(os.getenv("BB_MAX_TURNS")) or 20,
     additional_system_prompt = "",
     enable_memory = enable_memory,
     enable_thinking = false,
@@ -300,6 +305,12 @@ emit({
     metadata = {
         trace = trace,
         usage = conv.usage,
+        -- The terminal turn's stop_reason (nil if the loop never completed a turn).
+        -- The signal that was invisible while diagnosing the empty "(no response)"
+        -- draw: nil => gateway sent no message_delta (transport artifact); "end_turn"
+        -- => the model ended its turn with no content (over-pressure); "max_tokens"
+        -- => budget. Pairs with output == "(no response)" to classify a hit.
+        stop_reason = conv.last_stop_reason,
         error = err,
         epub = resolved_epub,
         seed_sdr = seed_sdr,

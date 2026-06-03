@@ -349,13 +349,21 @@ function Conversation:_loop()
             self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
         end
 
+        -- Record the terminal turn's stop_reason so a headless driver (and the warn
+        -- below) can surface why a turn ended. Notably it tells an empty completion
+        -- caused by the gateway (no message_delta, so stop_reason stays nil) apart
+        -- from one the model chose to end empty (stop_reason "end_turn"). Purely
+        -- diagnostic -- no behavior change.
+        self.last_stop_reason = res.stop_reason
+
         -- A reply with no content blocks serializes as an empty JSON object, which
         -- the API rejects ("content should be a valid list") when the history is
         -- resent on a follow-up. We can't just skip the turn either: that would put
         -- two user messages in a row and break role alternation. Store a valid
         -- placeholder block so history stays resendable, and surface the gap.
         if type(res.content) ~= "table" or #res.content == 0 then
-            logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder")
+            logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder",
+                "stop_reason:", tostring(res.stop_reason))
             self:_storeAssistant({ { type = "text", text = "(no response)" } }, is_resume)
             self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
             self:_render()
