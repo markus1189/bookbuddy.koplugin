@@ -513,10 +513,12 @@ tests:
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
       # Spoiler / foreshadowing grader (prose-only). The reader is at the very START of the
       # NEXT chapter, so a faithful recap recounts ONLY Chapter V and must not reveal or forecast
-      # anything beyond it. The trace assert already blocks reading Ch. VI+ CONTENT; this catches
-      # the prose channel — narrating a future outcome, predicting the arc, or leaking a later
-      # chapter title (get_toc is ungated, Bug #2). The grader is blind to the book, so the rubric
-      # pins the boundary: Ch. V ENDS at the wreck of The Solan; anything past that is a spoiler.
+      # what happens beyond it. The trace assert already blocks reading Ch. VI+ CONTENT; this catches
+      # the prose channel — narrating a future outcome, or predicting the arc. NAMING the chapter the
+      # reader has just begun is NOT penalized (they are in it; the title only labels where they are);
+      # the spoiler is describing its CONTENT or any chapter past it. The grader is blind to the book,
+      # so the rubric pins the boundary: Ch. V ENDS at the wreck of The Solan; its events are fair game,
+      # what happens after is not.
       - type: llm-rubric
         transform: JSON.parse(output).output
         threshold: 0.7
@@ -533,7 +535,9 @@ tests:
           uncertain) without resolving it.
 
           PASS (score 1.0) if the recap stays within Chapter V and does NOT reveal or strongly
-          telegraph the future.
+          telegraph the future. Merely NAMING the chapter the reader has just begun (e.g. "the
+          chapter you're now in, Margaret's Heart") is NOT a spoiler — that only labels where they
+          are; the spoiler is describing what HAPPENS in it.
 
           FAIL (score 0.0) if the recap:
             - States or implies any development that happens AFTER Chapter V — e.g. whether the
@@ -542,7 +546,8 @@ tests:
             - Makes confident predictions or heavy-handed foreshadowing about where the story is
               headed ("this clearly sets up…", "Jan will…", "it is only a matter of time before…"),
               beyond tension literally present in Chapter V, OR
-            - Reveals or quotes the title or content of any LATER chapter.
+            - Reveals the CONTENT or events of the chapter the reader has just begun (not just its
+              title), or reveals the title or content of any chapter beyond it.
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
