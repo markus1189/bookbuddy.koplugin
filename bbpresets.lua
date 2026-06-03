@@ -1,4 +1,5 @@
 local _ = require("gettext")
+local T = require("ffi/util").template
 
 local Presets = {}
 
@@ -34,7 +35,11 @@ function Presets.buttonRows(list, get_dialog, per_row)
         end
         local prompt = preset[2]
         row[#row + 1] = {
-            text = preset[1],
+            -- Trailing ellipsis + non-bold weight mark these as prefill buttons:
+            -- they drop text into the input for you to edit, rather than acting.
+            -- Action buttons (Send/Cancel/Reply) stay bold and unsuffixed.
+            text = T(_("%1…"), preset[1]),
+            font_bold = false,
             callback = function()
                 local dialog = get_dialog()
                 if dialog then
