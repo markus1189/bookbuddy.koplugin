@@ -119,6 +119,18 @@ function M.buildTurnSSE(spec)
     return lines
 end
 
+-- An R3 "incomplete" stream: a clean-looking 200 whose SSE is truncated before its
+-- terminal message_stop / [DONE], so the parser never sets self.done and result()
+-- reports { ok=false, incomplete=true }. Built by dropping the trailing message_stop
+-- line buildTurnSSE appends (it is always last), leaving message_start + blocks +
+-- message_delta. The conversation loop classifies this as retryable (R3).
+function M.incompleteTurnSSE(spec)
+    local lines = M.buildTurnSSE(spec)
+    -- buildTurnSSE always appends message_stop last; drop it to truncate the stream.
+    lines[#lines] = nil
+    return lines
+end
+
 function M.webResults(n)
     local arr = { __array = true }
     for i = 1, n do
@@ -138,9 +150,40 @@ end
 -- lines to the real parser via on_line. A factory, so each spec gets its own
 -- instance; it registers itself as package.loaded["bbstream"]. Call :reset() in
 -- before_each to load a fresh response list without re-requiring the loop.
+--
+-- A scripted response is normally a list of SSE lines (an array). To script the
+-- per-attempt transport OUTCOMES the R1 retry loop classifies, a response may
+-- instead be a control descriptor table (recognised by its `outcome` field):
+--   { outcome = "read_error" }  -> Stream.run returns read_error=true (retryable,
+--                                  R4's stall watchdog / a transport drop). on_line
+--                                  is never called, mirroring a real fork that died
+--                                  before any line arrived.
+--   { outcome = "network_error" } -> the child wrote the X-BB-NETWORK-ERROR marker
+--                                  then closed cleanly (connection refused/reset, DNS/
+--                                  TLS failure, block-timeout). Stream.run completes
+--                                  (no read_error); the parser :result() reports
+--                                  { ok=false, network_error=true }. Retryable, same
+--                                  transient class as read_error.
+--   { outcome = "read_error", stop_after = true } -> a read_error (retryable) that
+--                                  ALSO fires the chat-viewer's captured on_stop just
+--                                  before returning, modelling a Stop tapped while the
+--                                  loop is backing off between attempts. on_stop sets
+--                                  stop_requested (no live stream to _cancel during a
+--                                  backoff), which the loop's post-backoff guard picks
+--                                  up to abort instead of consuming the retry.
+--   { outcome = "cancelled" }   -> a user Stop landed on the LIVE stream: the fake
+--                                  invokes the registered cancel closure (so the
+--                                  conversation's on_stop runs, setting stop_requested
+--                                  + _cancel) and returns cancelled=true, exactly as
+--                                  Stream.run does when its cancel resume fires. An
+--                                  optional `lines` array is fed first, modelling a
+--                                  Stop part-way through a partially streamed reply.
+-- This keeps every existing spec (plain line-arrays) untouched.
 --------------------------------------------------------------------------------
-function M.new_fake_stream(responses)
-    local fs = { responses = responses or {}, idx = 0 }
+-- `chatviewer` (optional): the stubs.install() chat-viewer double, needed only by
+-- the `{ outcome = "cancelled" }` descriptor so it can fire the live Stop path.
+function M.new_fake_stream(responses, chatviewer)
+    local fs = { responses = responses or {}, idx = 0, _chatviewer = chatviewer }
     function fs:reset(r)
         self.responses = r or {}
         self.idx = 0
@@ -152,11 +195,68 @@ function M.new_fake_stream(responses)
         if opts.register_cancel then
             opts.register_cancel(noop)
         end
+        -- Out of scripted responses: behave like a fork that produced nothing
+        -- (read_error). Real specs never reach here -- run()'s invariant asserts it.
         if not resp then
             if opts.register_cancel then
                 opts.register_cancel(nil)
             end
             return { completed = false, cancelled = false, read_error = true }
+        end
+        -- Control descriptor: script a non-200/transport-level outcome instead of
+        -- a clean streamed 200.
+        if type(resp) == "table" and resp.outcome then
+            if resp.outcome == "read_error" then
+                -- Optionally fire a Stop just before the read_error returns: the loop
+                -- will then classify retry and back off, and the buffered Stop (set
+                -- here on stop_requested) aborts in the post-backoff guard rather than
+                -- consuming another attempt. _cancel is still the no-op registered
+                -- above, so on_stop calling it is harmless.
+                if resp.stop_after then
+                    local cv = fs._chatviewer
+                    if cv and cv.last_on_stop then
+                        cv.last_on_stop()
+                    end
+                end
+                if opts.register_cancel then
+                    opts.register_cancel(nil)
+                end
+                return { completed = false, cancelled = false, read_error = true }
+            elseif resp.outcome == "network_error" then
+                -- The child wrote the marker then closed cleanly: feed the marker line
+                -- to the real parser (so :result() reports network_error) and return a
+                -- completed run with NO read_error, exactly as Stream.run does on EOF.
+                if opts.on_line then
+                    opts.on_line("X-BB-NETWORK-ERROR:")
+                end
+                if opts.register_cancel then
+                    opts.register_cancel(nil)
+                end
+                return { completed = true, cancelled = false, read_error = false }
+            elseif resp.outcome == "cancelled" then
+                -- Feed any partial lines the reader saw before Stopping.
+                for _, line in ipairs(resp.lines or {}) do
+                    if opts.on_line then
+                        opts.on_line(line)
+                    end
+                end
+                -- Model a Stop tapped DURING the live stream: fire the chat-viewer's
+                -- captured on_stop (the real Stop-button path), which sets
+                -- stop_requested and, because a stream is live, calls the conversation's
+                -- _cancel. Then report cancelled exactly as Stream.run's cancel branch
+                -- does. The viewer double is reachable via the handle passed to the
+                -- factory; fall back to no-op if a spec didn't provide one.
+                local cv = fs._chatviewer
+                if cv and cv.last_on_stop then
+                    cv.last_on_stop()
+                end
+                if opts.register_cancel then
+                    opts.register_cancel(nil)
+                end
+                return { completed = false, cancelled = true, read_error = false }
+            else
+                error("unknown fake-stream outcome " .. tostring(resp.outcome))
+            end
         end
         for _, line in ipairs(resp) do
             if opts.on_line then

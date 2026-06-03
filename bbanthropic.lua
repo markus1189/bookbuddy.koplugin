@@ -185,6 +185,10 @@ function Anthropic.newStreamParser(o)
         network_error = false,
         code = nil,
         error_body = {}, -- buffered raw JSON lines of a non-200 body
+        -- Set when a tool_use/server_tool_use input JSON failed to decode in
+        -- content_block_stop. Distinct from done==false (a stream that ended
+        -- without message_stop): both mean "do not trust the partial blocks".
+        incomplete = false,
         done = false,
     }, Parser)
 end
@@ -279,6 +283,14 @@ function Parser:_event(event)
             local decoded = Anthropic.decode(accum)
             if decoded and self.blocks[idx] then
                 self.blocks[idx].input = decoded
+            else
+                -- A tool_use / server_tool_use whose input JSON we accumulated but
+                -- could not decode is truncated or corrupt: storing the block with
+                -- no .input would resend a malformed tool call (the API 400s, and a
+                -- client tool here would execute with nil args). Flag the whole
+                -- result incomplete so result() reports a retryable failure instead
+                -- of handing back a half-formed block as if the turn succeeded.
+                self.incomplete = true
             end
         end
     elseif t == "message_delta" then
@@ -345,7 +357,20 @@ function Parser:result()
         return { ok = false, code = self.code, error_message = msg, error_body = (raw ~= "" and raw) or nil }
     end
     if self.error then
-        return { ok = false, error_message = self.error.message or self.error.type }
+        -- Keep the error type alongside the message: the conversation loop's retry
+        -- classifier keys on it (overloaded_error/api_error/rate_limit_error retry,
+        -- everything else is terminal).
+        return { ok = false, error_message = self.error.message or self.error.type, error_type = self.error.type }
+    end
+    -- The transport delivered a clean 200 but the SSE never reached its terminal
+    -- marker (message_stop / [DONE], which set self.done at _event/feed), or a tool
+    -- input failed to decode (self.incomplete). Either way the accumulated blocks
+    -- are a truncated turn: returning ok=true here would store a partial assistant
+    -- message that the next request resends as if complete. Report incomplete so the
+    -- caller's retry loop re-forks instead of committing the fragment. Ordered after
+    -- the network/non200/error guards so a real failure keeps its specific shape.
+    if not self.done or self.incomplete then
+        return { ok = false, incomplete = true }
     end
     local content = {}
     for i = 0, self.max_index do

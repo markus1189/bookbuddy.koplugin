@@ -269,7 +269,13 @@ function M.install()
     -- we model the event loop: nextTick queues the callback, and Trapper:wrap pumps
     -- the queue after each yield, resuming the coroutine until it finishes.
     package.loaded["ui/uimanager"] = {
-        scheduleIn = noop,
+        -- scheduleIn models a delayed callback. Headlessly we don't honor the delay;
+        -- we enqueue onto the same nextTick pump Trapper:wrap drains, so a
+        -- coroutine-friendly backoff (bbconversation:_backoff) resumes synchronously
+        -- instead of suspending forever. Ignore the delay arg, take the callback.
+        scheduleIn = function(_, _delay, fn)
+            handle.tick_queue[#handle.tick_queue + 1] = fn
+        end,
         unschedule = noop,
         show = noop,
         close = noop,

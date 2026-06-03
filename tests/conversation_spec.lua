@@ -20,7 +20,7 @@ describe("conversation", function()
         chatviewer = h.chatviewer
         stubs.install_bbmemory_stub()
         bbtools = stubs.install_bbtools_stub(h)
-        fake = sse.new_fake_stream({})
+        fake = sse.new_fake_stream({}, chatviewer)
         captured = (sse.capture_build_body())
         Conversation = require("bbconversation")
     end)
@@ -297,7 +297,10 @@ describe("conversation", function()
         })
     end)
 
-    it("S7: an error on a plain follow-up still leaves resendable history", function()
+    it("S7: a retryable mid-stream error on a follow-up auto-recovers via retry", function()
+        -- Under R1 an overloaded_error is RETRYABLE: the follow-up's first attempt
+        -- errors, the loop re-forks (no extra ask()), and the next scripted response
+        -- answers. History stays resendable throughout (run() validates every POST).
         run({
             responses = {
                 sse.buildTurnSSE({ blocks = { { type = "text", text = "First answer." } } }),
@@ -307,12 +310,17 @@ describe("conversation", function()
                 },
                 sse.buildTurnSSE({ blocks = { { type = "text", text = "Recovered answer." } } }),
             },
-            followups = { "broken one", "recover with this" },
+            followups = { "broken one" },
         })
+        -- Three forks: the good first answer, the errored attempt, the retry.
+        assert.are.equal(3, fake.idx)
         assert.is_not_nil((chatviewer.last_text or ""):find("Recovered answer.", 1, true))
     end)
 
-    it("S8: an error after a client tool round drops the whole in-flight pair", function()
+    it("S8: a retryable error after a client tool round auto-recovers via retry", function()
+        -- The tool round commits (assistant tool_use + user tool_result), the post-tool
+        -- request errors (retryable), and the retry re-forks from the committed state
+        -- to deliver the answer -- all within a single ask().
         run({
             responses = {
                 sse.buildTurnSSE({
@@ -328,8 +336,8 @@ describe("conversation", function()
                 },
                 sse.buildTurnSSE({ blocks = { { type = "text", text = "Answer after recovery." } } }),
             },
-            followups = { "recover after tool error" },
         })
+        assert.are.equal(3, fake.idx)
         assert.is_not_nil((chatviewer.last_text or ""):find("Answer after recovery.", 1, true))
     end)
 
@@ -356,6 +364,414 @@ describe("conversation", function()
         assert.are.equal("user", last.role)
         assert.are.equal("table", type(last.content))
         assert.are.equal("tool_result", last.content[1].type)
+    end)
+
+    -- A mid-stream Anthropic error event (one SSE line). type drives the retry
+    -- classifier: overloaded_error/api_error/rate_limit_error retry, the rest terminal.
+    local function errorSSE(error_type)
+        return {
+            "data: " .. stubs.json.encode({
+                type = "error",
+                error = { type = error_type, message = "boom" },
+            }),
+        }
+    end
+
+    -- A non-200 HTTP failure as the child would stream it: a JSON error body line
+    -- followed by the X-BB-NON-200 status marker the child appends.
+    local function non200SSE(code, etype)
+        return {
+            stubs.json.encode({ error = { type = etype or "invalid_request_error", message = "bad" } }),
+            "X-BB-NON-200: " .. tostring(code),
+        }
+    end
+
+    it("C1: an unpaired server_tool_use under a non-pause stop_reason is paired and resends cleanly", function()
+        -- A turn can carry an orphan web search (server_tool_use with no
+        -- web_search_tool_result) under ANY stop_reason, not just pause_turn -- here
+        -- end_turn. Left unpaired the Vertex validator 400s on every resend. The
+        -- unconditional pairDanglingWebSearch must synthesise an error result so the
+        -- stored history validates and a SECOND ask() does not wedge.
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "text", text = "Let me look that up." },
+                        { type = "server_tool_use", id = "srvtoolu_ORPH", input = { query = "orphan" } },
+                        { type = "text", text = "Here is the answer." },
+                    },
+                    stop_reason = "end_turn", -- NOT pause_turn
+                }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Second answer." } } }),
+            },
+            followups = { "and more?" },
+        })
+        -- run() already validated every POST; assert the orphan was healed in place.
+        local assistant
+        for _, m in ipairs(conv.messages) do
+            if m.role == "assistant" and type(m.content) == "table" then
+                for _, b in ipairs(m.content) do
+                    if b.type == "server_tool_use" and b.id == "srvtoolu_ORPH" then
+                        assistant = m
+                    end
+                end
+            end
+        end
+        assert.is_not_nil(assistant, "the orphan server_tool_use turn should be in history")
+        local paired = false
+        for _, b in ipairs(assistant.content) do
+            if b.type == "web_search_tool_result" and b.tool_use_id == "srvtoolu_ORPH" then
+                paired = true
+            end
+        end
+        assert.is_true(paired, "the orphan must be paired with a synthetic result")
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+        assert.is_not_nil((chatviewer.last_text or ""):find("Second answer.", 1, true))
+    end)
+
+    it("C1b: a pre-persisted orphan server_tool_use is self-healed by _dropDanglingTail", function()
+        -- An older session may have persisted an assistant turn whose server_tool_use
+        -- has no paired result (the pairing fix postdates it). _dropDanglingTail's
+        -- dangling test now treats such an orphan as dangling and walks it off, so the
+        -- stored history is resendable again.
+        local conv = Conversation:new({ ui = {}, settings = stubSettings, selected_text = "x" })
+        conv.messages = {
+            { role = "user", content = "earlier question" },
+            { role = "assistant", content = { { type = "text", text = "a clean earlier answer" } } },
+            { role = "user", content = "later question" },
+            {
+                role = "assistant",
+                content = {
+                    { type = "text", text = "older partial" },
+                    { type = "server_tool_use", id = "srvtoolu_OLD", name = "web_search", input = { query = "q" } },
+                },
+            },
+        }
+        -- Sanity: this history is currently INVALID (orphan present).
+        assert.is_true(#sse.validateMessages(conv.messages) > 0)
+        conv:_dropDanglingTail()
+        -- The orphan assistant turn (and the now-dangling user turn before it) are
+        -- walked off, back to the last clean assistant reply.
+        assert.are.equal(2, #conv.messages)
+        local last = conv.messages[#conv.messages]
+        assert.are.equal("assistant", last.role)
+        assert.are.equal("a clean earlier answer", last.content[1].text)
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("L1: a mid-round failure + recovery leaves no rolled-back partials in the transcript", function()
+        -- First attempt streams a partial assistant line then drops (read_error);
+        -- the retry delivers the real answer. The transcript must show ONLY the
+        -- recovered answer -- not the abandoned partial from the failed attempt.
+        local conv = run({
+            responses = {
+                { outcome = "read_error" },
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "The clean recovered answer." } } }),
+            },
+        })
+        local text = chatviewer.last_text or ""
+        assert.is_not_nil(text:find("The clean recovered answer.", 1, true))
+        -- Absence: the failed attempt produced no committed assistant entry, and the
+        -- retry status line is transient (never stored), so the final render is clean.
+        assert.is_nil(text:find("Retrying", 1, true), "final render must not keep the retry status")
+        -- History holds exactly one assistant turn (the recovered one), no partials.
+        local n_assistant = 0
+        for _, m in ipairs(conv.messages) do
+            if m.role == "assistant" then
+                n_assistant = n_assistant + 1
+            end
+        end
+        assert.are.equal(1, n_assistant)
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("L1b: a partial text attempt that then errors leaves no orphaned assistant line", function()
+        -- The failed attempt streams a real text delta into the live transcript before
+        -- the stream errors. _trimTranscript (between attempts) must drop that partial
+        -- so the recovered turn's content is the only assistant text rendered. Attempt 1
+        -- is a started-but-truncated stream (incomplete, retryable) that carries a
+        -- partial assistant line the viewer rendered live.
+        run({
+            responses = {
+                sse.incompleteTurnSSE({ blocks = { { type = "text", text = "ABANDONED partial text" } } }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Final good answer." } } }),
+            },
+        })
+        local text = chatviewer.last_text or ""
+        assert.is_not_nil(text:find("Final good answer.", 1, true))
+        assert.is_nil(text:find("ABANDONED partial text", 1, true), "rolled-back partial must not survive")
+    end)
+
+    it("L1c: a multi-round rollback drops a PRIOR committed round's transcript entries", function()
+        -- Round 1 commits a grep tool round (assistant tool_use + user tool_result),
+        -- rendering a lead-in line and a "→ Searched book..." action line. Round 2's
+        -- post-tool request then fails persistently (3 read_errors -> exhausted), so
+        -- _dropDanglingTail walks the WHOLE in-flight chain off the wire -- including
+        -- round 1's committed pair, back to empty. The transcript must follow: with
+        -- the per-round checkpoint it stranded round 1's lead-in + action line; the
+        -- chain-start checkpoint trims them too.
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "text", text = "ROUND1 lead-in text" },
+                        { type = "tool_use", id = "toolu_R1", name = "grep", input = { query = "whales" } },
+                    },
+                    stop_reason = "tool_use",
+                }),
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+            },
+        })
+        -- Wire history rolled all the way back to empty: no assistant turn survives.
+        for _, m in ipairs(conv.messages) do
+            assert.are_not.equal("assistant", m.role)
+        end
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+        -- And the transcript holds no entry whose backing message was dropped: neither
+        -- round 1's lead-in nor its tool-action line may survive the rollback. Assert
+        -- on the transcript data structure (the error exit closes the viewer without a
+        -- final re-render, so last_text is stale) -- _transcriptText renders the
+        -- post-rollback state the next ask() would re-show.
+        local text = conv:_transcriptText()
+        assert.is_nil(text:find("ROUND1 lead-in text", 1, true), "prior round's lead-in must be trimmed")
+        assert.is_nil(text:find("Searched book", 1, true), "prior round's tool action must be trimmed")
+    end)
+
+    it("R1: a transient read_error is retried and yields the answer in one turn", function()
+        local conv = run({
+            responses = {
+                { outcome = "read_error" }, -- attempt 1 drops
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Recovered after a transient drop." } } }),
+            },
+        })
+        assert.are.equal(2, fake.idx) -- one failed attempt + one good attempt
+        assert.is_not_nil((chatviewer.last_text or ""):find("Recovered after a transient drop.", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1f: a child-side network_error is retried and yields the answer", function()
+        -- The child wrote X-BB-NETWORK-ERROR then closed cleanly, so the parent sees no
+        -- read_error -- :result() reports { ok=false, network_error=true }. This is the
+        -- same transient transport class as read_error (a WiFi blip / gateway reset) and
+        -- must re-fork, not end the turn.
+        local conv = run({
+            responses = {
+                { outcome = "network_error" }, -- attempt 1: transport drop, child-side
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Recovered after a network drop." } } }),
+            },
+        })
+        assert.are.equal(2, fake.idx) -- the loop re-forked once
+        assert.is_not_nil((chatviewer.last_text or ""):find("Recovered after a network drop.", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1b: a persistent retryable failure exhausts the cap and surfaces the error", function()
+        -- Three read_errors in a row exhaust MAX_STREAM_ATTEMPTS (3). The loop gives
+        -- up, rolls back the dangling tail, and shows the streaming-connection error.
+        -- Nothing was committed, so history stays resendable (empty here).
+        local conv = run({
+            responses = {
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+            },
+        })
+        assert.are.equal(3, fake.idx) -- exactly the cap, never more
+        -- No assistant turn was stored; the seeded user turn was rolled back, so the
+        -- next ask() can re-seed cleanly.
+        for _, m in ipairs(conv.messages) do
+            assert.are_not.equal("assistant", m.role)
+        end
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1e: a retryable 503 is retried and yields the answer", function()
+        -- A 503 is in RETRYABLE_HTTP: the gateway is transiently overloaded, so the loop
+        -- re-forks rather than surfacing the error. Pins the whole RETRYABLE_HTTP table
+        -- (the only other HTTP-code spec, R1c, drives a TERMINAL 400).
+        local conv = run({
+            responses = {
+                non200SSE(503, "overloaded"),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Recovered after 503." } } }),
+            },
+        })
+        assert.are.equal(2, fake.idx)
+        assert.is_not_nil((chatviewer.last_text or ""):find("Recovered after 503.", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1g: three retryable 503s exhaust the cap and surface the gateway error", function()
+        -- The exhausted-retryable-HTTP path: unlike read_error (R1b, generic
+        -- connection message), an exhausted retryable HTTP code routes through
+        -- _showError(res), which surfaces the gateway's HTTP code/body. This pins both
+        -- RETRYABLE_HTTP exhaustion and the _showError branch (line ~454).
+        local shown
+        local InfoMessage = require("ui/widget/infomessage")
+        local real_new = InfoMessage.new
+        InfoMessage.new = function(self_, o)
+            shown = o and o.text
+            return real_new(self_, o)
+        end
+        local ok, conv = pcall(run, {
+            responses = {
+                non200SSE(503, "overloaded"),
+                non200SSE(503, "overloaded"),
+                non200SSE(503, "overloaded"),
+            },
+        })
+        InfoMessage.new = real_new
+        assert.is_true(ok)
+        assert.are.equal(3, fake.idx) -- exactly the cap
+        -- _showError surfaced the HTTP code, not the generic "connection failed" text.
+        assert.is_not_nil(shown)
+        assert.is_not_nil(tostring(shown):find("503", 1, true), "the gateway HTTP code must be surfaced")
+        -- No assistant turn committed; history stays resendable.
+        for _, m in ipairs(conv.messages) do
+            assert.are_not.equal("assistant", m.role)
+        end
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1c: a terminal 400 is NOT retried", function()
+        local conv = run({
+            responses = {
+                non200SSE(400, "invalid_request_error"),
+                -- A second response is scripted but must never be consumed.
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "should never be reached" } } }),
+            },
+        })
+        assert.are.equal(1, fake.idx) -- terminal: a single attempt, no retry
+        assert.is_nil((chatviewer.last_text or ""):find("should never be reached", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R1d: a non-retryable mid-stream error type is NOT retried", function()
+        -- authentication_error is terminal: the gateway will reject identically on
+        -- every resend, so retrying only burns quota.
+        local conv = run({
+            responses = {
+                errorSSE("authentication_error"),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "should never be reached" } } }),
+            },
+        })
+        assert.are.equal(1, fake.idx)
+        assert.is_nil((chatviewer.last_text or ""):find("should never be reached", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("R2: a transient empty-200 is retried; a persistent one falls back to (no response)", function()
+        -- First: a transient empty reply (200, no content blocks) is retryable, so the
+        -- loop re-forks and the good response answers.
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({ blocks = {} }), -- empty-200
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "A real answer this time." } } }),
+            },
+        })
+        assert.are.equal(2, fake.idx)
+        assert.is_not_nil((chatviewer.last_text or ""):find("A real answer this time.", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+
+        -- Persistent: three empty-200s exhaust the cap and the placeholder stands in.
+        conv = run({
+            responses = {
+                sse.buildTurnSSE({ blocks = {} }),
+                sse.buildTurnSSE({ blocks = {} }),
+                sse.buildTurnSSE({ blocks = {} }),
+            },
+        })
+        assert.are.equal(3, fake.idx)
+        assert.is_not_nil((chatviewer.last_text or ""):find("(no response)", 1, true))
+        -- The placeholder is a valid content block, so history stays resendable.
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+        local last = conv.messages[#conv.messages]
+        assert.are.equal("assistant", last.role)
+        assert.are.equal("text", last.content[1].type)
+    end)
+
+    it("R3: an incomplete stream (missing message_stop) is retried in the loop", function()
+        -- The parser reports ok=false/incomplete for a truncated 200; the loop
+        -- classifies that as retryable and re-forks to the good response.
+        local conv = run({
+            responses = {
+                sse.incompleteTurnSSE({ blocks = { { type = "text", text = "truncated..." } } }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Complete answer." } } }),
+            },
+        })
+        assert.are.equal(2, fake.idx)
+        assert.is_not_nil((chatviewer.last_text or ""):find("Complete answer.", 1, true))
+        assert.is_nil((chatviewer.last_text or ""):find("truncated...", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("S6b: a server that pause_turns past max_resumes stops and renders the partial reply", function()
+        -- max_resumes is 16: build 17 consecutive pause_turns (no terminal answer).
+        -- The resume cap must stop the loop and render the last partial reply rather
+        -- than burning the whole turn budget or looping forever.
+        local responses = {}
+        for i = 1, 17 do
+            responses[i] = sse.buildTurnSSE({
+                blocks = {
+                    { type = "text", text = "Still searching #" .. i .. "..." },
+                    { type = "server_tool_use", id = "srvtoolu_R" .. i, input = { query = "q" .. i } },
+                },
+                stop_reason = "pause_turn",
+            })
+        end
+        local conv = run({ responses = responses })
+        -- 1 substantive turn + 16 resumes = 17 forks; the 17th pause trips the cap.
+        assert.are.equal(17, fake.idx)
+        -- The partial reply from the last paused turn is rendered.
+        assert.is_not_nil((chatviewer.last_text or ""):find("Still searching #17", 1, true))
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("S12: Stop during a LIVE stream cancels without retry", function()
+        -- Distinct from S9 (Stop during a synchronous tool): here the Stop lands on the
+        -- live stream itself, so Stream.run returns cancelled. A cancel is terminal and
+        -- first in the classifier -- it must never be retried.
+        local conv = run({
+            responses = {
+                { outcome = "cancelled", lines = sse.buildTurnSSE({
+                    blocks = { { type = "text", text = "partial before stop" } },
+                }) },
+                -- Scripted but must never be consumed (no retry after a cancel).
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "never reached" } } }),
+            },
+        })
+        assert.are.equal(1, fake.idx)
+        assert.is_true(conv.stop_requested)
+        -- Cancel rolls back the in-flight turn; history is resendable (empty here).
+        for _, m in ipairs(conv.messages) do
+            assert.are_not.equal("assistant", m.role)
+        end
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    it("S13: Stop pressed DURING backoff aborts without consuming a retry", function()
+        -- Distinct from S12 (Stop on the LIVE stream, which Stream.run reports as
+        -- cancelled BEFORE any backoff). Here attempt 1 is a read_error -> the loop
+        -- classifies retry and backs off; the Stop lands during that backoff window
+        -- (no live stream to _cancel), so it is recorded on stop_requested and the
+        -- post-backoff guard aborts. The second scripted response must never be
+        -- consumed -- a Stop must never silently burn a retry.
+        local conv = run({
+            responses = {
+                { outcome = "read_error", stop_after = true },
+                -- Scripted but must never be reached: the Stop aborts before attempt 2.
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "never reached" } } }),
+            },
+        })
+        assert.are.equal(1, fake.idx) -- no retry consumed after the Stop
+        assert.is_true(conv.stop_requested)
+        assert.is_nil((chatviewer.last_text or ""):find("never reached", 1, true))
+        -- Nothing committed; the rolled-back history is resendable (empty here).
+        for _, m in ipairs(conv.messages) do
+            assert.are_not.equal("assistant", m.role)
+        end
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
     describe("_toolActionPhrase", function()

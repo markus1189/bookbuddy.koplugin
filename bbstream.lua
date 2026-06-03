@@ -17,6 +17,34 @@ local CHECK_INTERVAL_SEC = 0.125
 local CHUNK_SIZE = 1024 * 16
 local COLLECT_INTERVAL_SEC = 5
 
+-- Parent-side stall watchdog. The child sets only a between-chunk socket timeout
+-- (bbanthropic: 120s, no total), so a server trickling one byte just under that
+-- timeout can hang for minutes without the child ever erroring. We measure wall
+-- time since the last COMPLETE line was delivered to on_line and abort the read as
+-- a read_error (which the conversation loop treats as retryable) once it exceeds
+-- this. Deliberately >> CHECK_INTERVAL_SEC so a normally-paced stream never trips
+-- it, and there is NO hard total cap: a long legitimate reply keeps streaming for
+-- as long as it makes progress, because every delivered line (data OR SSE
+-- comment/keep-alive) resets the timer.
+--
+-- Validation boundary: tier-1 specs replace this whole module with a synchronous
+-- fake (tests/support/sse.lua), so the real wall-clock tick loop here is not
+-- exercised under busted; the watchdog's timer behaviour is validated manually /
+-- against real crengine (tier-2). What tier-1 DOES cover is that a read_error
+-- result is plumbed through the conversation loop's retry classifier.
+local STALL_TIMEOUT_SEC = 90
+
+-- The stall decision, factored out of the wall-clock tick loop so its boundary is
+-- unit-testable at tier-1 (the fake transport replaces Stream.run wholesale, so the
+-- inline check below would otherwise never run under busted). Abort strictly AFTER
+-- the timeout elapses: exactly STALL_TIMEOUT_SEC of silence is still tolerated, so a
+-- stream that delivers a line every 90s on the dot keeps going. last_progress is
+-- reset on every complete line in process_lines, so any delivered byte stream (data
+-- OR keep-alive) resets the clock and this returns false again.
+function Stream.shouldAbortStall(now, last_progress)
+    return (now - last_progress) > STALL_TIMEOUT_SEC
+end
+
 -- opts: { child_fn, on_line, register_cancel }
 --   child_fn(pid, child_write_fd): runs in the subprocess, writes bytes to the fd.
 --   on_line(line): called per complete line (newline stripped) as data arrives.
@@ -43,6 +71,11 @@ function Stream.run(opts)
     local buffer_ptr = ffi.cast("void*", buffer)
     local partial_data = ""
 
+    -- Liveness clock for the stall watchdog: reset on EVERY complete line handed to
+    -- on_line below, so even SSE comment / ":" keep-alive lines count as progress
+    -- and a chatty-but-slow stream is never false-timed-out.
+    local last_progress = os.time()
+
     local function process_lines()
         while true do
             local line_end = partial_data:find("[\r\n]")
@@ -51,6 +84,7 @@ function Stream.run(opts)
             end
             local line = partial_data:sub(1, line_end - 1)
             partial_data = partial_data:sub(line_end + 1)
+            last_progress = os.time()
             if opts.on_line then
                 opts.on_line(line)
             end
@@ -95,6 +129,15 @@ function Stream.run(opts)
         elseif ffiutil.isSubProcessDone(pid) then
             -- Nothing buffered and the child has exited: we've drained the pipe.
             completed = true
+        elseif Stream.shouldAbortStall(os.time(), last_progress) then
+            -- Child still alive but no line has arrived for STALL_TIMEOUT_SEC: the
+            -- stream is wedged below the child's between-chunk socket timeout. Abort
+            -- as a read_error so the conversation loop retries; unschedule the
+            -- pending tick resume since we break out before yielding to it again.
+            logger.warn("BookBuddy: stream stalled; no progress for", STALL_TIMEOUT_SEC, "s")
+            read_error = true
+            UIManager:unschedule(go_on_func)
+            break
         end
     end
 

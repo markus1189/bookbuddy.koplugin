@@ -271,6 +271,54 @@ describe("bbanthropic", function()
             assert.are.equal("boom", res.error_message)
         end)
 
+        it("R3: reports incomplete when a 200 stream never reaches message_stop", function()
+            -- A clean 200 whose SSE is truncated before its terminal marker leaves
+            -- self.done false. result() must report a retryable incomplete failure
+            -- rather than ok=true with the partial blocks (which would be stored and
+            -- resent as if the turn finished).
+            local res = parse(sse.incompleteTurnSSE({ blocks = { { type = "text", text = "half a sen" } } }))
+            assert.is_false(res.ok)
+            assert.is_true(res.incomplete)
+            assert.is_nil(res.code) -- not a non-200; specifically an incomplete 200
+        end)
+
+        it("R3: reports incomplete when a tool_use input JSON fails to decode", function()
+            -- A tool_use whose accumulated input JSON is truncated/corrupt can't be
+            -- decoded; storing the block with no .input would resend a malformed tool
+            -- call. content_block_stop sets self.incomplete, so result() fails even
+            -- though message_stop arrived.
+            local p = Anthropic.newStreamParser()
+            p:feed("data: " .. json.encode({
+                type = "content_block_start",
+                index = 0,
+                content_block = { type = "tool_use", id = "t1", name = "grep" },
+            }))
+            p:feed("data: " .. json.encode({
+                type = "content_block_delta",
+                index = 0,
+                delta = { type = "input_json_delta", partial_json = '{"query":"wha' }, -- truncated JSON
+            }))
+            p:feed("data: " .. json.encode({ type = "content_block_stop", index = 0 }))
+            p:feed("data: " .. json.encode({ type = "message_delta", delta = { stop_reason = "tool_use" } }))
+            p:feed("data: " .. json.encode({ type = "message_stop" }))
+            local res = p:result()
+            assert.is_false(res.ok)
+            assert.is_true(res.incomplete)
+        end)
+
+        it("carries error_type alongside the message so the loop can classify it", function()
+            -- The conversation retry classifier keys on error_type
+            -- (overloaded_error/api_error/rate_limit_error retry, the rest terminal).
+            local p = Anthropic.newStreamParser()
+            p:feed("data: " .. json.encode({
+                type = "error",
+                error = { type = "overloaded_error", message = "boom" },
+            }))
+            local res = p:result()
+            assert.is_false(res.ok)
+            assert.are.equal("overloaded_error", res.error_type)
+        end)
+
         it("captures the raw error body on a non-200 so buried gateway detail is logged", function()
             -- The top-level message is generic; the actionable reason (which tool
             -- type the gateway rejected) lives in a nested field. result() keeps the

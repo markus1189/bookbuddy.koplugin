@@ -97,6 +97,73 @@ local function pairDanglingWebSearch(content)
     end
 end
 
+-- Bounded retry around the Stream.run + parser:result() acquisition (see _loop).
+-- Nothing is stored until _storeAssistant, so re-forking with a fresh parser
+-- between attempts is clean and idempotent. 3 attempts is the safety net against a
+-- classifier mistake (a misbucketed-retryable error stops after 3, never loops).
+local MAX_STREAM_ATTEMPTS = 3
+-- Exponential backoff base; attempt N waits BACKOFF_BASE_SEC * 2^(N-1) plus jitter.
+local BACKOFF_BASE_SEC = 1.0
+local BACKOFF_JITTER_SEC = 0.5
+
+-- Classifier sets, named so the retry decision reads as policy, not magic numbers.
+-- RETRYABLE HTTP: transient transport/throttle/5xx. TERMINAL HTTP: a request the
+-- gateway will reject identically on every resend (bad request / auth / not found
+-- / unprocessable), so retrying only burns quota.
+local RETRYABLE_HTTP = { [408] = true, [425] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
+local TERMINAL_HTTP = { [400] = true, [401] = true, [403] = true, [404] = true, [422] = true }
+-- A mid-stream "error" event carries an Anthropic error type. Only the transient
+-- classes retry; everything else (invalid_request_error, authentication_error, …)
+-- is terminal.
+local RETRYABLE_ERROR_TYPE = { overloaded_error = true, api_error = true, rate_limit_error = true }
+
+-- Classify a finished stream attempt into "ok" / "retry" / "terminal". `r` is
+-- Stream.run's return ({cancelled, read_error, …}); `res` is parser:result(). A
+-- cancel is ALWAYS terminal and checked first: a user Stop must abort instantly
+-- and must never be retried. The empty-200 case (res.ok but no content blocks) is
+-- retryable here so the loop re-forks before falling back to the placeholder; the
+-- placeholder only stands in after retries are exhausted.
+local function classifyAttempt(r, res)
+    if r.cancelled then
+        return "terminal"
+    end
+    if r.read_error then
+        return "retry" -- network/transport drop, incl. R4's stall watchdog
+    end
+    if res.network_error then
+        -- A child-side transport failure: the fork wrote the X-BB-NETWORK-ERROR
+        -- marker then closed cleanly (so the parent sees EOF, not read_error) when
+        -- http.request returned no response -- connection refused/reset, DNS/TLS
+        -- failure, or the 120s block-timeout firing. All are the same transient class
+        -- as r.read_error (a WiFi blip, a gateway dropping the connection), so retry.
+        return "retry"
+    end
+    if res.ok then
+        if type(res.content) ~= "table" or #res.content == 0 then
+            return "retry" -- empty-200: a known-transient gateway hiccup (R2)
+        end
+        return "ok"
+    end
+    if res.incomplete then
+        return "retry" -- truncated/undecodable stream (R3)
+    end
+    if res.code then
+        if RETRYABLE_HTTP[res.code] then
+            return "retry"
+        end
+        if TERMINAL_HTTP[res.code] then
+            return "terminal"
+        end
+        -- An unlisted non-200 (e.g. a novel 5xx) is treated as terminal so an
+        -- unknown code can't cause an unbounded-feeling 3x retry on a hard failure.
+        return "terminal"
+    end
+    if res.error_type and RETRYABLE_ERROR_TYPE[res.error_type] then
+        return "retry"
+    end
+    return "terminal" -- mid-stream non-retryable error type
+end
+
 local Conversation = {}
 Conversation.__index = Conversation
 
@@ -280,60 +347,134 @@ function Conversation:_loop()
         -- entries are replaced by content-ordered ones once the turn finishes (see
         -- _renderAssistantTurn); mark where this turn's entries begin.
         local turn_transcript_start = #self.transcript
-        local entry, thinking_entry
-        local parser = Anthropic.newStreamParser({
-            on_thinking = function()
-                -- We don't surface the summarized thinking text anymore, just a
-                -- "Thinking..." status that flips to "Done" once the answer
-                -- starts (or the turn finishes; see _renderAssistantTurn). The
-                -- parser still accumulates the fragments onto the content block
-                -- for resend -- this transcript entry is display-only.
-                if not thinking_entry then
-                    thinking_entry = { role = "thinking", done = false }
-                    self.transcript[#self.transcript + 1] = thinking_entry
+        -- L1 transcript checkpoint: a mid-round failure (or a retry between attempts)
+        -- trims self.transcript back to the last clean/resendable state, dropping the
+        -- abandoned live-stream partials so a recovered conversation shows no orphaned
+        -- text. It must mirror _dropDanglingTail's wire-history rollback EXACTLY: that
+        -- rollback walks back over the WHOLE in-flight tool round (every dangling
+        -- user/assistant turn), which can span several rounds -- e.g. a committed
+        -- [assistant tool_use][user tool_result] pair from a PRIOR round is also
+        -- unwound, because an unanswered tool round is not resendable. So the
+        -- checkpoint must advance only at the START of a fresh chain -- a round whose
+        -- pending user turn is the reader's question (string content), not a
+        -- tool_result we appended (table content) and not a pause resume. On a
+        -- tool-continuation or resume round the checkpoint stays pinned at the chain's
+        -- start, exactly where _dropDanglingTail will roll the wire history back to. A
+        -- per-round reset (the old behaviour) left a prior round's committed-but-now-
+        -- dropped entries stranded in the human log after a multi-round rollback.
+        local pending = self.messages[#self.messages]
+        local chain_start = (not is_resume)
+            and pending
+            and pending.role == "user"
+            and type(pending.content) ~= "table"
+        if chain_start or self._clean_transcript_len == nil then
+            self._clean_transcript_len = turn_transcript_start
+        end
+
+        -- Bounded retry around the fork+parse: re-fork with a FRESH parser between
+        -- attempts. This is safe precisely because nothing is stored until
+        -- _storeAssistant below -- the only mutation an attempt makes to durable
+        -- state is the live-stream transcript entries, which _dropDanglingTail trims
+        -- back to the checkpoint before the next attempt. So a retry is idempotent.
+        local r, res
+        local last_verdict
+        for attempt = 1, MAX_STREAM_ATTEMPTS do
+            -- Fresh per-attempt closures: a retried attempt must start its streamed
+            -- entries from scratch, not append onto the aborted attempt's partials.
+            local entry, thinking_entry
+            local parser = Anthropic.newStreamParser({
+                on_thinking = function()
+                    -- We don't surface the summarized thinking text anymore, just a
+                    -- "Thinking..." status that flips to "Done" once the answer
+                    -- starts (or the turn finishes; see _renderAssistantTurn). The
+                    -- parser still accumulates the fragments onto the content block
+                    -- for resend -- this transcript entry is display-only.
+                    if not thinking_entry then
+                        thinking_entry = { role = "thinking", done = false }
+                        self.transcript[#self.transcript + 1] = thinking_entry
+                        self:_scheduleFlush()
+                    end
+                end,
+                on_text = function(t)
+                    if thinking_entry then
+                        thinking_entry.done = true
+                    end
+                    if not entry then
+                        entry = { role = "assistant", text = "" }
+                        self.transcript[#self.transcript + 1] = entry
+                    end
+                    entry.text = entry.text .. t
                     self:_scheduleFlush()
-                end
-            end,
-            on_text = function(t)
-                if thinking_entry then
-                    thinking_entry.done = true
-                end
-                if not entry then
-                    entry = { role = "assistant", text = "" }
-                    self.transcript[#self.transcript + 1] = entry
-                end
-                entry.text = entry.text .. t
-                self:_scheduleFlush()
-            end,
-        })
+                end,
+            })
 
-        local r = Stream.run({
-            child_fn = Anthropic.streamChildFn(body, cfg),
-            on_line = function(line)
-                parser:feed(line)
-            end,
-            register_cancel = function(fn)
-                self._cancel = fn
-            end,
-        })
-        self:_cancelFlush()
+            r = Stream.run({
+                child_fn = Anthropic.streamChildFn(body, cfg),
+                on_line = function(line)
+                    parser:feed(line)
+                end,
+                register_cancel = function(fn)
+                    self._cancel = fn
+                end,
+            })
+            self:_cancelFlush()
+            res = parser:result()
 
+            last_verdict = classifyAttempt(r, res)
+            if last_verdict ~= "retry" then
+                break
+            end
+            -- Retryable, and attempts remain. Nothing was stored this attempt (storing
+            -- only happens at _storeAssistant, past the loop), so the wire history is
+            -- already the resendable state we want to re-fork FROM -- in particular a
+            -- committed [assistant tool_use][user tool_result] pair must be RESENT, not
+            -- dropped. So between attempts we only trim the transcript's live-stream
+            -- partials back to the checkpoint; _dropDanglingTail (which would unwind the
+            -- whole in-flight round) is reserved for the give-up exits below. Then back
+            -- off (UI-live, cancellable) before the next attempt.
+            if attempt < MAX_STREAM_ATTEMPTS then
+                self:_trimTranscript()
+                self:_showRetryStatus(attempt + 1)
+                self:_backoff(attempt)
+                -- A Stop tapped during the backoff must abort instantly, like a Stop
+                -- during a live stream -- never silently consume a retry. The Stop
+                -- button sets stop_requested (it has no live stream to _cancel during
+                -- a backoff), which _backoff's resume picks up here.
+                if self.stop_requested then
+                    self:_dropDanglingTail()
+                    self:_closeViewer()
+                    UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
+                    return
+                end
+            end
+        end
+
+        -- Cancel is terminal and instant: a user Stop during the live stream.
         if r.cancelled then
             self:_dropDanglingTail()
             self:_closeViewer()
             UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
             return
         end
-        if r.read_error then
-            logger.warn("BookBuddy: streaming connection failed")
-            self:_dropDanglingTail()
-            self:_closeViewer()
-            UIManager:show(InfoMessage:new({ text = _("BookBuddy: the streaming connection failed.") }))
-            return
-        end
 
-        local res = parser:result()
-        if not res.ok then
+        if last_verdict == "retry" then
+            -- Retries exhausted. An empty-200 still falls through to the placeholder
+            -- branch below (res.ok stays true); a read_error / incomplete / retryable
+            -- error reaches here non-ok -> surface the failure and roll back.
+            if not (res.ok and (type(res.content) ~= "table" or #res.content == 0)) then
+                logger.warn("BookBuddy: stream failed after retries", res.code, res.error_message, res.error_body)
+                self:_dropDanglingTail()
+                self:_closeViewer()
+                if r.read_error or res.incomplete then
+                    UIManager:show(InfoMessage:new({ text = _("BookBuddy: the streaming connection failed.") }))
+                else
+                    self:_showError(res)
+                end
+                return
+            end
+        elseif last_verdict == "terminal" then
+            -- A non-retryable failure (4xx the gateway rejects every time, an
+            -- auth/not-found error, or a non-retryable mid-stream error type).
             logger.warn("BookBuddy: API error", res.code, res.error_message, res.error_body)
             self:_dropDanglingTail()
             self:_closeViewer()
@@ -360,7 +501,10 @@ function Conversation:_loop()
         -- the API rejects ("content should be a valid list") when the history is
         -- resent on a follow-up. We can't just skip the turn either: that would put
         -- two user messages in a row and break role alternation. Store a valid
-        -- placeholder block so history stays resendable, and surface the gap.
+        -- placeholder block so history stays resendable, and surface the gap. We
+        -- only reach here for an empty-200 AFTER retries are exhausted (R2): the
+        -- classifier treats empty-200 as retryable, so a transient empty reply gets
+        -- re-forked first; the placeholder is the last resort.
         if type(res.content) ~= "table" or #res.content == 0 then
             logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder",
                 "stop_reason:", tostring(res.stop_reason))
@@ -372,6 +516,15 @@ function Conversation:_loop()
 
         logger.dbg("BookBuddy: reply", res.stop_reason, "blocks:", #res.content)
         self:_storeAssistant(res.content, is_resume)
+        -- Pair any orphan server_tool_use for EVERY stored turn, not just a
+        -- pause_turn. A turn can carry an unpaired web search under any stop_reason
+        -- (end_turn, tool_use, or gateway weirdness); left unpaired it persists and
+        -- the next ask() resends it, which the Vertex validator 400s forever ("web
+        -- search tool use ... without a corresponding web_search_tool_result").
+        -- pairDanglingWebSearch's has_result guard makes this an idempotent no-op
+        -- when the result block is already present (the common case), so running it
+        -- unconditionally is safe. Operate on the freshly merged message content.
+        pairDanglingWebSearch(self.messages[#self.messages].content)
         local tool_uses = select(2, self:_split(res.content))
         -- Replace this turn's live streamed entries with content-ordered ones, so a
         -- server-side web search shows between the lead-in and the answer rather than
@@ -380,11 +533,9 @@ function Conversation:_loop()
 
         if res.stop_reason == "pause_turn" then
             -- The API paused a long server-side turn. Resume by resending the partial
-            -- assistant turn (no user message). The pause can stop on the in-flight
-            -- web search's server_tool_use before its result, which our Vertex gateway
-            -- rejects on resend; pair any such orphan with a synthetic error result
-            -- first so the request validates and the model can finish its turn.
-            pairDanglingWebSearch(self.messages[#self.messages].content)
+            -- assistant turn (no user message). Any orphan server_tool_use the pause
+            -- stopped on was already paired above (unconditionally, right after
+            -- _storeAssistant), so the resend validates and the model can finish.
             resuming = true
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
@@ -462,8 +613,23 @@ function Conversation:_dropDanglingTail()
         local last = m[#m]
         local dangling = (last.role == "user")
         if last.role == "assistant" and type(last.content) == "table" then
+            -- Which web searches already have their result in THIS message; an
+            -- orphan server_tool_use (paired result missing) makes the resend 400 on
+            -- Vertex just like an unanswered client tool_use, so it is dangling too.
+            -- This self-heals orphans persisted by older sessions whose check only
+            -- matched type=="tool_use" (server_tool_use predates the pairing fix).
+            local has_result = {}
+            for _, b in ipairs(last.content) do
+                if b.type == "web_search_tool_result" and b.tool_use_id then
+                    has_result[b.tool_use_id] = true
+                end
+            end
             for _, b in ipairs(last.content) do
                 if b.type == "tool_use" then
+                    dangling = true
+                    break
+                end
+                if b.type == "server_tool_use" and b.id and not has_result[b.id] then
                     dangling = true
                     break
                 end
@@ -473,6 +639,26 @@ function Conversation:_dropDanglingTail()
             break
         end
         m[#m] = nil
+    end
+
+    self:_trimTranscript()
+end
+
+-- L1: unwind the human-readable transcript to match a rolled-back wire history.
+-- _clean_transcript_len is the length recorded before the current round's body (in
+-- _loop), i.e. the last clean/resendable state; everything past it is this round's
+-- abandoned live-stream phase -- partial assistant / thinking entries and the
+-- in-progress tool-action line -- whose backing messages were (or are about to be)
+-- dropped. Without this the next ask() re-renders those orphaned lines before the
+-- real answer. Mirror _renderAssistantTurn's trim idiom (nil out from the tail).
+-- nil checkpoint = nothing to trim (e.g. a tail dropped before any round ran).
+function Conversation:_trimTranscript()
+    local cp = self._clean_transcript_len
+    if cp == nil then
+        return
+    end
+    for i = #self.transcript, cp + 1, -1 do
+        self.transcript[i] = nil
     end
 end
 
@@ -715,6 +901,40 @@ function Conversation:_flushNow()
     if self.viewer then
         ChatViewer.updateText(self.viewer, self:_transcriptText(), true)
     end
+end
+
+-- Surface a transient "Retrying… (n/3)" line in the streaming viewer so the reader
+-- sees the loop is recovering rather than hung. Appended to the live transcript
+-- text only (not stored as a transcript entry), so the next render/_dropDanglingTail
+-- naturally drops it; the recovered turn's real content replaces it.
+function Conversation:_showRetryStatus(attempt)
+    if self.viewer then
+        local status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(MAX_STREAM_ATTEMPTS))
+        ChatViewer.updateText(self.viewer, self:_transcriptText() .. "\n\n" .. status, true)
+    end
+end
+
+-- Coroutine-friendly backoff between retry attempts: schedule a delayed resume and
+-- yield, mirroring Stream.run's tick idiom so the UI stays live (and a Stop pressed
+-- during the wait is delivered, setting stop_requested, which the caller re-checks
+-- after we return). Exponential with jitter to avoid a thundering-herd resend.
+-- TODO: honor a server Retry-After header here once the child plumbs it through;
+-- the child currently only writes a status marker, not response headers (out of
+-- scope for this change).
+function Conversation:_backoff(attempt)
+    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1)) + math.random() * BACKOFF_JITTER_SEC
+    local co = coroutine.running()
+    -- One-shot resume: scheduleIn fires it after the real wall-clock delay in
+    -- production. (Under the busted harness scheduleIn enqueues onto the nextTick
+    -- pump, so the resume runs synchronously and the backoff collapses to instant.)
+    local resumed = false
+    UIManager:scheduleIn(delay, function()
+        if not resumed then
+            resumed = true
+            coroutine.resume(co)
+        end
+    end)
+    coroutine.yield()
 end
 
 function Conversation:_render()
