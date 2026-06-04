@@ -110,9 +110,13 @@ function BookBuddy:promptAndStart(text, note)
         return
     end
 
+    -- Truncate on codepoint boundaries: #s / s:sub count bytes, so a 400-byte cut can
+    -- land inside a multibyte UTF-8 character (accents, CJK, smart quotes) and render
+    -- as a broken glyph in the preview. splitToChars gives codepoint-safe slicing.
     local function clip(s)
-        if #s > 400 then
-            return s:sub(1, 400) .. "…"
+        local chars = util.splitToChars(s)
+        if #chars > 400 then
+            return table.concat(chars, "", 1, 400) .. "…"
         end
         return s
     end

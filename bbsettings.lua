@@ -22,9 +22,10 @@ local DEFAULTS = {
     -- Anthropic backend. Off by default: it's opt-in and spends a little extra each
     -- conversation recalling and updating notes.
     enable_memory = false,
-    -- Adaptive extended thinking. Opus 4.8 supports adaptive thinking only, off
-    -- unless requested; its thinking text is omitted unless we ask for the
-    -- summarized display, which is what makes reasoning visible (see bbanthropic).
+    -- Adaptive extended thinking; Opus 4.8 supports the adaptive mode only. On by
+    -- default (the setting). The model's thinking text is itself omitted unless we ask
+    -- for the summarized display, which is what makes the reasoning visible (see
+    -- bbanthropic) -- adaptive thinking still only actually reasons when warranted.
     enable_thinking = true,
     -- Server-side web search (web_search_20250305) only runs on first-party
     -- Anthropic backends; gateways routed to Vertex/Bedrock silently ignore it
@@ -62,7 +63,10 @@ function Settings:getConfig()
         base_url = self:get("base_url"),
         api_key = self:get("api_key"),
         model = self:get("model"),
-        max_tokens = tonumber(self:get("max_tokens")) or DEFAULTS.max_tokens,
+        -- Clamp to >= 1 like max_turns below: 0 is truthy in Lua, so a user-entered 0
+        -- or negative would otherwise pass straight into the request body and the
+        -- gateway 400s on a non-positive max_tokens.
+        max_tokens = math.max(1, tonumber(self:get("max_tokens")) or DEFAULTS.max_tokens),
         max_turns = math.max(1, tonumber(self:get("max_turns")) or DEFAULTS.max_turns),
         additional_system_prompt = self:get("additional_system_prompt"),
         enable_memory = self:get("enable_memory") and true or false,

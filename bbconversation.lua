@@ -110,7 +110,8 @@ local BACKOFF_JITTER_SEC = 0.5
 -- RETRYABLE HTTP: transient transport/throttle/5xx. TERMINAL HTTP: a request the
 -- gateway will reject identically on every resend (bad request / auth / not found
 -- / unprocessable), so retrying only burns quota.
-local RETRYABLE_HTTP = { [408] = true, [425] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
+local RETRYABLE_HTTP =
+    { [408] = true, [425] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
 local TERMINAL_HTTP = { [400] = true, [401] = true, [403] = true, [404] = true, [422] = true }
 -- A mid-stream "error" event carries an Anthropic error type. Only the transient
 -- classes retry; everything else (invalid_request_error, authentication_error, …)
@@ -363,10 +364,7 @@ function Conversation:_loop()
         -- per-round reset (the old behaviour) left a prior round's committed-but-now-
         -- dropped entries stranded in the human log after a multi-round rollback.
         local pending = self.messages[#self.messages]
-        local chain_start = (not is_resume)
-            and pending
-            and pending.role == "user"
-            and type(pending.content) ~= "table"
+        local chain_start = (not is_resume) and pending and pending.role == "user" and type(pending.content) ~= "table"
         if chain_start or self._clean_transcript_len == nil then
             self._clean_transcript_len = turn_transcript_start
         end
@@ -506,8 +504,11 @@ function Conversation:_loop()
         -- classifier treats empty-200 as retryable, so a transient empty reply gets
         -- re-forked first; the placeholder is the last resort.
         if type(res.content) ~= "table" or #res.content == 0 then
-            logger.warn("BookBuddy: assistant reply had no content blocks; storing placeholder",
-                "stop_reason:", tostring(res.stop_reason))
+            logger.warn(
+                "BookBuddy: assistant reply had no content blocks; storing placeholder",
+                "stop_reason:",
+                tostring(res.stop_reason)
+            )
             self:_storeAssistant({ { type = "text", text = "(no response)" } }, is_resume)
             self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
             self:_render()
@@ -536,6 +537,15 @@ function Conversation:_loop()
             -- assistant turn (no user message). Any orphan server_tool_use the pause
             -- stopped on was already paired above (unconditionally, right after
             -- _storeAssistant), so the resend validates and the model can finish.
+            -- Advance the transcript checkpoint past this committed pause turn. Unlike a
+            -- tool-continuation round (whose [assistant tool_use][user tool_result] is
+            -- dangling, so _dropDanglingTail unwinds it back to the chain start),
+            -- _dropDanglingTail STOPS here: the pause turn's server_tool_use is paired,
+            -- so it is non-dangling and stays in the wire. _trimTranscript must mirror
+            -- that and stop here too -- otherwise a later failing resume would trim this
+            -- turn's rendered lead-in/search lines out of the human log while the wire
+            -- keeps (and resends) them, desyncing the transcript from history.
+            self._clean_transcript_len = #self.transcript
             resuming = true
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then

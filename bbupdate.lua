@@ -23,7 +23,9 @@ end
 local function parseVersion(v)
     local parts = {}
     for part in tostring(v):gsub("^v", ""):gmatch("([^.]+)") do
-        table.insert(parts, tonumber(part) or 0)
+        -- Take the leading digit run so a suffixed component (e.g. "3-beta") parses as 3
+        -- rather than collapsing to 0, which would mis-order a pre-release below x.x.0.
+        table.insert(parts, tonumber(part:match("^%d+")) or 0)
     end
     return parts
 end
@@ -74,8 +76,10 @@ local function httpGet(url, user_agent)
             socketutil:reset_timeout()
         end)
     end
-    -- Fallback: curl (available on Android, desktop)
-    local handle = io.popen(string.format("curl -sL -H 'User-Agent: KOReader-BookBuddy' %q", url))
+    -- Fallback: curl (available on Android, desktop). -f so an HTTP error (e.g. a
+    -- GitHub 404) exits non-zero and yields no body, instead of returning the error
+    -- page as a "successful" response the version regex then scans (mirrors install()).
+    local handle = io.popen(string.format("curl -sfL -H 'User-Agent: KOReader-BookBuddy' %q", url))
     if handle then
         local body = handle:read("*a")
         handle:close()
@@ -208,6 +212,14 @@ function Updater.install(old_version, new_version)
                         socketutil:reset_timeout()
                     end)
                 end
+                -- ltn12.sink.file only closes the handle on the terminating nil chunk;
+                -- if the transfer threw (the SSL-crash path this curl fallback exists
+                -- for) that chunk never arrives, leaking an open write handle onto the
+                -- very path curl is about to re-download. Close it explicitly first;
+                -- a double-close of an already-closed handle is harmless under pcall.
+                pcall(function()
+                    file:close()
+                end)
                 downloaded = ok_dl and code == 200
             end
         end

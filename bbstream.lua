@@ -76,18 +76,24 @@ function Stream.run(opts)
     -- and a chatty-but-slow stream is never false-timed-out.
     local last_progress = os.time()
 
+    -- Walk the buffer with a moving index and materialize the unconsumed tail just
+    -- once, instead of re-slicing the whole remaining buffer per line. A single 16KB
+    -- drain can hold dozens of small SSE lines, so the old sub(line_end+1)-per-line was
+    -- O(chunk^2) copying on the main thread every tick; the moving index makes it linear.
     local function process_lines()
-        while true do
-            local line_end = partial_data:find("[\r\n]")
-            if not line_end then
-                break
-            end
-            local line = partial_data:sub(1, line_end - 1)
-            partial_data = partial_data:sub(line_end + 1)
+        local pos = 1
+        local s, e = partial_data:find("[\r\n]", pos)
+        while s do
+            local line = partial_data:sub(pos, s - 1)
+            pos = e + 1
             last_progress = os.time()
             if opts.on_line then
                 opts.on_line(line)
             end
+            s, e = partial_data:find("[\r\n]", pos)
+        end
+        if pos > 1 then
+            partial_data = partial_data:sub(pos)
         end
     end
 

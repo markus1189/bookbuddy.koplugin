@@ -201,7 +201,11 @@ local function tool_grep(ui, input)
     if not spoiler then
         cap = cur
         local mp = tonumber(input.max_page)
-        if cap and mp and mp < cap then
+        -- max_page only tightens a known current-page cap, but it must still apply
+        -- when the reader's position is unknown -- otherwise an explicit cap is
+        -- silently dropped and every later-page hit leaks, a spoiler regression in
+        -- exactly the failure mode (unresolved position) where caution matters most.
+        if mp and (not cap or mp < cap) then
             cap = mp
         end
     end
@@ -346,7 +350,10 @@ local function tool_read(ui, input)
                 xp_start = xp
             end
         elseif tonumber(from) ~= nil then
-            local pg = math.max(1, math.min(tonumber(from), doc:getPageCount() or tonumber(from)))
+            -- Floor the page like navigate does; an unfloored float (from="120.5")
+            -- would reach getPageXPointer and print as "page 120.5" in the header,
+            -- and the spoiler check would compare a fractional start_page.
+            local pg = math.max(1, math.min(math.floor(tonumber(from)), doc:getPageCount() or math.huge))
             xp_start = doc:getPageXPointer(pg)
             start_page = pg
         else
@@ -384,6 +391,14 @@ local function tool_read(ui, input)
     -- boundary. compareXPointers is the oracle: 1 means the second arg is after
     -- the first. Track which stop condition fired so the trailer is exact.
     local xp_end, eob, clamped = xp_start, false, false
+    -- Accumulate the chunk length one new word span at a time rather than
+    -- re-extracting the whole xp_start..nxt span every step. The full-span extract is a
+    -- C DOM walk over an ever-growing range, so re-running it per word made this loop
+    -- O(words^2) -- the heaviest avoidable cost in the plugin, blocking the UI on every
+    -- read. The budget is approximate ("~limit chars") and the exact text is extracted
+    -- once below, so summing per-word lengths (which can differ from the full span by a
+    -- boundary character or two) only shifts the cutoff by at most a word.
+    local char_count = 0
     while true do
         -- Spoiler clamp oracle: once xp_end reaches the start of the next page
         -- (limit_xp), compareXPointers(xp_end, limit_xp) is 0 (equal) or -1 (past),
@@ -400,7 +415,8 @@ local function tool_read(ui, input)
         if doc:compareXPointers(xp_end, nxt) ~= 1 then
             break -- no forward progress
         end
-        if #(doc:getTextFromXPointers(xp_start, nxt) or "") > budget then
+        char_count = char_count + #(doc:getTextFromXPointers(xp_end, nxt) or "")
+        if char_count > budget then
             break -- budget reached
         end
         xp_end = nxt
@@ -592,8 +608,13 @@ local function tool_navigate(ui, input)
             return "This book has no table of contents to navigate by chapter."
         end
         local idx = tonumber(input.chapter_index)
-        if not idx or idx < 1 or idx > #toc then
-            return string.format("Error: 'chapter_index' must be between 1 and %d (see get_toc).", #toc)
+        -- Whole-number check BEFORE any side effect: a fractional idx (e.g. 2.5) would
+        -- pass a bare range test but toc[2.5] is nil, so the page/percent branches'
+        -- validate-before-push discipline would be broken -- addCurrentLocationToStack
+        -- below pushes a bogus Back location, then the nil deref crashes. isPositiveInteger
+        -- rejects nil too, so the short-circuit never compares nil to #toc.
+        if not isPositiveInteger(idx) or idx > #toc then
+            return string.format("Error: 'chapter_index' must be a whole number between 1 and %d (see get_toc).", #toc)
         end
         local entry = toc[idx]
         ui.link:addCurrentLocationToStack()
@@ -774,6 +795,13 @@ local function tool_create_highlight(ui, input)
                 _("no match")
         end
         local page = input.page ~= nil and tonumber(input.page) or nil
+        if page then
+            -- Floor like navigate/read: an unfloored fractional page can never equal an
+            -- integer page result (silently emptying the match set), and it would print
+            -- inconsistently ("page 5" via %d vs "page 5.5" via concat) across the two
+            -- error messages below.
+            page = math.floor(page)
+        end
         local matches = {}
         for i = 1, #results do
             local it = results[i]
@@ -898,7 +926,7 @@ function Tools.getSpecs()
                 .. "get_toc), a page number, or — if you give neither — the reader's current page. "
                 .. "Returns a chunk of text and a 'next' locator; call read again with from=next to "
                 .. "keep going to the end of what you were asked about; a chunk ending in "
-                .. "\"(Not the end …)\" means there is more, so don't stop or conclude there. Reflowable "
+                .. '"(Not the end …)" means there is more, so don\'t stop or conclude there. Reflowable '
                 .. "(EPUB) books only; don't re-read chunks you already pulled.",
             input_schema = {
                 type = "object",
