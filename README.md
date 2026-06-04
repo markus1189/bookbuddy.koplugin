@@ -40,7 +40,8 @@ You: Who is Septimus and why does he matter here?
 
   → Checked the book details — page 142 of 318
   → Searched book for "Septimus" — 11 match(es)
-  → Read pages 88–95 — ~2400 words
+  → Reading from loc:3 — ~250 words
+  → Reading from loc:7 — ~240 words
 
 BookBuddy: Septimus is the shell-shocked veteran whose day runs in parallel to
 Clarissa's. He matters here because the novel keeps cutting between them to set
@@ -55,20 +56,22 @@ Every question starts a multi-turn loop: Claude requests a tool, BookBuddy runs 
 against the live document, hands back the result, and Claude decides what to do
 next — search, read more, navigate, or answer. Nothing is hidden; you see each step.
 
-- Adds a **"Chat with BookBuddy"** button to KOReader's text-highlight menu (and a
-  "Chat with BookBuddy about selection" action you can bind to a gesture or shortcut).
+- Adds a **"Chat with BookBuddy"** button to KOReader's text-highlight menu. Two
+  actions — **"Chat with BookBuddy about selection"** and **"Chat with BookBuddy about
+  this book"** — can also be bound to a gesture or shortcut.
 - **Streams the reply live** into a chat view, coalesced so it stays readable on
   e-ink, with each tool call shown as a line you can follow.
 - **Quick-action presets** in the chat prompts: one tap fills the input box with a
   starter like *Overview* / *Characters* / *Themes* for a book, *Explain* / *Why it
-  matters* / *Simpler* for a highlighted passage, or *Yes* / *Go on* / *Example* when
-  replying. They prefill rather than send, so you can tweak the wording before tapping
+  matters* / *Simpler* for a highlighted passage, or *Yes* / *Memorize* / *Highlight*
+  when replying. They prefill rather than send, so you can tweak the wording before tapping
   **Send** — handy for sidestepping the on-screen keyboard.
 - **Grounds answers in the real text** with tools that read the book instead of
   guessing:
   - `grep` — full-text search within the book
   - `read` — read the book's text in order from a locator (a grep hit, a `get_toc`
-    chapter, or a previous read) or a page number
+    chapter, or a previous read), a page number, or — with no argument — the reader's
+    current page
   - `get_toc` — inspect the table of contents
   - `book_context` — book metadata and the reader's current position
   - `get_highlights` — the reader's own highlights and notes
@@ -89,7 +92,7 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   any tool-using endpoint — gateways included — not just a native Anthropic one.
   Off by default since it's opt-in and spends a little extra each conversation
   recalling and updating notes.
-- **Extended (adaptive) thinking** (optional): a `Thinking...` indicator shows
+- **Extended (adaptive) thinking** (on by default): a `Thinking...` indicator shows
   while the model reasons before it replies.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
   position unless you explicitly ask.
@@ -161,6 +164,8 @@ Open any book, then go to the top menu → **BookBuddy**:
   system prompt; add your own preferences (tone, language, focus) without restating
   the built-in instructions. Leave empty for the default behavior.
 - **Per-book memory** / **Extended thinking** / **Web search** — toggles.
+- **Show book memory** — view the notes BookBuddy has stored for the current book, with a
+  button to clear them. Appears only with a book open.
 
 Settings persist via KOReader's `LuaSettings` (in `bookbuddy.lua` under your settings
 directory).
@@ -175,8 +180,8 @@ directory).
 The reply streams in; you can Stop it or reply to continue the conversation — a short
 *Yes* or *Go on* is a perfectly good reply when the agent ends its turn with a question.
 You can also start a chat about the whole book (no selection needed) from the menu's
-**Chat about this book** entry, or bind "Chat with BookBuddy about selection" to a
-gesture/shortcut for the current selection.
+**Chat about this book** entry, or bind either "Chat with BookBuddy about selection" (for
+the current selection) or "Chat with BookBuddy about this book" to a gesture/shortcut.
 
 ## Self-update
 

@@ -6,3 +6,6 @@ a13a384b407d85ae9c227c4a8198b32aabd0167c
 
 # BookBuddy: reformat tests/harness.lua with stylua
 530f7bcfa92e5f231be1abd42476e1676c3569d3
+
+# BookBuddy: reformat drifted Lua sources with stylua
+e168c214e84721f55b44db39c8c15c267d83fad7
