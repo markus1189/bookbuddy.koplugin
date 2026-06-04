@@ -7,7 +7,7 @@ local stubs = require("support.stubs")
 local sse = require("support.sse")
 
 describe("conversation", function()
-    local Conversation, fake, captured, chatviewer, bbtools
+    local Conversation, fake, captured, chatviewer, bbtools, mem
     local cfg = {}
     local stubSettings = {
         getConfig = function()
@@ -18,7 +18,7 @@ describe("conversation", function()
     setup(function()
         local h = stubs.install()
         chatviewer = h.chatviewer
-        stubs.install_bbmemory_stub()
+        mem = stubs.install_bbmemory_stub()
         bbtools = stubs.install_bbtools_stub(h)
         fake = sse.new_fake_stream({}, chatviewer)
         captured = (sse.capture_build_body())
@@ -46,9 +46,13 @@ describe("conversation", function()
         cfg.max_tokens = 1024
         cfg.max_turns = sc.max_turns or 20
         cfg.additional_system_prompt = ""
-        cfg.enable_memory = false
+        cfg.enable_memory = sc.enable_memory and true or false
         cfg.enable_thinking = false
         cfg.enable_web_search = true
+        -- Reset the memory recorder per scenario; sc.memory_base opts the book into the
+        -- store (Memory.baseDirForBook returns it), otherwise memory stays off.
+        mem.rec.calls = {}
+        mem.rec.base = sc.memory_base
 
         local selected_text
         if not sc.book_level then
@@ -106,6 +110,23 @@ describe("conversation", function()
             assert.is_false(hasWebSearch(off.tool_specs))
             cfg.enable_web_search = true -- restore for any later scenario
         end)
+    end)
+
+    it("resets the shared per-conversation locator/search state on new()", function()
+        -- _bookbuddy_locators/_loc_seq/_last_search live on the shared ui, which
+        -- outlives a Conversation, so a new chat MUST clear them or it inherits stale
+        -- locators -- a correctness and spoiler concern (a loc minted past the reader's
+        -- page in a prior chat could be reused). A regression dropping the reset
+        -- (bbconversation.lua:193-197) would otherwise fail nothing.
+        local ui = {
+            _bookbuddy_locators = { { kind = "point", xp = "x" } },
+            _bookbuddy_loc_seq = 5,
+            _bookbuddy_last_search = { query = "old", items = {} },
+        }
+        Conversation:new({ ui = ui, settings = stubSettings })
+        assert.is_nil(ui._bookbuddy_locators)
+        assert.is_nil(ui._bookbuddy_loc_seq)
+        assert.is_nil(ui._bookbuddy_last_search)
     end)
 
     it("S1: completes a web search, then a follow-up", function()
@@ -248,6 +269,50 @@ describe("conversation", function()
             },
         })
         assert.is_not_nil((chatviewer.last_text or ""):find("Created a highlight", 1, true))
+    end)
+
+    it("S4c: routes a memory tool_use to the store's execute, not Tools.execute", function()
+        -- enable_memory + a resolvable base makes Conversation:new build the store and
+        -- advertise the memory tool; the loop must route tool_use{name="memory"} to
+        -- self.memory:execute, NOT Tools.execute (which would answer "unknown tool
+        -- memory"). Previously only the display-only phrasing was covered.
+        local conv = run({
+            enable_memory = true,
+            memory_base = "/tmp/bookbuddy-memory",
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "text", text = "Let me check my notes." },
+                        {
+                            type = "tool_use",
+                            id = "toolu_M",
+                            name = "memory",
+                            input = { command = "view", path = "/memories" },
+                        },
+                    },
+                    stop_reason = "tool_use",
+                }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Here is what I remembered." } } }),
+            },
+        })
+        -- The store executed the call...
+        assert.are.equal(1, #mem.rec.calls)
+        assert.are.equal("view", mem.rec.calls[1].command)
+        -- ...and its output is what got committed as the tool_result (not TOOL_RESULT).
+        local tr
+        for _, m in ipairs(conv.messages) do
+            if
+                m.role == "user"
+                and type(m.content) == "table"
+                and m.content[1]
+                and m.content[1].type == "tool_result"
+            then
+                tr = m.content[1]
+            end
+        end
+        assert.is_not_nil(tr)
+        assert.are.equal("MEMORY_RESULT(view)", tr.content)
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
     it("S6: pauses do not consume the substantive turn budget", function()
@@ -539,6 +604,46 @@ describe("conversation", function()
         assert.is_nil(text:find("Searched book", 1, true), "prior round's tool action must be trimmed")
     end)
 
+    it("L2: a pause_turn whose resume fails keeps the pause turn in BOTH wire and transcript", function()
+        -- A successful pause round commits a NON-dangling assistant turn (its
+        -- server_tool_use is paired with a synthetic result). If the following resume
+        -- then fails persistently, _dropDanglingTail STOPS at that paired turn (keeping
+        -- it in the wire), so _trimTranscript must stop there too. Otherwise the human
+        -- log loses the pause lead-in that the wire still resends -- desyncing the two
+        -- and producing two consecutive "You:" turns after a follow-up.
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "text", text = "PAUSE leadin text" },
+                        { type = "server_tool_use", id = "srvtoolu_PZ", input = { query = "q" } },
+                    },
+                    stop_reason = "pause_turn",
+                }),
+                -- The resume round drops three times -> retries exhausted -> give up.
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+                { outcome = "read_error" },
+                -- The follow-up answers on top of the kept pause turn.
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Follow-up answer." } } }),
+            },
+            followups = { "are you there?" },
+        })
+        -- The committed pause turn's lead-in survives in the human log (not trimmed)...
+        local text = conv:_transcriptText()
+        assert.is_not_nil(text:find("PAUSE leadin text", 1, true), "pause lead-in must survive the failed resume")
+        -- ...and the transcript never shows two consecutive reader turns.
+        for i = 2, #conv.transcript do
+            assert.is_false(
+                conv.transcript[i].role == "user" and conv.transcript[i - 1].role == "user",
+                "no two consecutive You: turns"
+            )
+        end
+        -- Wire stays resendable, and the follow-up landed after the kept pause turn.
+        assert.are.equal(0, #sse.validateMessages(conv.messages))
+        assert.is_not_nil((chatviewer.last_text or ""):find("Follow-up answer.", 1, true))
+    end)
+
     it("R1: a transient read_error is retried and yields the answer in one turn", function()
         local conv = run({
             responses = {
@@ -734,9 +839,12 @@ describe("conversation", function()
         -- first in the classifier -- it must never be retried.
         local conv = run({
             responses = {
-                { outcome = "cancelled", lines = sse.buildTurnSSE({
-                    blocks = { { type = "text", text = "partial before stop" } },
-                }) },
+                {
+                    outcome = "cancelled",
+                    lines = sse.buildTurnSSE({
+                        blocks = { { type = "text", text = "partial before stop" } },
+                    }),
+                },
                 -- Scripted but must never be consumed (no retry after a cancel).
                 sse.buildTurnSSE({ blocks = { { type = "text", text = "never reached" } } }),
             },
@@ -825,8 +933,10 @@ describe("conversation", function()
                 "  → Updated the note on highlight 3",
                 phrase("edit_highlight_note", { highlight_index = 3 })
             )
-            local p = phrase("read", { from = "loc:4" })
-            assert.is_true(type(p) == "string" and p ~= "" and p:lower():find("read") ~= nil)
+            -- Exact match like every sibling branch: a loose substring check would pass
+            -- even if the locator were dropped or %1 mis-templated.
+            assert.are.equal("  → Reading from loc:4", phrase("read", { from = "loc:4" }))
+            assert.are.equal("  → Reading from your current page", phrase("read", {}))
         end)
     end)
 

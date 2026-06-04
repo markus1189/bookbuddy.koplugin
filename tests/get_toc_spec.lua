@@ -32,4 +32,20 @@ describe("get_toc (pure)", function()
         assert.truthy(out:find("Front matter", 1, true))
         assert.is_nil(out:match("loc:%d+"))
     end)
+
+    it("mints a point locator for a TOC entry that carries an xpointer", function()
+        -- The central feature of get_toc: hand the model a read-from-chapter locator.
+        local ui = {
+            document = {
+                getToc = function()
+                    return { { title = "Chapter One", page = 12, depth = 1, xpointer = "xpA" } }
+                end,
+            },
+        }
+        local out = Tools.execute("get_toc", {}, ui)
+        assert.truthy(out:find("Chapter One", 1, true))
+        assert.truthy(out:find("(page 12) (loc:1)", 1, true))
+        -- The minted token is a point (not a span), so read(from=loc:1) resolves it.
+        assert.are.same({ kind = "point", xp = "xpA" }, ui._bookbuddy_locators[1])
+    end)
 end)

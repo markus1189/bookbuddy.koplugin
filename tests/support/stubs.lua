@@ -25,11 +25,12 @@ M.json = json
 -- what lets the suite catch "x or 0" / "if x then" guards that fail to coerce a
 -- null token. json.encode emits "null" for it and json.decode returns it for the
 -- "null" token, and the rapidjson stub exposes it as rapidjson.null.
-json.null = newproxy and newproxy(false) or setmetatable({}, {
-    __tostring = function()
-        return "null"
-    end,
-})
+json.null = newproxy and newproxy(false)
+    or setmetatable({}, {
+        __tostring = function()
+            return "null"
+        end,
+    })
 
 local function utf8char(cp)
     if cp < 0x80 then
@@ -365,17 +366,28 @@ function M.load_tools()
     return require("bbtools")
 end
 
--- A no-op-ish bbmemory double for specs that don't exercise real memory.
+-- A bbmemory double for the conversation-loop specs. By default baseDirForBook
+-- returns nil, so Conversation:new skips memory entirely (every pre-existing scenario).
+-- A spec opts a book into memory by setting stub.rec.base to a path: new() then hands
+-- back a recorder whose execute() logs each call onto stub.rec.calls, so the loop's
+-- name=="memory" dispatch branch (route to the store, not Tools.execute) is assertable.
 function M.install_bbmemory_stub()
+    local rec = { base = nil, calls = {} }
     local stub = {
+        rec = rec,
         baseDirForBook = function()
-            return nil
+            return rec.base
         end,
         new = function()
-            return {}
+            return {
+                execute = function(_, input)
+                    rec.calls[#rec.calls + 1] = input
+                    return "MEMORY_RESULT(" .. tostring(input and input.command) .. ")"
+                end,
+            }
         end,
         spec = function()
-            return {}
+            return { name = "memory", description = "", input_schema = { type = "object" } }
         end,
         summaryText = function()
             return ""

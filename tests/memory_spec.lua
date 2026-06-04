@@ -116,6 +116,18 @@ describe("bbmemory Store", function()
             assert.is_nil((store:_resolve("")))
             assert.is_nil((store:_resolve("/memories/a\0b")))
         end)
+
+        it("refuses a sibling path that only shares the /memories prefix", function()
+            -- The trailing-slash boundary in _resolve is load-bearing: a naive bare
+            -- prefix check (vpath:sub(1,#root)==root) would map /memoriesEVIL and
+            -- /memories-secret UNDER base_dir, escaping the sandbox. Both must be refused.
+            local r1, e1 = store:_resolve("/memoriesEVIL/x.md")
+            assert.is_nil(r1)
+            assert.is_not_nil(e1:find("within /memories", 1, true))
+            local r2, e2 = store:_resolve("/memories-secret")
+            assert.is_nil(r2)
+            assert.is_not_nil(e2:find("within /memories", 1, true))
+        end)
     end)
 
     describe("command lifecycle", function()

@@ -123,6 +123,33 @@ describe("grep (pure)", function()
         assert.truthy(spoiled:find("[page 25]", 1, true))
     end)
 
+    it("still applies an explicit max_page when the reader's page is unknown", function()
+        -- Spoiler-safety regression guard: when currentPage is nil the cap must fall
+        -- back to max_page, not be dropped (which would reveal every later-page hit).
+        local ui = {
+            rolling = {},
+            view = { state = {} }, -- no resolvable page
+            document = {
+                getCurrentPage = function()
+                    return nil
+                end,
+                findAllText = function()
+                    return {
+                        { start = "a", matched_text = "early" },
+                        { start = "b", matched_text = "late" },
+                    }
+                end,
+                getPageFromXPointer = function(_, xp)
+                    return ({ a = 5, b = 40 })[xp]
+                end,
+            },
+        }
+        local text = Tools.execute("grep", { query = "q", max_page = 10 }, ui)
+        assert.truthy(text:find("[page 5]", 1, true)) -- within the explicit cap → shown
+        assert.is_nil(text:find("[page 40]", 1, true)) -- beyond it → hidden, not leaked
+        assert.truthy(text:find("hidden", 1, true)) -- only counted
+    end)
+
     it("reports no matches for an empty result set", function()
         local ui = makeGrepUI({ hits = {} })
         local text, summary = Tools.execute("grep", { query = "ghost" }, ui)

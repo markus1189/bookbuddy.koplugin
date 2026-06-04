@@ -36,6 +36,10 @@ describe("bbupdate helpers", function()
         it("coerces non-numeric parts to 0", function()
             assert.are.same({ 1, 0, 5 }, U.parseVersion("1.x.5"))
         end)
+
+        it("takes the leading digit run of a suffixed component", function()
+            assert.are.same({ 1, 13, 3 }, U.parseVersion("1.13.3-beta"))
+        end)
     end)
 
     describe("isNewer", function()

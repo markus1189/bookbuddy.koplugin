@@ -51,6 +51,18 @@ describe("request validator", function()
         }) > 0)
     end)
 
+    it("rejects an orphan server_tool_use regardless of its name", function()
+        -- The source's dangling check (pairDanglingWebSearch / _dropDanglingTail) keys on
+        -- type+id, not name, so the validator must flag any unpaired server_tool_use.
+        assert.is_true(#errs({
+            { role = "user", content = "hi" },
+            {
+                role = "assistant",
+                content = { { type = "server_tool_use", id = "s9", name = "code_execution" } },
+            },
+        }) > 0)
+    end)
+
     it("rejects a web_search_tool_result with no server_tool_use", function()
         assert.is_true(#errs({
             { role = "user", content = "hi" },

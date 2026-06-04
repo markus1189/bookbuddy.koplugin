@@ -324,7 +324,10 @@ function M.validateMessages(messages)
                 end
             end
             for _, b in ipairs(m.content) do
-                if b.type == "server_tool_use" and b.name == "web_search" and not results[b.id] then
+                -- Name-agnostic, mirroring the source: pairDanglingWebSearch and
+                -- _dropDanglingTail key on type+id only, so ANY orphan server_tool_use is
+                -- a 400 risk on Vertex, not just one named web_search.
+                if b.type == "server_tool_use" and b.id and not results[b.id] then
                     errs[#errs + 1] = string.format(
                         "messages.%d: `web_search` tool use with id `%s` was found without a corresponding `web_search_tool_result` block",
                         mi,

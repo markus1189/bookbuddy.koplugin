@@ -102,6 +102,38 @@ describe("create_highlight (pure)", function()
         assert.are.equal("second one", anns[1].text)
     end)
 
+    it("rejects a stale locator token", function()
+        local ui = makeCreateUI({ hits = {} })
+        assert.truthy(Tools.execute("create_highlight", { locator = "loc:999" }, ui):find("stale"))
+    end)
+
+    it("rejects a point locator -- a single position, not a passage", function()
+        -- read/get_toc mint kind="point" locators; create_highlight needs a span. This
+        -- guard is the only thing stopping a point locator becoming a nil-bounded
+        -- highlight, and it is untested anywhere else (tier-2 covers only the span path).
+        local ui, anns = makeCreateUI({ hits = {} })
+        ui._bookbuddy_locators = { { kind = "point", xp = "xpP" } }
+        ui._bookbuddy_loc_seq = 1
+        local result = Tools.execute("create_highlight", { locator = "loc:1" }, ui)
+        assert.truthy(result:find("single position, not a passage", 1, true))
+        assert.are.equal(0, #anns)
+    end)
+
+    it("highlights a span locator's stored xpointers verbatim", function()
+        local ui, anns = makeCreateUI({
+            hits = {},
+            page_of = { xpS = 7 },
+            text_of = { xpS = "the spanned passage" },
+        })
+        ui._bookbuddy_locators = { { kind = "span", xp = "xpS", xp_end = "xpS2" } }
+        ui._bookbuddy_loc_seq = 1
+        local result = Tools.execute("create_highlight", { locator = "loc:1" }, ui)
+        assert.are.equal("xpS", anns[1].pos0)
+        assert.are.equal("xpS2", anns[1].pos1)
+        assert.are.equal("the spanned passage", anns[1].text)
+        assert.truthy(result:find("page 7"))
+    end)
+
     it("reuses a prior search_result's xpointers verbatim", function()
         local ui, anns = makeCreateUI({
             hits = { { start = "xpA", ["end"] = "xpA2", matched_text = "alpha" } },
