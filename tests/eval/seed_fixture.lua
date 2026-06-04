@@ -66,7 +66,7 @@ for _, h in ipairs(recipe.highlights or {}) do
     assert(found:match("page"), "seed grep found no hit for " .. h.query .. ": " .. tostring(found))
     local res = Tools.execute("create_highlight", { search_result = 1, note = h.note }, readerui)
     assert(res:match("Highlighted"), "seed create_highlight failed for " .. h.query .. ": " .. tostring(res))
-    io.write("  + highlight: ", h.query, h.note and (" (note)") or "", "\n")
+    io.write("  + highlight: ", h.query, h.note and " (note)" or "", "\n")
 end
 
 if recipe.memory and #recipe.memory > 0 then

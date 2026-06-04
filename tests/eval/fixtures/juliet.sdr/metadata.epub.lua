@@ -61,7 +61,7 @@ return {
     ["doc_path"] = "/nix/store/yyf17r68nx1d4aq67gg4vw7pk2d4vk62-bb-eval-epubs/juliet.epub",
     ["doc_props"] = {
         ["authors"] = "William Shakespeare",
-        ["description"] = "Romeo and Juliet is a tragic play written early in the career of William Shakespeare about two teenage \"star-cross'd lovers\" whose untimely deaths ultimately unite their feuding households. It was among Shakespeare's most popular plays during his lifetime and, along with Hamlet, is one of his most frequently performed plays. Today, the title characters are regarded as archetypal \"young lovers\". (From Wikipedia)",
+        ["description"] = 'Romeo and Juliet is a tragic play written early in the career of William Shakespeare about two teenage "star-cross\'d lovers" whose untimely deaths ultimately unite their feuding households. It was among Shakespeare\'s most popular plays during his lifetime and, along with Hamlet, is one of his most frequently performed plays. Today, the title characters are regarded as archetypal "young lovers". (From Wikipedia)',
         ["identifiers"] = "URN:urn:uuid:1eb115dc-418a-11e4-98ec-4c72b9252ec6\
 URI:http://www.feedbooks.com/book/2936",
         ["keywords"] = "Fiction\
