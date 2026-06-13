@@ -351,6 +351,7 @@
             pkgs.luaPackages.luacheck
             pkgs.stylua
             pkgs.lua-language-server
+            pkgs.openspec
           ];
         };
       });
