@@ -219,6 +219,12 @@ function Conversation:new(o)
     -- Accumulated across every API call in the conversation (each turn resends the
     -- full history, so summing input_tokens reflects what was actually billed).
     o.usage = { input = 0, output = 0, cache_read = 0, cache_write = 0 }
+    -- Tokens the conversation currently occupies, as opposed to the cumulative
+    -- billed total above. Overwritten (not summed) on every call: the latest call's
+    -- full prompt (input + cache_read + cache_write covers the whole resent history,
+    -- whether a token was billed fresh or served from cache) plus its output, which
+    -- is now appended to history and will ride along in the next request.
+    o.context_size = 0
     return o
 end
 
@@ -492,6 +498,8 @@ function Conversation:_loop()
             self.usage.output = self.usage.output + (u.output_tokens or 0)
             self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
             self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
+            self.context_size = (u.input_tokens or 0) + (u.cache_read_input_tokens or 0)
+                + (u.cache_creation_input_tokens or 0) + (u.output_tokens or 0)
         end
 
         -- Record the terminal turn's stop_reason so a headless driver (and the warn
@@ -847,7 +855,8 @@ end
 -- Footer summarizing token spend across the whole conversation. nil until at
 -- least one API call has reported usage. cache_read/cache_write are the prompt
 -- tokens served from / written to the prompt cache (Anthropic reports them
--- separately from input_tokens).
+-- separately from input_tokens). "context" is the live window occupancy (latest
+-- call only), not a cumulative -- see Conversation.context_size.
 function Conversation:_usageText()
     local u = self.usage
     if u.input + u.output == 0 then
@@ -857,6 +866,9 @@ function Conversation:_usageText()
     local cached = u.cache_read + u.cache_write
     if cached > 0 then
         parts[#parts + 1] = T(_("cached %1"), cached)
+    end
+    if self.context_size > 0 then
+        parts[#parts + 1] = T(_("context %1"), self.context_size)
     end
     return T(_("[tokens — %1]"), table.concat(parts, ", "))
 end

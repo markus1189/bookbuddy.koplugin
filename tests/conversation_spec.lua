@@ -316,6 +316,33 @@ describe("conversation", function()
         assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
+    it("U1: usage sums across calls while context_size tracks only the latest call", function()
+        -- Two API calls (a tool round): each scripted turn reports input 10 / output 20.
+        -- The cumulative billed usage doubles; the live context size does not -- it is
+        -- the latest call's full prompt (input + cache) plus its output.
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "text", text = "I'll mark that passage." },
+                        {
+                            type = "tool_use",
+                            id = "toolu_HL2",
+                            name = "create_highlight",
+                            input = { text = "a passage", note = "n" },
+                        },
+                    },
+                    stop_reason = "tool_use",
+                }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Done." } } }),
+            },
+        })
+        assert.are.equal(20, conv.usage.input)
+        assert.are.equal(40, conv.usage.output)
+        assert.are.equal(30, conv.context_size)
+        assert.is_not_nil(conv:_usageText():find("context 30", 1, true))
+    end)
+
     it("S6: pauses do not consume the substantive turn budget", function()
         run({
             max_turns = 2,
