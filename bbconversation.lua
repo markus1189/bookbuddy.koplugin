@@ -381,15 +381,21 @@ function Conversation:_loop()
             -- entries from scratch, not append onto the aborted attempt's partials.
             local entry, thinking_entry
             local parser = Anthropic.newStreamParser({
-                on_thinking = function()
-                    -- We don't surface the summarized thinking text anymore, just a
+                on_thinking = function(delta)
+                    -- By default we don't surface the summarized thinking text, just a
                     -- "Thinking..." status that flips to "Done" once the answer
                     -- starts (or the turn finishes; see _renderAssistantTurn). The
                     -- parser still accumulates the fragments onto the content block
-                    -- for resend -- this transcript entry is display-only.
+                    -- for resend -- this transcript entry is display-only. When the
+                    -- reader opts into show_streaming_thinking (off by default, it can
+                    -- spoil unread plot), we also stream the text into the entry.
                     if not thinking_entry then
                         thinking_entry = { role = "thinking", done = false }
                         self.transcript[#self.transcript + 1] = thinking_entry
+                        self:_scheduleFlush()
+                    end
+                    if cfg.show_streaming_thinking and delta and delta ~= "" then
+                        thinking_entry.text = (thinking_entry.text or "") .. delta
                         self:_scheduleFlush()
                     end
                 end,
@@ -530,7 +536,7 @@ function Conversation:_loop()
         -- Replace this turn's live streamed entries with content-ordered ones, so a
         -- server-side web search shows between the lead-in and the answer rather than
         -- hoisted above them. Client tool calls are added below, after execution.
-        self:_renderAssistantTurn(res.content, turn_transcript_start)
+        self:_renderAssistantTurn(res.content, turn_transcript_start, cfg.show_streaming_thinking)
 
         if res.stop_reason == "pause_turn" then
             -- The API paused a long server-side turn. Resume by resending the partial
@@ -772,7 +778,7 @@ end
 -- we surface it here, with the result count from the matching result block when it
 -- is in this turn (after a pause_turn the result can be absent, so we show the
 -- query alone).
-function Conversation:_renderAssistantTurn(content, turn_start)
+function Conversation:_renderAssistantTurn(content, turn_start, show_thinking)
     for i = #self.transcript, turn_start + 1, -1 do
         self.transcript[i] = nil
     end
@@ -794,7 +800,8 @@ function Conversation:_renderAssistantTurn(content, turn_start)
     for i = 1, #content do
         local b = content[i]
         if b.type == "thinking" and b.thinking and b.thinking ~= "" then
-            self.transcript[#self.transcript + 1] = { role = "thinking", done = true }
+            self.transcript[#self.transcript + 1] =
+                { role = "thinking", done = true, text = show_thinking and b.thinking or nil }
         elseif b.type == "text" and b.text and b.text ~= "" then
             self.transcript[#self.transcript + 1] = { role = "assistant", text = b.text }
         elseif b.type == "server_tool_use" and b.name == "web_search" then
@@ -820,7 +827,12 @@ function Conversation:_transcriptText()
         elseif turn.role == "assistant" then
             out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
         elseif turn.role == "thinking" then
-            out[#out + 1] = turn.done and _("Thinking... Done") or _("Thinking...")
+            local label = turn.done and _("Thinking... Done") or _("Thinking...")
+            if turn.text and turn.text ~= "" then
+                out[#out + 1] = label .. "\n" .. turn.text
+            else
+                out[#out + 1] = label
+            end
         else
             out[#out + 1] = turn.text
         end

@@ -47,7 +47,8 @@ describe("conversation", function()
         cfg.max_turns = sc.max_turns or 20
         cfg.additional_system_prompt = ""
         cfg.enable_memory = sc.enable_memory and true or false
-        cfg.enable_thinking = false
+        cfg.enable_thinking = sc.enable_thinking or false
+        cfg.show_streaming_thinking = sc.show_streaming_thinking or false
         cfg.enable_web_search = true
         -- Reset the memory recorder per scenario; sc.memory_base opts the book into the
         -- store (Memory.baseDirForBook returns it), otherwise memory stays off.
@@ -360,6 +361,39 @@ describe("conversation", function()
                 }),
             },
         })
+    end)
+
+    it("S6: surfaces the thinking text in the transcript when show_streaming_thinking is on", function()
+        run({
+            enable_thinking = true,
+            show_streaming_thinking = true,
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "thinking", thinking = "The reader is on chapter 2; the butler did it." },
+                        { type = "text", text = "Here is a hint." },
+                    },
+                }),
+            },
+        })
+        assert.is_not_nil((chatviewer.last_text or ""):find("the butler did it", 1, true))
+    end)
+
+    it("S6b: hides the thinking text by default, keeping only the indicator", function()
+        run({
+            enable_thinking = true,
+            show_streaming_thinking = false,
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "thinking", thinking = "The reader is on chapter 2; the butler did it." },
+                        { type = "text", text = "Here is a hint." },
+                    },
+                }),
+            },
+        })
+        assert.is_nil((chatviewer.last_text or ""):find("the butler did it", 1, true))
+        assert.is_not_nil((chatviewer.last_text or ""):find("Thinking", 1, true))
     end)
 
     it("S7: a retryable mid-stream error on a follow-up auto-recovers via retry", function()

@@ -27,6 +27,11 @@ local DEFAULTS = {
     -- for the summarized display, which is what makes the reasoning visible (see
     -- bbanthropic) -- adaptive thinking still only actually reasons when warranted.
     enable_thinking = true,
+    -- Surface the model's live summarized thinking text in the transcript while it
+    -- streams, instead of only a "Thinking..." indicator. Off by default: the
+    -- reasoning can name plot points the reader hasn't reached yet, so it's a
+    -- spoiler risk. Has no effect unless enable_thinking is also on.
+    show_streaming_thinking = false,
     -- Server-side web search (web_search_20250305) only runs on first-party
     -- Anthropic backends; gateways routed to Vertex/Bedrock silently ignore it
     -- (and Claude Code likewise hides WebSearch there). On by default; turn it
@@ -71,6 +76,7 @@ function Settings:getConfig()
         additional_system_prompt = self:get("additional_system_prompt"),
         enable_memory = self:get("enable_memory") and true or false,
         enable_thinking = self:get("enable_thinking") and true or false,
+        show_streaming_thinking = self:get("show_streaming_thinking") and true or false,
         enable_web_search = self:get("enable_web_search") and true or false,
     }
 end
@@ -317,6 +323,25 @@ function Settings:getMenu(ui)
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:set("enable_thinking", not (self:get("enable_thinking") and true or false))
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        },
+        {
+            text = _("Show streaming thinking"),
+            help_text = _(
+                "Show the model's reasoning text live as it streams, instead of just a \"Thinking...\" indicator. Off by default: the reasoning may mention plot points you haven't read yet, so it can spoil the book. Requires Extended thinking to be on."
+            ),
+            enabled_func = function()
+                return self:get("enable_thinking") and true or false
+            end,
+            checked_func = function()
+                return self:get("show_streaming_thinking") and true or false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("show_streaming_thinking", not (self:get("show_streaming_thinking") and true or false))
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()
                 end

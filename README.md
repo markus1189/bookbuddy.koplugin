@@ -93,7 +93,9 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   Off by default since it's opt-in and spends a little extra each conversation
   recalling and updating notes.
 - **Extended (adaptive) thinking** (on by default): a `Thinking...` indicator shows
-  while the model reasons before it replies.
+  while the model reasons before it replies. **Show streaming thinking** can
+  surface the reasoning text live, but it's off by default since the reasoning
+  may name plot points you haven't read yet.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
   position unless you explicitly ask.
 - A **token-usage footer** tracks what each conversation cost.
@@ -163,7 +165,9 @@ Open any book, then go to the top menu → **BookBuddy**:
 - **Additional system prompt** — optional text appended to BookBuddy's built-in
   system prompt; add your own preferences (tone, language, focus) without restating
   the built-in instructions. Leave empty for the default behavior.
-- **Per-book memory** / **Extended thinking** / **Web search** — toggles.
+- **Per-book memory** / **Extended thinking** / **Show streaming thinking** /
+  **Web search** — toggles. *Show streaming thinking* (off by default, requires
+  *Extended thinking*) surfaces the reasoning text live and can spoil unread plot.
 - **Show book memory** — view the notes BookBuddy has stored for the current book, with a
   button to clear them. Appears only with a book open.
 
