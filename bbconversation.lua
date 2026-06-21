@@ -394,14 +394,22 @@ function Conversation:_loop()
                     -- parser still accumulates the fragments onto the content block
                     -- for resend -- this transcript entry is display-only. When the
                     -- reader opts into show_streaming_thinking (off by default, it can
-                    -- spoil unread plot), we also stream the text into the entry.
-                    if not thinking_entry then
+                    -- spoil unread plot), we stream the text into the entry, and the
+                    -- render replaces the indicator with the live reasoning entirely.
+                    local first = not thinking_entry
+                    if first then
                         thinking_entry = { role = "thinking", done = false }
                         self.transcript[#self.transcript + 1] = thinking_entry
-                        self:_scheduleFlush()
                     end
                     if cfg.show_streaming_thinking and delta and delta ~= "" then
                         thinking_entry.text = (thinking_entry.text or "") .. delta
+                    end
+                    -- Paint the first fragment immediately so streamed reasoning shows up
+                    -- the instant it starts rather than a throttle window later; the rest
+                    -- coalesce at one repaint per window to spare the e-ink panel.
+                    if first then
+                        self:_flushNow()
+                    else
                         self:_scheduleFlush()
                     end
                 end,
@@ -835,11 +843,15 @@ function Conversation:_transcriptText()
         elseif turn.role == "assistant" then
             out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
         elseif turn.role == "thinking" then
-            local label = turn.done and _("Thinking... Done") or _("Thinking...")
             if turn.text and turn.text ~= "" then
-                out[#out + 1] = label .. "\n" .. turn.text
+                -- show_streaming_thinking on: the live reasoning replaces the
+                -- "Thinking..."/"Thinking... Done" indicator outright -- the text itself
+                -- is the progress signal, so the placeholder label would only be noise.
+                out[#out + 1] = T(_("Thinking: %1"), turn.text)
             else
-                out[#out + 1] = label
+                -- Indicator-only (streaming thinking off, or before the first fragment):
+                -- a status that flips to Done once the answer starts.
+                out[#out + 1] = turn.done and _("Thinking... Done") or _("Thinking...")
             end
         else
             out[#out + 1] = turn.text

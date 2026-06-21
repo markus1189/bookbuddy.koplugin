@@ -421,7 +421,12 @@ describe("conversation", function()
                 }),
             },
         })
-        assert.is_not_nil((chatviewer.last_text or ""):find("the butler did it", 1, true))
+        local txt = chatviewer.last_text or ""
+        assert.is_not_nil(txt:find("the butler did it", 1, true))
+        -- The live reasoning replaces the indicator outright: no "Thinking... Done"
+        -- placeholder survives alongside the streamed text.
+        assert.is_nil(txt:find("Thinking... Done", 1, true))
+        assert.is_not_nil(txt:find("Thinking: ", 1, true))
     end)
 
     it("S6b: hides the thinking text by default, keeping only the indicator", function()
