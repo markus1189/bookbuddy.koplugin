@@ -856,21 +856,35 @@ end
 -- least one API call has reported usage. cache_read/cache_write are the prompt
 -- tokens served from / written to the prompt cache (Anthropic reports them
 -- separately from input_tokens). "context" is the live window occupancy (latest
--- call only), not a cumulative -- see Conversation.context_size.
+-- call only) on its own line, not a cumulative -- see Conversation.context_size.
+-- Counts >= 1000 are abbreviated as "k" (rounded), and a context over 250k gets a
+-- flame to warn the window is filling up.
+local function abbrevTokens(n)
+    if n >= 1000 then
+        return string.format("%dk", math.floor(n / 1000 + 0.5))
+    end
+    return tostring(n)
+end
+
 function Conversation:_usageText()
     local u = self.usage
     if u.input + u.output == 0 then
         return nil
     end
-    local parts = { T(_("input %1"), u.input), T(_("output %1"), u.output) }
+    local parts = { T(_("input %1"), abbrevTokens(u.input)), T(_("output %1"), abbrevTokens(u.output)) }
     local cached = u.cache_read + u.cache_write
     if cached > 0 then
-        parts[#parts + 1] = T(_("cached %1"), cached)
+        parts[#parts + 1] = T(_("cached %1"), abbrevTokens(cached))
     end
+    local line = T(_("[tokens — %1]"), table.concat(parts, ", "))
     if self.context_size > 0 then
-        parts[#parts + 1] = T(_("context %1"), self.context_size)
+        local ctx = T(_("[context — %1]"), abbrevTokens(self.context_size))
+        if self.context_size > 250000 then
+            ctx = ctx .. " 🔥"
+        end
+        line = line .. "\n" .. ctx
     end
-    return T(_("[tokens — %1]"), table.concat(parts, ", "))
+    return line
 end
 
 -- Show (or re-show) the viewer in streaming mode, i.e. with a Stop button. A

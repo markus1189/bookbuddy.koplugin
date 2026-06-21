@@ -47,7 +47,8 @@ BookBuddy: Septimus is the shell-shocked veteran whose day runs in parallel to
 Clarissa's. He matters here because the novel keeps cutting between them to set
 his unraveling against her party-planning… (plain prose, nothing past page 142)
 
-[tokens — input 9120, output 274, cached 7680]
+[tokens — input 9k, output 274, cached 8k]
+[context — 17k]
 ```
 
 ## What it does

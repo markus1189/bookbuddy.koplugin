@@ -340,7 +340,25 @@ describe("conversation", function()
         assert.are.equal(20, conv.usage.input)
         assert.are.equal(40, conv.usage.output)
         assert.are.equal(30, conv.context_size)
-        assert.is_not_nil(conv:_usageText():find("context 30", 1, true))
+        assert.is_not_nil(conv:_usageText():find("[context — 30]", 1, true))
+    end)
+
+    it("U2: the footer abbreviates thousands as k and flags a context over 250k", function()
+        local conv = run({
+            responses = { sse.buildTurnSSE({ blocks = { { type = "text", text = "Hi." } } }) },
+        })
+        conv.usage.input = 156888
+        conv.context_size = 156888
+        local text = conv:_usageText()
+        assert.is_not_nil(text:find("input 157k", 1, true))
+        assert.is_not_nil(text:find("[context — 157k]", 1, true))
+        -- context line is its own line, distinct from the cumulative token line.
+        assert.is_not_nil(text:find("]\n[", 1, true))
+        assert.is_nil(text:find("🔥", 1, true))
+
+        conv.context_size = 251000
+        text = conv:_usageText()
+        assert.is_not_nil(text:find("[context — 251k] 🔥", 1, true))
     end)
 
     it("S6: pauses do not consume the substantive turn budget", function()
