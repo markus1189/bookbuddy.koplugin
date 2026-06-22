@@ -551,7 +551,18 @@ local function tool_get_highlights(ui, input)
     if total == 0 then
         return "This book has no highlights or notes yet.", _("none yet")
     end
-    local max_results = math.min(tonumber(input.max_results) or DEFAULT_HIGHLIGHTS, MAX_HIGHLIGHTS)
+    -- A present max_results must be a whole number >= 1: 0/negative would make the loop
+    -- below show nothing while the header still announces the full total. Reject it
+    -- explicitly rather than silently coalescing (mirrors grep's identical guard).
+    -- Over-asking is fine and still clamps to MAX_HIGHLIGHTS.
+    local max_results = DEFAULT_HIGHLIGHTS
+    if input.max_results ~= nil then
+        local n = tonumber(input.max_results)
+        if not n or n < 1 or n ~= math.floor(n) then
+            return string.format("Error: 'max_results' must be a whole number >= 1 (max %d).", MAX_HIGHLIGHTS)
+        end
+        max_results = math.min(n, MAX_HIGHLIGHTS)
+    end
     local out, shown = {}, 0
     for i = 1, total do
         if shown >= max_results then

@@ -45,6 +45,23 @@ describe("get_highlights (pure)", function()
         assert.is_nil(out:match("showing first"))
     end)
 
+    it("rejects a present-but-invalid max_results instead of reporting an empty list", function()
+        local anns = {
+            { text = "first", pageno = 10 },
+            { text = "second", pageno = 20 },
+        }
+        local ui = makeHlUI(anns)
+        -- 0 would clamp the loop to show nothing while the header still claims 2 total.
+        assert.truthy(Tools.execute("get_highlights", { max_results = 0 }, ui):find("whole number >= 1", 1, true))
+        -- negative and fractional are rejected the same way.
+        assert.truthy(Tools.execute("get_highlights", { max_results = -3 }, ui):find("whole number >= 1", 1, true))
+        assert.truthy(Tools.execute("get_highlights", { max_results = 1.5 }, ui):find("whole number >= 1", 1, true))
+        -- over-asking is not an error: it still clamps and lists everything, like grep.
+        local big = Tools.execute("get_highlights", { max_results = 999 }, ui)
+        assert.truthy(big:find('"first"', 1, true))
+        assert.truthy(big:find('"second"', 1, true))
+    end)
+
     it("clamps to max_results and reports the shown-vs-total split", function()
         local anns = {
             { text = "first", pageno = 10 },
