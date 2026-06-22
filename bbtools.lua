@@ -247,7 +247,12 @@ local function tool_grep(ui, input)
     -- model could create_highlight{search_result=N} a hit it never saw. Sizing the budget
     -- to fit keeps every shown hit visible (truncate() at the end stays as a backstop).
     -- 200 reserves the header/trailer; 40 covers the per-line "N. [page P] (loc:N) …" frame.
-    local snippet_budget = math.max(MIN_SNIPPET_CHARS, math.floor((MAX_RESULT_CHARS - 200) / limit) - 40)
+    -- Guard limit==0 (every visible hit was capped away as a spoiler): dividing by it yields
+    -- inf, harmless only because the loop below never runs -- don't lean on that accident.
+    local snippet_budget = MIN_SNIPPET_CHARS
+    if limit > 0 then
+        snippet_budget = math.max(MIN_SNIPPET_CHARS, math.floor((MAX_RESULT_CHARS - 200) / limit) - 40)
+    end
     for i = 1, limit do
         local item = visible[i]
         shown[i] = item

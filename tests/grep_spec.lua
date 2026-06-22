@@ -79,6 +79,24 @@ describe("grep (pure)", function()
         assert.truthy(summary:find("match", 1, true))
     end)
 
+    it("reports the all-hidden case when every hit is past the current page", function()
+        -- limit==0: nothing visible survives the spoiler cap, so grep takes the early
+        -- all-hidden return and never enters the snippet loop (where the budget is sized).
+        local ui = makeGrepUI({
+            current_page = 5,
+            hits = {
+                { start = "a", matched_text = "later" },
+                { start = "b", matched_text = "latest" },
+            },
+            page_of = { a = 15, b = 29 },
+        })
+        local text, summary = Tools.execute("grep", { query = "Verona" }, ui)
+        assert.truthy(text:find("2 match(es) hidden", 1, true))
+        assert.is_nil(text:find("[page 15]", 1, true)) -- no later-page hit leaks
+        assert.is_nil(text:find("[page 29]", 1, true))
+        assert.are.equal("all hidden", summary)
+    end)
+
     it("reveals every hit and omits the trailer when spoiler=true", function()
         local ui = makeGrepUI({
             current_page = 10,
