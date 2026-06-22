@@ -17,6 +17,7 @@ local FINDALL_CONTEXT_WORDS = 10
 local FINDALL_MAX_HITS = 5000
 local DEFAULT_HIGHLIGHTS = 100
 local MAX_HIGHLIGHTS = 500
+local MIN_SNIPPET_CHARS = 80 -- per-result snippet floor so a full max_results page stays readable
 
 local function truncate(text, limit)
     limit = limit or MAX_RESULT_CHARS
@@ -186,7 +187,19 @@ local function tool_grep(ui, input)
     local regex = input.regex == true
     local context = input.context == "sentence" and "sentence" or "words"
     local spoiler = input.spoiler == true
-    local max_results = math.min(tonumber(input.max_results) or DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS)
+    -- A present max_results must be a whole number >= 1: 0/negative would make
+    -- limit = min(#visible, 0) = 0 and report "No matches" while hits exist, so we
+    -- reject it explicitly rather than silently coalescing. Over-asking is fine and
+    -- still clamps to MAX_SEARCH_RESULTS (the schema's "max 20") -- not a mistake
+    -- worth a failure round-trip.
+    local max_results = DEFAULT_SEARCH_RESULTS
+    if input.max_results ~= nil then
+        local n = tonumber(input.max_results)
+        if not n or n < 1 or n ~= math.floor(n) then
+            return string.format("Error: 'max_results' must be a whole number >= 1 (max %d).", MAX_SEARCH_RESULTS)
+        end
+        max_results = math.min(n, MAX_SEARCH_RESULTS)
+    end
 
     local results = findPassageMatches(ui, query, regex)
     if not results or #results == 0 then
@@ -228,6 +241,13 @@ local function tool_grep(ui, input)
     -- minted loc token, so create_highlight{search_result=i} and the loc:N agree.
     local shown, out = {}, {}
     local limit = math.min(#visible, max_results)
+    -- Bound each snippet so all `limit` lines fit under MAX_RESULT_CHARS. Without this a
+    -- few long sentence-context hits would blow the budget and the final truncate() would
+    -- chop tail lines mid-string -- yet their loc tokens were already minted below, so the
+    -- model could create_highlight{search_result=N} a hit it never saw. Sizing the budget
+    -- to fit keeps every shown hit visible (truncate() at the end stays as a backstop).
+    -- 200 reserves the header/trailer; 40 covers the per-line "N. [page P] (loc:N) …" frame.
+    local snippet_budget = math.max(MIN_SNIPPET_CHARS, math.floor((MAX_RESULT_CHARS - 200) / limit) - 40)
     for i = 1, limit do
         local item = visible[i]
         shown[i] = item
@@ -239,6 +259,10 @@ local function tool_grep(ui, input)
         else
             snippet = snippetWindow(item)
         end
+        -- Plain byte-sub (not truncate(): its "\n…[truncated]" marker would split this
+        -- one-liner). The format already frames the snippet in …%s…, so a hard cut reads
+        -- as ordinary context elision. Byte-splitting a multibyte char mirrors truncate().
+        snippet = snippet:sub(1, snippet_budget)
         out[#out + 1] = string.format("%d. [page %s] (%s) …%s…", i, tostring(item._page), tok, snippet)
     end
     ui._bookbuddy_last_search = { query = query, items = shown }
@@ -251,7 +275,17 @@ local function tool_grep(ui, input)
         return string.format("No matches found for %q.", query), _("no matches")
     end
 
-    local header = string.format("Found %d match(es) for %q (showing up to %d):", #shown, query, max_results)
+    -- Report shown-of-available, not the bogus "up to max_results". When more visible hits
+    -- exist than we printed, say so and point at max_results -- those over-the-limit hits are
+    -- otherwise dropped with no trailer (the hidden-count below is a different, spoiler-only
+    -- population).
+    local header
+    if #visible > #shown then
+        header =
+            string.format("Showing %d of %d match(es) for %q (raise max_results for more):", #shown, #visible, query)
+    else
+        header = string.format("Found %d match(es) for %q:", #shown, query)
+    end
     table.insert(out, 1, header)
     if hidden > 0 and not spoiler then
         out[#out + 1] =

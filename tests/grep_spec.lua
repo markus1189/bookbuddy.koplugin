@@ -150,6 +150,87 @@ describe("grep (pure)", function()
         assert.truthy(text:find("hidden", 1, true)) -- only counted
     end)
 
+    it("rejects a present-but-invalid max_results instead of silently reporting no matches", function()
+        local function grep(mr)
+            local ui = makeGrepUI({ hits = { { start = "a", matched_text = "hit" } }, page_of = { a = 1 } })
+            return Tools.execute("grep", { query = "q", max_results = mr }, ui)
+        end
+        for _, bad in ipairs({ 0, -1, 2.5 }) do
+            local out = grep(bad)
+            assert.truthy(out:find("'max_results' must be a whole number", 1, true))
+            assert.is_nil(out:find("No matches", 1, true)) -- the false-negative we are guarding against
+        end
+    end)
+
+    it("clamps an over-large max_results to the cap rather than erroring", function()
+        local ui = makeGrepUI({ hits = { { start = "a", matched_text = "hit" } }, page_of = { a = 1 } })
+        local out = Tools.execute("grep", { query = "q", max_results = 100 }, ui)
+        assert.is_nil(out:find("must be a whole number", 1, true)) -- over-asking is allowed
+        assert.truthy(out:find("1. [page 1]", 1, true)) -- and the hit is returned
+    end)
+
+    it("reports shown-of-available and points at max_results when visible hits exceed it", function()
+        local hits, page_of = {}, {}
+        for i = 1, 5 do
+            local xp = "h" .. i
+            hits[i] = { start = xp, matched_text = "m" .. i }
+            page_of[xp] = i
+        end
+        local ui = makeGrepUI({ current_page = 100, hits = hits, page_of = page_of })
+        local text = Tools.execute("grep", { query = "q", max_results = 2 }, ui)
+        assert.truthy(text:find("Showing 2 of 5 match(es)", 1, true))
+        assert.truthy(text:find("raise max_results", 1, true))
+        assert.truthy(text:find("2. [page 2]", 1, true)) -- exactly two lines printed
+        assert.is_nil(text:find("3. [page 3]", 1, true))
+    end)
+
+    it("uses the plain 'Found N' header when nothing is dropped", function()
+        local ui = makeGrepUI({ current_page = 100, hits = { { start = "a", matched_text = "x" } }, page_of = { a = 1 } })
+        local text = Tools.execute("grep", { query = "solo", ["max_page"] = nil }, ui)
+        assert.truthy(text:find('Found 1 match(es) for "solo":', 1, true))
+        assert.is_nil(text:find("Showing", 1, true))
+    end)
+
+    it("budgets each snippet so a full page of long hits never trips the final truncate", function()
+        local long = string.rep("verona ", 2000) -- ~14k chars per hit, far over MAX_RESULT_CHARS alone
+        local hits, page_of = {}, {}
+        for i = 1, 8 do
+            local xp = "h" .. i
+            hits[i] = { start = xp, matched_text = long }
+            page_of[xp] = i
+        end
+        local ui = makeGrepUI({ current_page = 100, hits = hits, page_of = page_of })
+        local text = Tools.execute("grep", { query = "verona" }, ui) -- default max_results = 8
+        assert.is_nil(text:find("[truncated]", 1, true)) -- per-result budget kept us under the backstop…
+        assert.truthy(text:find("8. [page 8]", 1, true)) -- …so every one of the 8 hits stays visible
+        assert.truthy(#text <= 6000) -- and the whole result fits MAX_RESULT_CHARS
+    end)
+
+    it("budgets sentence-context snippets too", function()
+        local long = string.rep("a sentence that runs on. ", 1000)
+        local ui = {
+            rolling = {},
+            view = { state = { page = 100 } },
+            document = {
+                getCurrentPage = function()
+                    return 100
+                end,
+                findAllText = function()
+                    return { { start = "a", ["end"] = "b", matched_text = "x" } }
+                end,
+                getPageFromXPointer = function()
+                    return 1
+                end,
+                extendXPointersToSentenceSegment = function()
+                    return { text = long, pos0 = "a", pos1 = "b" }
+                end,
+            },
+        }
+        local text = Tools.execute("grep", { query = "q", context = "sentence" }, ui)
+        assert.is_nil(text:find("[truncated]", 1, true))
+        assert.truthy(#text <= 6000)
+    end)
+
     it("reports no matches for an empty result set", function()
         local ui = makeGrepUI({ hits = {} })
         local text, summary = Tools.execute("grep", { query = "ghost" }, ui)
