@@ -52,6 +52,12 @@ local DEFAULTS = {
     additional_system_prompt = "",
 }
 
+-- Upper bound on subagent_max_turns at resolve time. The setting is a free number
+-- field (see the menu), so a mistyped large value would otherwise let one delegation
+-- grind dozens of double-billed tool rounds; cap it the way max_tokens/max_turns are
+-- floored. Generous enough that no realistic research task hits it.
+local SUBAGENT_MAX_TURNS_CEILING = 20
+
 local Settings = {}
 Settings.__index = Settings
 
@@ -88,7 +94,13 @@ function Settings:getConfig()
         show_streaming_thinking = self:get("show_streaming_thinking") and true or false,
         enable_web_search = self:get("enable_web_search") and true or false,
         enable_subagents = self:get("enable_subagents") and true or false,
-        subagent_max_turns = math.max(1, tonumber(self:get("subagent_max_turns")) or DEFAULTS.subagent_max_turns),
+        subagent_max_turns = math.max(
+            1,
+            math.min(
+                SUBAGENT_MAX_TURNS_CEILING,
+                tonumber(self:get("subagent_max_turns")) or DEFAULTS.subagent_max_turns
+            )
+        ),
     }
 end
 

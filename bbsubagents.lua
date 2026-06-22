@@ -76,7 +76,7 @@ end
 
 -- Run one delegated sub-task to completion and return (text, err): the child's final
 -- condensed answer, or (nil, message) when it could not produce one. o:
---   ui, settings, cfg     shared live context + config
+--   ui, cfg               shared live context + resolved config
 --   task                  the natural-language sub-task
 --   allow_spoiler         when true, the per-call input scrub is relaxed (D7)
 --   depth                 delegation depth (parent passes 1); > MAX_SUBAGENT_DEPTH refused
@@ -100,6 +100,15 @@ function Subagents.runSubagent(o)
     if depth > MAX_SUBAGENT_DEPTH then
         logger.warn("BookBuddy: subagent depth", depth, "exceeds limit; refusing to recurse")
         return nil, "A helper agent cannot start another helper agent."
+    end
+
+    -- Refuse an empty task before forking a stream. `task` is required by the schema,
+    -- but the gateway may not enforce it; a blank task would otherwise seed an empty
+    -- <task></task> and burn a full round-trip on nothing. Like the depth guard above,
+    -- this returns before any stream is forked.
+    task = task:match("^%s*(.-)%s*$") or ""
+    if task == "" then
+        return nil, "The delegated task was empty."
     end
 
     local max_turns = math.max(1, tonumber(cfg and cfg.subagent_max_turns) or DEFAULT_CHILD_MAX_TURNS)

@@ -896,7 +896,6 @@ function Conversation:_runDelegate(tu, cfg)
     local saved_cancel = self._cancel
     local text, err = Subagents.runSubagent({
         ui = self.ui,
-        settings = self.settings,
         cfg = cfg,
         task = input.task,
         allow_spoiler = input.allow_spoiler == true,

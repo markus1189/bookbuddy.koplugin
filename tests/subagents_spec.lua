@@ -171,6 +171,17 @@ describe("subagent driver", function()
         assert.are.equal(0, fake.idx, "depth-refused delegation must not fork a stream")
     end)
 
+    it("refuses a blank task and forks no stream", function()
+        fake:reset({})
+        -- A whitespace-only task is treated as empty: trimmed, then refused before any
+        -- stream is forked (the gateway may not enforce the schema's required `task`).
+        local text, err = Subagents.runSubagent({ ui = {}, settings = stubSettings, cfg = cfg, task = "   ", depth = 1 })
+        assert.is_nil(text)
+        assert.is_truthy(err)
+        assert.are.equal(0, fake.idx, "an empty-task delegation must not fork a stream")
+        assert.are.equal(0, #rec.calls, "an empty-task delegation must not run any tools")
+    end)
+
     it("stops at the turn limit and returns the best text so far", function()
         cfg.subagent_max_turns = 1
         -- With a 1-round budget the only round drops the tools, so the child answers
