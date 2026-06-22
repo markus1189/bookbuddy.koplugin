@@ -444,6 +444,11 @@ local function tool_read(ui, input)
         -- i.e. ~= 1, so stop. Skipped (limit_xp nil) when spoiler=true.
         if limit_xp and doc:compareXPointers(xp_end, limit_xp) ~= 1 then
             clamped = true
+            -- The previous step set xp_end = nxt, and a word-end can land PAST limit_xp
+            -- (page boundaries aren't word-aligned), so xp_end may have overshot into the
+            -- next page. Trim it back to limit_xp so the extracted chunk below never
+            -- crosses the boundary -- otherwise the first word of the next page leaks.
+            xp_end = limit_xp
             break
         end
         local nxt = doc:getNextVisibleWordEnd(xp_end)

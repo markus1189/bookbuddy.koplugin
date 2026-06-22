@@ -107,6 +107,49 @@ describe("read guards (pure)", function()
             assert.is_nil(out:match("from: loc:%d"))
         end)
 
+        it("trims a word-end that overshoots the page boundary (no spoiler leak)", function()
+            -- Page boundaries are not word-aligned in real books: the last step before
+            -- the next page lands PAST it. Model that with words on a 300-grid and pages
+            -- on a 1000-grid (10000..10300..10600..10900..11200), so the final step jumps
+            -- from 10900 (page 10) clean over limit_xp=11000 to 11200 (page 11). The
+            -- extracted text reports "page11" whenever the range crosses 11000.
+            local ui = {
+                rolling = {},
+                view = { state = { page = 10 } },
+                document = {
+                    info = { has_pages = false },
+                    getCurrentPage = function()
+                        return 10
+                    end,
+                    getPageCount = function()
+                        return 100
+                    end,
+                    getPageXPointer = function(_, p)
+                        return p * 1000
+                    end,
+                    getPageFromXPointer = function(_, xp)
+                        return math.floor(xp / 1000)
+                    end,
+                    getNextVisibleWordEnd = function(_, xp)
+                        local n = xp + 300
+                        return n <= 20000 and n or nil
+                    end,
+                    compareXPointers = function(_, a, b)
+                        return b > a and 1 or (b < a and -1 or 0)
+                    end,
+                    getTextFromXPointers = function(_, a, b)
+                        if not (a and b) or b <= a then
+                            return ""
+                        end
+                        return b > 11000 and "page10 SPOILER-page11" or "page10"
+                    end,
+                },
+            }
+            local out = Tools.execute("read", {}, ui)
+            assert.truthy(out:find("Stopped at your current page", 1, true)) -- still clamps
+            assert.is_nil(out:find("SPOILER", 1, true)) -- the overshot next-page word is trimmed
+        end)
+
         it("spoiler=true lifts both the refuse and the clamp", function()
             local refused = Tools.execute("read", { from = "100", spoiler = true }, steppingUI(10))
             assert.is_nil(refused:find("past where you are", 1, true))
