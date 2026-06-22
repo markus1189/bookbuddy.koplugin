@@ -275,7 +275,12 @@ function Store:_strReplace(input)
     if not real then
         return err
     end
-    if lfs.attributes(real, "mode") ~= "file" then
+    local mode = lfs.attributes(real, "mode")
+    if mode == "directory" then
+        -- Distinct from missing: ~= "file" alone would mislabel a real directory as
+        -- nonexistent (mirrors _view, which already separates the two cases).
+        return T("Error: The path %1 is a directory, not a file.", vpath)
+    elseif mode ~= "file" then
         return T("Error: The path %1 does not exist. Please provide a valid path.", vpath)
     end
     local old_str = input.old_str
@@ -325,7 +330,10 @@ function Store:_insert(input)
     if not real then
         return err
     end
-    if lfs.attributes(real, "mode") ~= "file" then
+    local mode = lfs.attributes(real, "mode")
+    if mode == "directory" then
+        return T("Error: The path %1 is a directory, not a file.", vpath)
+    elseif mode ~= "file" then
         return T("Error: The path %1 does not exist", vpath)
     end
     local content = util.readFromFile(real) or ""

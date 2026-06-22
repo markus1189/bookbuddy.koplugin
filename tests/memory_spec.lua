@@ -182,6 +182,26 @@ describe("bbmemory Store", function()
             assert.is_not_nil(r:find("Multiple occurrences", 1, true))
         end)
 
+        it("distinguishes a directory path from a missing one (str_replace/insert)", function()
+            -- Creating a nested note materializes its parent as a real on-disk directory.
+            store:execute({ command = "create", path = "/memories/dir/note.md", file_text = "x" })
+
+            local sr = store:execute({ command = "str_replace", path = "/memories/dir", old_str = "x", new_str = "y" })
+            assert.is_nil(sr:find("does not exist", 1, true)) -- the directory DOES exist
+            assert.is_not_nil(sr:find("is a directory", 1, true))
+
+            local ins =
+                store:execute({ command = "insert", path = "/memories/dir", insert_line = 0, insert_text = "z" })
+            assert.is_nil(ins:find("does not exist", 1, true))
+            assert.is_not_nil(ins:find("is a directory", 1, true))
+
+            -- A genuinely missing path still reports "does not exist", not "is a directory".
+            local miss =
+                store:execute({ command = "str_replace", path = "/memories/ghost.md", old_str = "x", new_str = "y" })
+            assert.is_not_nil(miss:find("does not exist", 1, true))
+            assert.is_nil(miss:find("is a directory", 1, true))
+        end)
+
         it("reports an unknown command", function()
             assert.is_not_nil(store:execute({ command = "frobnicate" }):find("unknown memory command", 1, true))
         end)
