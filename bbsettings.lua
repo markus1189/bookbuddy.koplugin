@@ -44,8 +44,9 @@ local DEFAULTS = {
     -- only pays off on genuinely wide exploration. When off, the tool is not advertised.
     enable_subagents = false,
     -- How many tool rounds a delegated child may take before it must answer in text.
-    -- Kept low to bound the additive latency and token cost of a delegation.
-    subagent_max_turns = 6,
+    -- Bounded (well under SUBAGENT_MAX_TURNS_CEILING) so one delegation can't grind
+    -- unbounded double-billed rounds, but generous enough for genuinely wide research.
+    subagent_max_turns = 12,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.

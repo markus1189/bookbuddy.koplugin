@@ -23,9 +23,10 @@ local logger = require("logger")
 local Subagents = {}
 
 -- A child may read across several rounds, bounded so a wandering task cannot run
--- forever. The last round drops the tools so the child must answer in text. ~6
--- mirrors the default-off, low-token rollout; overridable via cfg.subagent_max_turns.
-local DEFAULT_CHILD_MAX_TURNS = 6
+-- forever. The last round drops the tools so the child must answer in text. This is
+-- only the fallback when cfg carries no value; the live default is set in bbsettings
+-- (subagent_max_turns) and overridable per-user. Keep the two in sync.
+local DEFAULT_CHILD_MAX_TURNS = 12
 
 -- Only the first level of delegation is allowed. The PRIMARY bound is that the child
 -- has no delegate tool (childSpecs strips it, so the model cannot emit one); this
