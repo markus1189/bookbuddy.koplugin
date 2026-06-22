@@ -46,6 +46,41 @@ describe("read guards (pure)", function()
         assert.truthy(Tools.execute("read", { from = "@@@" }, reflowableUI()):find("stale"))
     end)
 
+    it("treats a locator whose xpointer is gone as stale when there's no current page", function()
+        -- Layout change dropped the xpointer out of the document AND the reader has no
+        -- current page to degrade to. Without the guard, read minted "resuming from page
+        -- nil" / a nil start and surfaced a bogus "Nothing further to read".
+        local ui = {
+            rolling = {},
+            view = { state = {} },
+            _bookbuddy_locators = { { kind = "point", xp = "oldxp" } },
+            _bookbuddy_loc_seq = 1,
+            document = {
+                info = { has_pages = false },
+                getCurrentPage = function()
+                    return nil -- no resolvable current page
+                end,
+                getPageCount = function()
+                    return 100
+                end,
+                isXPointerInDocument = function()
+                    return false -- the stored xpointer no longer exists
+                end,
+                getPageFromXPointer = function()
+                    return nil -- ...and it maps to no page
+                end,
+                getPageXPointer = noop,
+                getNextVisibleWordEnd = noop,
+                compareXPointers = noop,
+                getTextFromXPointers = noop,
+            },
+        }
+        local out = Tools.execute("read", { from = "loc:1" }, ui)
+        assert.truthy(out:find("stale", 1, true))
+        assert.is_nil(out:find("Nothing further", 1, true))
+        assert.is_nil(out:find("page nil", 1, true))
+    end)
+
     -- A richer reflowable fake that MODELS ordered positions: page p maps to the
     -- integer xpointer p*1000, words advance +100, and a span's text is ~1 char per
     -- step. That lets the spoiler gate's refuse and clamp branches -- the most

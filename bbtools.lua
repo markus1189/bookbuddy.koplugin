@@ -381,6 +381,13 @@ local function tool_read(ui, input)
             if doc.isXPointerInDocument and not doc:isXPointerInDocument(xp) then
                 local pg = doc:getPageFromXPointer(xp)
                 pg = pg or currentPage(ui)
+                if not pg then
+                    -- The xpointer fell out of the document AND there's no current page to
+                    -- fall back to: nothing to degrade to. Report the locator stale rather
+                    -- than minting "resuming from page nil" and a nil xp_start below (which
+                    -- would surface as a bogus "Nothing further to read").
+                    return _("That locator is stale; search again or give a page.")
+                end
                 xp_start = doc:getPageXPointer(pg)
                 start_page = pg
                 prefix = T(_("(Your place shifted because the layout changed; resuming from page %1.)"), tostring(pg))
