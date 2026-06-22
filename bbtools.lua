@@ -1080,8 +1080,68 @@ function Tools.getSpecs()
             name = "web_search",
             max_uses = 5,
         },
+        -- Subagent delegation. Like web_search there is no DISPATCH executor: the
+        -- child loop needs settings/Stream/cfg that bbtools must not import (cycle),
+        -- so bbconversation special-cases this name (next to the memory branch) and
+        -- calls bbsubagents.runSubagent. Advertised to the PARENT only -- childSpecs
+        -- strips it so a child cannot recurse -- and Conversation:new removes it
+        -- entirely unless enable_subagents is on (default off).
+        {
+            name = "delegate",
+            description = "Hand a focused research sub-task to a read-only helper agent that searches "
+                .. "and reads the book on its own, then returns a single condensed summary. Use it for "
+                .. "wide, multi-step exploration -- tracing a motif or a minor character across the whole "
+                .. "book, gathering every mention of something -- so all that intermediate searching stays "
+                .. "out of our conversation. Answer simple or single-passage questions yourself instead of "
+                .. "delegating. The helper is spoiler-safe and reads only up to the reader's current page; "
+                .. "set allow_spoiler=true ONLY when the reader has explicitly asked to read ahead.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    task = {
+                        type = "string",
+                        description = "The focused research task for the helper, phrased as a clear, self-contained instruction.",
+                    },
+                    allow_spoiler = {
+                        type = "boolean",
+                        description = "Allow the helper to read past the reader's current page (default false). Set true only when the reader explicitly asked to look ahead.",
+                    },
+                },
+                required = { "task" },
+            },
+        },
     }
 end
+
+-- The read-only tool subset a subagent may use: the book-reading tools only. Every
+-- mutator (navigate/create_highlight/edit_highlight_note), web_search, and delegate
+-- itself are excluded -- the latter so a child literally cannot emit a delegate
+-- tool_use and recurse (D5/D6).
+local CHILD_TOOL_NAMES = {
+    grep = true,
+    read = true,
+    get_toc = true,
+    book_context = true,
+    get_highlights = true,
+}
+
+-- The parent's full spec list filtered down to CHILD_TOOL_NAMES, reusing the
+-- web_search-removal shape in Conversation:new (filter by name). web_search has a
+-- name too, so the whitelist drops it along with delegate and the mutators.
+function Tools.childSpecs()
+    local specs = Tools.getSpecs()
+    for i = #specs, 1, -1 do
+        local t = specs[i]
+        if not (type(t) == "table" and t.name and CHILD_TOOL_NAMES[t.name]) then
+            table.remove(specs, i)
+        end
+    end
+    return specs
+end
+
+-- The reader's live current page, exported so the subagent driver can clamp a
+-- child's reads to it (D7) without reimplementing the rolling/paging split.
+Tools.currentPage = currentPage
 
 -- Returns (result_string, summary). result_string is the tool_result content sent
 -- back to the model; summary is a short human phrase for the transcript, or nil.

@@ -26,6 +26,12 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     if cfg.enable_memory then
         system_text = system_text .. "\n\n" .. Prompts.MEMORY_PROTOCOL
     end
+    -- Only tell the parent about delegating when the feature is on -- the delegate
+    -- tool is otherwise stripped from the specs (Conversation:new), so mentioning it
+    -- would advertise a tool that isn't there.
+    if cfg.enable_subagents then
+        system_text = system_text .. "\n\n" .. Prompts.DELEGATE_NOTE
+    end
     local extra = cfg.additional_system_prompt
     if extra and extra ~= "" then
         system_text = system_text .. "\n\n<additional_system_prompt>\n" .. extra .. "\n</additional_system_prompt>"

@@ -165,8 +165,94 @@ local function classifyAttempt(r, res)
     return "terminal" -- mid-stream non-retryable error type
 end
 
+-- Coroutine-friendly backoff between retry attempts: schedule a delayed resume and
+-- yield, mirroring Stream.run's tick idiom so the UI stays live (and a Stop pressed
+-- during the wait is delivered, setting stop_requested, which the caller re-checks
+-- after we return). Exponential with jitter to avoid a thundering-herd resend.
+-- Module-level (not a method) so the subagent driver can share the exact same
+-- backoff without a Conversation instance.
+-- TODO: honor a server Retry-After header here once the child plumbs it through;
+-- the child currently only writes a status marker, not response headers (out of
+-- scope for this change).
+local function backoff(attempt)
+    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1)) + math.random() * BACKOFF_JITTER_SEC
+    local co = coroutine.running()
+    -- One-shot resume: scheduleIn fires it after the real wall-clock delay in
+    -- production. (Under the busted harness scheduleIn enqueues onto the nextTick
+    -- pump, so the resume runs synchronously and the backoff collapses to instant.)
+    local resumed = false
+    UIManager:scheduleIn(delay, function()
+        if not resumed then
+            resumed = true
+            coroutine.resume(co)
+        end
+    end)
+    coroutine.yield()
+end
+
+-- One streamed Claude call with the bounded retry/backoff/classify policy, lifted
+-- out of _loop (D4) so the parent turn loop AND the subagent driver share ONE copy
+-- of the retry semantics -- classifyAttempt and MAX_STREAM_ATTEMPTS stay the single
+-- source of truth here, never reimplemented in the child. Returns (r, res, verdict)
+-- where verdict is "ok" / "terminal" / "retry" (retries exhausted) / "stopped" (a
+-- Stop landed during a backoff). The caller owns ALL transcript / viewer / history
+-- side effects through the injected hooks, so a transcript-less child passes none:
+--   body, cfg            request body + config for the fork
+--   make_parser()        a FRESH Anthropic stream parser per attempt (the parent's
+--                        closes over its live transcript entries; the child's is bare)
+--   register_cancel(fn)  install/clear the cancel closure into the caller's _cancel slot
+--   on_attempt_done()    optional: after Stream.run returns (parent cancels its flush)
+--   on_retry(next)       optional: before the backoff (parent trims + shows "Retrying")
+--   stopped()            optional: predicate checked after a backoff; true => "stopped"
+-- This is safe to re-fork between attempts precisely because nothing durable is
+-- stored until the caller commits past the helper -- the wire history is already the
+-- resendable state to re-fork FROM, so a retry is idempotent (see _loop's callers).
+local function streamWithRetries(opts)
+    local r, res, verdict
+    for attempt = 1, MAX_STREAM_ATTEMPTS do
+        local parser = opts.make_parser()
+        r = Stream.run({
+            child_fn = Anthropic.streamChildFn(opts.body, opts.cfg),
+            on_line = function(line)
+                parser:feed(line)
+            end,
+            register_cancel = opts.register_cancel,
+        })
+        if opts.on_attempt_done then
+            opts.on_attempt_done()
+        end
+        res = parser:result()
+        verdict = classifyAttempt(r, res)
+        if verdict ~= "retry" then
+            return r, res, verdict
+        end
+        -- Retryable, and attempts remain. The caller's on_retry only trims its
+        -- live-stream display partials; the wire history is untouched and resendable.
+        if attempt < MAX_STREAM_ATTEMPTS then
+            if opts.on_retry then
+                opts.on_retry(attempt + 1)
+            end
+            backoff(attempt)
+            -- A Stop tapped during the backoff must abort instantly, never silently
+            -- consume a retry (it set the stopped() flag; there was no live stream to
+            -- cancel during the wait). Signal it and let the caller unwind.
+            if opts.stopped and opts.stopped() then
+                return r, res, "stopped"
+            end
+        end
+    end
+    return r, res, verdict -- "retry": exhausted
+end
+
 local Conversation = {}
 Conversation.__index = Conversation
+
+-- Exported for the subagent driver (bbsubagents): the child reuses the exact same
+-- single-call retry policy and backoff on the parent's coroutine, so they are not
+-- copied. classifyAttempt / MAX_STREAM_ATTEMPTS stay private (used only inside
+-- streamWithRetries), keeping one source of truth.
+Conversation.streamWithRetries = streamWithRetries
+Conversation.backoff = backoff
 
 function Conversation:new(o)
     o = o or {}
@@ -183,6 +269,17 @@ function Conversation:new(o)
         for i = #o.tool_specs, 1, -1 do
             local t = o.tool_specs[i]
             if type(t) == "table" and t.type == "web_search_20250305" then
+                table.remove(o.tool_specs, i)
+            end
+        end
+    end
+    -- Subagent delegation is opt-in (default off, like show_streaming_thinking), the
+    -- inverse polarity of web_search above: drop the delegate tool UNLESS the setting
+    -- is explicitly on, so the model is never offered a tool the feature gate disables.
+    if not (o.settings and o.settings:getConfig().enable_subagents == true) then
+        for i = #o.tool_specs, 1, -1 do
+            local t = o.tool_specs[i]
+            if type(t) == "table" and t.name == "delegate" then
                 table.remove(o.tool_specs, i)
             end
         end
@@ -375,96 +472,83 @@ function Conversation:_loop()
             self._clean_transcript_len = turn_transcript_start
         end
 
-        -- Bounded retry around the fork+parse: re-fork with a FRESH parser between
-        -- attempts. This is safe precisely because nothing is stored until
-        -- _storeAssistant below -- the only mutation an attempt makes to durable
-        -- state is the live-stream transcript entries, which _dropDanglingTail trims
-        -- back to the checkpoint before the next attempt. So a retry is idempotent.
-        local r, res
-        local last_verdict
-        for attempt = 1, MAX_STREAM_ATTEMPTS do
-            -- Fresh per-attempt closures: a retried attempt must start its streamed
-            -- entries from scratch, not append onto the aborted attempt's partials.
-            local entry, thinking_entry
-            local parser = Anthropic.newStreamParser({
-                on_thinking = function(delta)
-                    -- By default we don't surface the summarized thinking text, just a
-                    -- "Thinking..." status that flips to "Done" once the answer
-                    -- starts (or the turn finishes; see _renderAssistantTurn). The
-                    -- parser still accumulates the fragments onto the content block
-                    -- for resend -- this transcript entry is display-only. When the
-                    -- reader opts into show_streaming_thinking (off by default, it can
-                    -- spoil unread plot), we stream the text into the entry, and the
-                    -- render replaces the indicator with the live reasoning entirely.
-                    local first = not thinking_entry
-                    if first then
-                        thinking_entry = { role = "thinking", done = false }
-                        self.transcript[#self.transcript + 1] = thinking_entry
-                    end
-                    if cfg.show_streaming_thinking and delta and delta ~= "" then
-                        thinking_entry.text = (thinking_entry.text or "") .. delta
-                    end
-                    -- Paint the first fragment immediately so streamed reasoning shows up
-                    -- the instant it starts rather than a throttle window later; the rest
-                    -- coalesce at one repaint per window to spare the e-ink panel.
-                    if first then
-                        self:_flushNow()
-                    else
+        -- Bounded retry around the fork+parse, via the shared streamWithRetries
+        -- helper (also driving the subagent loop). The make_parser hook rebuilds the
+        -- live transcript entries FRESH per attempt (a retried attempt must not append
+        -- onto an aborted attempt's partials); on_retry trims those partials back to
+        -- the checkpoint and shows the "Retrying" status -- _dropDanglingTail, which
+        -- would unwind the whole in-flight round, is reserved for the give-up exits
+        -- below. This is safe precisely because nothing is stored until
+        -- _storeAssistant past the helper, so the wire history is already the
+        -- resendable state we re-fork FROM (a committed [assistant tool_use][user
+        -- tool_result] pair must be RESENT, not dropped).
+        local r, res, verdict = streamWithRetries({
+            body = body,
+            cfg = cfg,
+            make_parser = function()
+                local entry, thinking_entry
+                return Anthropic.newStreamParser({
+                    on_thinking = function(delta)
+                        -- By default we don't surface the summarized thinking text, just a
+                        -- "Thinking..." status that flips to "Done" once the answer
+                        -- starts (or the turn finishes; see _renderAssistantTurn). The
+                        -- parser still accumulates the fragments onto the content block
+                        -- for resend -- this transcript entry is display-only. When the
+                        -- reader opts into show_streaming_thinking (off by default, it can
+                        -- spoil unread plot), we stream the text into the entry, and the
+                        -- render replaces the indicator with the live reasoning entirely.
+                        local first = not thinking_entry
+                        if first then
+                            thinking_entry = { role = "thinking", done = false }
+                            self.transcript[#self.transcript + 1] = thinking_entry
+                        end
+                        if cfg.show_streaming_thinking and delta and delta ~= "" then
+                            thinking_entry.text = (thinking_entry.text or "") .. delta
+                        end
+                        -- Paint the first fragment immediately so streamed reasoning shows up
+                        -- the instant it starts rather than a throttle window later; the rest
+                        -- coalesce at one repaint per window to spare the e-ink panel.
+                        if first then
+                            self:_flushNow()
+                        else
+                            self:_scheduleFlush()
+                        end
+                    end,
+                    on_text = function(t)
+                        if thinking_entry then
+                            thinking_entry.done = true
+                        end
+                        if not entry then
+                            entry = { role = "assistant", text = "" }
+                            self.transcript[#self.transcript + 1] = entry
+                        end
+                        entry.text = entry.text .. t
                         self:_scheduleFlush()
-                    end
-                end,
-                on_text = function(t)
-                    if thinking_entry then
-                        thinking_entry.done = true
-                    end
-                    if not entry then
-                        entry = { role = "assistant", text = "" }
-                        self.transcript[#self.transcript + 1] = entry
-                    end
-                    entry.text = entry.text .. t
-                    self:_scheduleFlush()
-                end,
-            })
-
-            r = Stream.run({
-                child_fn = Anthropic.streamChildFn(body, cfg),
-                on_line = function(line)
-                    parser:feed(line)
-                end,
-                register_cancel = function(fn)
-                    self._cancel = fn
-                end,
-            })
-            self:_cancelFlush()
-            res = parser:result()
-
-            last_verdict = classifyAttempt(r, res)
-            if last_verdict ~= "retry" then
-                break
-            end
-            -- Retryable, and attempts remain. Nothing was stored this attempt (storing
-            -- only happens at _storeAssistant, past the loop), so the wire history is
-            -- already the resendable state we want to re-fork FROM -- in particular a
-            -- committed [assistant tool_use][user tool_result] pair must be RESENT, not
-            -- dropped. So between attempts we only trim the transcript's live-stream
-            -- partials back to the checkpoint; _dropDanglingTail (which would unwind the
-            -- whole in-flight round) is reserved for the give-up exits below. Then back
-            -- off (UI-live, cancellable) before the next attempt.
-            if attempt < MAX_STREAM_ATTEMPTS then
+                    end,
+                })
+            end,
+            register_cancel = function(fn)
+                self._cancel = fn
+            end,
+            on_attempt_done = function()
+                self:_cancelFlush()
+            end,
+            on_retry = function(next_attempt)
                 self:_trimTranscript()
-                self:_showRetryStatus(attempt + 1)
-                self:_backoff(attempt)
-                -- A Stop tapped during the backoff must abort instantly, like a Stop
-                -- during a live stream -- never silently consume a retry. The Stop
-                -- button sets stop_requested (it has no live stream to _cancel during
-                -- a backoff), which _backoff's resume picks up here.
-                if self.stop_requested then
-                    self:_dropDanglingTail()
-                    self:_closeViewer()
-                    UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
-                    return
-                end
-            end
+                self:_showRetryStatus(next_attempt)
+            end,
+            stopped = function()
+                return self.stop_requested
+            end,
+        })
+
+        -- A Stop tapped during a backoff aborted the retry loop. Same cleanup as the
+        -- live-stream cancel below: roll the dangling tail back, close, and report.
+        if verdict == "stopped" then
+            self:_dropDanglingTail()
+            self:_closeViewer()
+            UIManager:show(InfoMessage:new({ text = _("BookBuddy request cancelled.") }))
+            return
         end
 
         -- Cancel is terminal and instant: a user Stop during the live stream.
@@ -475,7 +559,7 @@ function Conversation:_loop()
             return
         end
 
-        if last_verdict == "retry" then
+        if verdict == "retry" then
             -- Retries exhausted. An empty-200 still falls through to the placeholder
             -- branch below (res.ok stays true); a read_error / incomplete / retryable
             -- error reaches here non-ok -> surface the failure and roll back.
@@ -490,7 +574,7 @@ function Conversation:_loop()
                 end
                 return
             end
-        elseif last_verdict == "terminal" then
+        elseif verdict == "terminal" then
             -- A non-retryable failure (4xx the gateway rejects every time, an
             -- auth/not-found error, or a non-retryable mid-stream error type).
             logger.warn("BookBuddy: API error", res.code, res.error_message, res.error_body)
@@ -587,6 +671,8 @@ function Conversation:_loop()
                 local result, summary
                 if tu.name == "memory" and self.memory then
                     result = self.memory:execute(tu.input)
+                elseif tu.name == "delegate" then
+                    result, summary = self:_runDelegate(tu, cfg)
                 else
                     result, summary = Tools.execute(tu.name, tu.input, self.ui)
                 end
@@ -734,6 +820,8 @@ function Conversation:_toolActionPhrase(tu)
         phrase = self:_navigatePhrase(input)
     elseif tu.name == "memory" then
         phrase = self:_memoryPhrase(input)
+    elseif tu.name == "delegate" then
+        phrase = T(_("Researching: %1…"), input.task or "")
     else
         phrase = T(_("Used %1"), tu.name)
     end
@@ -784,6 +872,50 @@ function Conversation:_memoryPhrase(input)
         return _("Renamed a memory note")
     end
     return _("Used memory")
+end
+
+-- Run a `delegate` tool call: hand the sub-task to a read-only child agent and
+-- return (tool_result_string, summary). Returns a recoverable error string (never
+-- raises) so a child failure or Stop becomes an ordinary tool_result the parent's
+-- next round can react to, rather than crashing the conversation.
+--
+-- Reentrancy invariant (LOAD-BEARING): this runs only at the tool-dispatch site,
+-- which is reached only AFTER the parent's own stream has fully returned -- the
+-- coroutine is parked at an ordinary call site, never mid-yield -- so a NESTED
+-- Stream.run inside runSubagent is legal. The child reuses THIS coroutine and MUST
+-- NOT spin its own Trapper:wrap (two Trapper coroutines both scheduling UIManager
+-- ticks deadlock). If a future change moves delegation onto a path that can yield
+-- before reaching here, that nested stream would deadlock the child.
+function Conversation:_runDelegate(tu, cfg)
+    local Subagents = require("bbsubagents") -- lazy: avoids a bbconversation<->bbsubagents cycle
+    local input = tu.input or {}
+    -- The child stream installs its cancel closure into the single _cancel slot via
+    -- set_cancel; save/restore the parent's slot around the run (it is nil during a
+    -- tool call, but be explicit) so a Stop aborts the child and unwinds here. A Stop
+    -- also sets self.stop_requested, which the loop's next UI-boundary yield honors.
+    local saved_cancel = self._cancel
+    local text, err = Subagents.runSubagent({
+        ui = self.ui,
+        settings = self.settings,
+        cfg = cfg,
+        task = input.task,
+        allow_spoiler = input.allow_spoiler == true,
+        depth = (self._subagent_depth or 0) + 1,
+        stop = function()
+            return self.stop_requested
+        end,
+        set_cancel = function(fn)
+            self._cancel = fn
+        end,
+        on_status = function() end,
+    })
+    self._cancel = saved_cancel
+    if text and text ~= "" then
+        return text, _("done")
+    end
+    -- A recoverable failure: feed the model a plain note so it can apologize or try
+    -- another approach, instead of treating a missing answer as a complete one.
+    return T(_("The delegated task did not complete: %1"), tostring(err or _("unknown error"))), _("failed")
 end
 
 -- Re-render this turn's assistant content into the transcript in block order,
@@ -972,29 +1104,6 @@ function Conversation:_showRetryStatus(attempt)
         local status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(MAX_STREAM_ATTEMPTS))
         ChatViewer.updateText(self.viewer, self:_transcriptText() .. "\n\n" .. status, true)
     end
-end
-
--- Coroutine-friendly backoff between retry attempts: schedule a delayed resume and
--- yield, mirroring Stream.run's tick idiom so the UI stays live (and a Stop pressed
--- during the wait is delivered, setting stop_requested, which the caller re-checks
--- after we return). Exponential with jitter to avoid a thundering-herd resend.
--- TODO: honor a server Retry-After header here once the child plumbs it through;
--- the child currently only writes a status marker, not response headers (out of
--- scope for this change).
-function Conversation:_backoff(attempt)
-    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1)) + math.random() * BACKOFF_JITTER_SEC
-    local co = coroutine.running()
-    -- One-shot resume: scheduleIn fires it after the real wall-clock delay in
-    -- production. (Under the busted harness scheduleIn enqueues onto the nextTick
-    -- pump, so the resume runs synchronously and the backoff collapses to instant.)
-    local resumed = false
-    UIManager:scheduleIn(delay, function()
-        if not resumed then
-            resumed = true
-            coroutine.resume(co)
-        end
-    end)
-    coroutine.yield()
 end
 
 function Conversation:_render()

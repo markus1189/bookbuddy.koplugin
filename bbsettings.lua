@@ -37,6 +37,15 @@ local DEFAULTS = {
     -- (and Claude Code likewise hides WebSearch there). On by default; turn it
     -- off when your endpoint can't execute it, so we don't advertise a dead tool.
     enable_web_search = true,
+    -- Subagent delegation: a `delegate` tool that hands wide, multi-round research to
+    -- a read-only child agent whose intermediate grep/read churn stays out of the
+    -- main conversation's resent history. Off by default (opt-in, like
+    -- show_streaming_thinking): it double-bills the sub-task and adds latency, so it
+    -- only pays off on genuinely wide exploration. When off, the tool is not advertised.
+    enable_subagents = false,
+    -- How many tool rounds a delegated child may take before it must answer in text.
+    -- Kept low to bound the additive latency and token cost of a delegation.
+    subagent_max_turns = 6,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.
@@ -78,6 +87,8 @@ function Settings:getConfig()
         enable_thinking = self:get("enable_thinking") and true or false,
         show_streaming_thinking = self:get("show_streaming_thinking") and true or false,
         enable_web_search = self:get("enable_web_search") and true or false,
+        enable_subagents = self:get("enable_subagents") and true or false,
+        subagent_max_turns = math.max(1, tonumber(self:get("subagent_max_turns")) or DEFAULTS.subagent_max_turns),
     }
 end
 
@@ -361,6 +372,39 @@ function Settings:getMenu(ui)
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()
                 end
+            end,
+        },
+        {
+            text = _("Subagent delegation"),
+            help_text = _(
+                "Let BookBuddy hand wide, multi-step research (tracing a motif or a minor character across the whole book) to a read-only helper agent, so all that searching stays out of your conversation and only a condensed summary comes back. Off by default: it costs extra tokens and adds a pause while the helper works. The helper is spoiler-safe and reads only up to your current page."
+            ),
+            checked_func = function()
+                return self:get("enable_subagents") and true or false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("enable_subagents", not (self:get("enable_subagents") and true or false))
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        },
+        {
+            text_func = function()
+                return T(_("Helper tool rounds: %1"), tostring(self:get("subagent_max_turns")))
+            end,
+            enabled_func = function()
+                return self:get("enable_subagents") and true or false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:editText(touchmenu_instance, {
+                    key = "subagent_max_turns",
+                    title = _("Helper tool rounds"),
+                    description = _("How many tool-using rounds a delegated helper may take before it must answer."),
+                    input_type = "number",
+                })
             end,
         },
     }
