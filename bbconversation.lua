@@ -672,7 +672,7 @@ function Conversation:_loop()
                 if tu.name == "memory" and self.memory then
                     result = self.memory:execute(tu.input)
                 elseif tu.name == "delegate" then
-                    result, summary = self:_runDelegate(tu, cfg)
+                    result, summary = self:_runDelegate(tu, cfg, tool_entry)
                 else
                     result, summary = Tools.execute(tu.name, tu.input, self.ui)
                 end
@@ -886,9 +886,17 @@ end
 -- NOT spin its own Trapper:wrap (two Trapper coroutines both scheduling UIManager
 -- ticks deadlock). If a future change moves delegation onto a path that can yield
 -- before reaching here, that nested stream would deadlock the child.
-function Conversation:_runDelegate(tu, cfg)
+function Conversation:_runDelegate(tu, cfg, tool_entry)
     local Subagents = require("bbsubagents") -- lazy: avoids a bbconversation<->bbsubagents cycle
     local input = tu.input or {}
+    -- The child runs a bounded multi-round tool loop that can take many seconds; without
+    -- a live signal the committed "Researching: …" line sits frozen and reads as a hang.
+    -- on_status fires at the start of each child round, so we append a "(step N/max)"
+    -- counter to that exact transcript entry and repaint (mirrors _showRetryStatus's
+    -- "(n/3)" idiom). We keep the original phrase as `base` and restore it before
+    -- returning, so the caller's " — done"/" — failed" summary append reads cleanly off
+    -- the unsuffixed line rather than "(step 6/6) — done".
+    local base = tool_entry and tool_entry.text
     -- The child stream installs its cancel closure into the single _cancel slot via
     -- set_cancel; save/restore the parent's slot around the run (it is nil during a
     -- tool call, but be explicit) so a Stop aborts the child and unwinds here. A Stop
@@ -906,9 +914,17 @@ function Conversation:_runDelegate(tu, cfg)
         set_cancel = function(fn)
             self._cancel = fn
         end,
-        on_status = function() end,
+        on_status = function(round, max)
+            if base then
+                tool_entry.text = base .. " " .. T(_("(step %1/%2)"), tostring(round), tostring(max))
+                self:_flushNow()
+            end
+        end,
     })
     self._cancel = saved_cancel
+    if base then
+        tool_entry.text = base -- restore for the caller's clean summary append
+    end
     if text and text ~= "" then
         return text, _("done")
     end

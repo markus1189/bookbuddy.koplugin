@@ -83,7 +83,10 @@ end
 --   stop()                optional: predicate; true => abort at the next round boundary
 --   set_cancel(fn|nil)    optional: install/clear the child stream's cancel closure into
 --                         the parent's _cancel slot so a Stop aborts the live child stream
---   on_status(msg)        optional: headless progress callback; the child renders nothing
+--   on_status(round, max) optional: per-round progress callback (round number + the
+--                         turn ceiling); fires at the START of each round so the
+--                         parent can surface a live "step N/max" line. The child
+--                         itself renders nothing.
 function Subagents.runSubagent(o)
     o = o or {}
     local ui = o.ui
@@ -136,7 +139,7 @@ function Subagents.runSubagent(o)
     local rounds = 0
     while rounds < max_turns do
         rounds = rounds + 1
-        on_status(rounds)
+        on_status(rounds, max_turns)
         -- Last allowed round: drop the tools so the model must answer in text rather
         -- than asking for another tool call we'd have to refuse (mirrors _loop).
         local last_round = rounds >= max_turns

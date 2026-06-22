@@ -258,6 +258,58 @@ describe("subagent driver", function()
             assert.are.equal("The locket appears on pages 3 and 7.", found)
         end)
 
+        it("surfaces a live step counter on the Researching line while the child runs", function()
+            -- Capture every viewer repaint (the stub only keeps the latest) so we can
+            -- assert the in-flight "(step N/…)" feedback was actually painted, then cleared.
+            local painted = {}
+            local orig_update = chatviewer.updateText
+            chatviewer.updateText = function(v, text)
+                painted[#painted + 1] = text
+                return orig_update(v, text)
+            end
+            finally(function()
+                chatviewer.updateText = orig_update
+            end)
+
+            fake:reset({
+                -- parent delegates
+                sse.buildTurnSSE({
+                    blocks = { { type = "tool_use", id = "d1", name = "delegate", input = { task = "trace the locket" } } },
+                    stop_reason = "tool_use",
+                }),
+                -- child round 1: a grep (intermediate churn)
+                sse.buildTurnSSE({
+                    blocks = { { type = "tool_use", id = "g1", name = "grep", input = { query = "locket" } } },
+                    stop_reason = "tool_use",
+                }),
+                -- child round 2: the condensed answer
+                sse.buildTurnSSE({
+                    blocks = { { type = "text", text = "The locket appears on pages 3 and 7." } },
+                    stop_reason = "end_turn",
+                }),
+                -- parent's final answer
+                sse.buildTurnSSE({
+                    blocks = { { type = "text", text = "Here is what I found." } },
+                    stop_reason = "end_turn",
+                }),
+            })
+            local conv = newConv()
+            conv:ask("Trace the locket.")
+
+            -- At least one mid-run repaint showed a step counter against the max budget...
+            local saw_step = false
+            for _, text in ipairs(painted) do
+                if text:find("%(step %d+/6%)") then
+                    saw_step = true
+                    break
+                end
+            end
+            assert.is_true(saw_step, "a live (step N/6) counter must reach the viewer during delegation")
+            -- ...and the counter is gone from the settled transcript: the Researching line
+            -- is restored to its base phrase plus the clean "done" summary.
+            assert.is_nil(conv:_transcriptText():find("%(step"), "the step counter must not linger after the child finishes")
+        end)
+
         it("turns a failed child into a recoverable tool_result the parent continues from", function()
             fake:reset({
                 -- parent delegates
