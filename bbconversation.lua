@@ -248,11 +248,10 @@ local Conversation = {}
 Conversation.__index = Conversation
 
 -- Exported for the subagent driver (bbsubagents): the child reuses the exact same
--- single-call retry policy and backoff on the parent's coroutine, so they are not
--- copied. classifyAttempt / MAX_STREAM_ATTEMPTS stay private (used only inside
+-- single-call retry policy on the parent's coroutine, so it is not copied. backoff /
+-- classifyAttempt / MAX_STREAM_ATTEMPTS stay private (reached only inside
 -- streamWithRetries), keeping one source of truth.
 Conversation.streamWithRetries = streamWithRetries
-Conversation.backoff = backoff
 
 function Conversation:new(o)
     o = o or {}

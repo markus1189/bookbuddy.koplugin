@@ -159,7 +159,6 @@ function Subagents.runSubagent(o)
                 return Anthropic.newStreamParser({})
             end,
             register_cancel = o.set_cancel,
-            backoff = Conversation.backoff,
             stopped = stop,
         })
 
