@@ -466,12 +466,6 @@ function Memory.summaryText(ui)
     return table.concat(out, "\n")
 end
 
--- Returns true if this book has any stored memory.
-function Memory.hasContent(ui)
-    local base = Memory.baseDirForBook(ui)
-    return base ~= nil and util.directoryExists(base) and not util.isEmptyDir(base)
-end
-
 -- Delete this book's memory directory.
 function Memory.clear(ui)
     local base = Memory.baseDirForBook(ui)
