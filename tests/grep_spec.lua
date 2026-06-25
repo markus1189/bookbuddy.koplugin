@@ -1,6 +1,7 @@
 -- Pure-luajit checks for the bbtools `grep` executor: the findAllText call
--- contract, the spoiler/current-page cap, max_page interplay, the empty result,
--- and the last_search bookkeeping. Real hits over real crengine are proven in
+-- contract, the spoiler/current-page cap, max_page interplay, the min_page window
+-- (which filters independently of spoiler), the empty result, and the last_search
+-- bookkeeping. Real hits over real crengine are proven in
 -- tests/integration/real/*_real.lua (`.#test-real`); this spec keeps only what
 -- trivial fakes can decide.
 
@@ -166,6 +167,81 @@ describe("grep (pure)", function()
         assert.truthy(text:find("[page 5]", 1, true)) -- within the explicit cap → shown
         assert.is_nil(text:find("[page 40]", 1, true)) -- beyond it → hidden, not leaked
         assert.truthy(text:find("hidden", 1, true)) -- only counted
+    end)
+
+    it("hides matches before min_page and reports their count", function()
+        local ui = makeGrepUI({
+            current_page = 100, -- well past every hit: the spoiler cap drops nothing
+            hits = {
+                { start = "a", matched_text = "x" },
+                { start = "b", matched_text = "y" },
+                { start = "c", matched_text = "z" },
+            },
+            page_of = { a = 5, b = 10, c = 25 },
+        })
+        local text = Tools.execute("grep", { query = "q", min_page = 10 }, ui)
+        assert.is_nil(text:find("[page 5]", 1, true)) -- below the window → dropped
+        assert.truthy(text:find("[page 10]", 1, true)) -- at the floor → shown
+        assert.truthy(text:find("[page 25]", 1, true)) -- above it → shown
+        assert.truthy(text:find("1 earlier match(es) before page 10", 1, true))
+    end)
+
+    it("windows a search to [min_page, max_page]", function()
+        local ui = makeGrepUI({
+            current_page = 100,
+            hits = {
+                { start = "a", matched_text = "x" },
+                { start = "b", matched_text = "y" },
+                { start = "c", matched_text = "z" },
+            },
+            page_of = { a = 5, b = 15, c = 25 },
+        })
+        local text = Tools.execute("grep", { query = "q", min_page = 10, max_page = 20 }, ui)
+        assert.is_nil(text:find("[page 5]", 1, true)) -- below the window
+        assert.truthy(text:find("[page 15]", 1, true)) -- inside the window
+        assert.is_nil(text:find("[page 25]", 1, true)) -- above the window
+    end)
+
+    it("still filters before min_page even with spoiler=true", function()
+        -- min_page is a display window, not a spoiler control: spoiler reveals the
+        -- later hit but the earlier one stays filtered (it was never a spoiler).
+        local ui = makeGrepUI({
+            current_page = 10, -- page-25 hit is a spoiler unless spoiler=true
+            hits = {
+                { start = "a", matched_text = "x" },
+                { start = "c", matched_text = "z" },
+            },
+            page_of = { a = 5, c = 25 },
+        })
+        local text = Tools.execute("grep", { query = "q", min_page = 10, spoiler = true }, ui)
+        assert.is_nil(text:find("[page 5]", 1, true)) -- below min_page → still dropped
+        assert.truthy(text:find("[page 25]", 1, true)) -- spoiler revealed it
+        assert.truthy(text:find("earlier match(es) before page 10", 1, true))
+    end)
+
+    it("reports 'all before page N' rather than 'No matches' when min_page drops everything", function()
+        local ui = makeGrepUI({
+            current_page = 100,
+            hits = { { start = "a", matched_text = "x" }, { start = "b", matched_text = "y" } },
+            page_of = { a = 3, b = 7 },
+        })
+        local text, summary = Tools.execute("grep", { query = "q", min_page = 50 }, ui)
+        assert.truthy(text:find("all before page 50", 1, true))
+        assert.is_nil(text:find("No matches found", 1, true)) -- the false-negative we guard against
+        assert.truthy(summary:find("all earlier", 1, true))
+    end)
+
+    it("lets max_results return more than the old cap of 20 (up to 40)", function()
+        local hits, page_of = {}, {}
+        for i = 1, 30 do
+            local xp = "h" .. i
+            hits[i] = { start = xp, matched_text = "m" }
+            page_of[xp] = i
+        end
+        local ui = makeGrepUI({ current_page = 100, hits = hits, page_of = page_of })
+        local text = Tools.execute("grep", { query = "q", max_results = 40 }, ui)
+        assert.truthy(text:find("Found 30 match(es)", 1, true)) -- all 30 shown, no clamp at 20
+        assert.truthy(text:find("30. [page 30]", 1, true))
     end)
 
     it("rejects a present-but-invalid max_results instead of silently reporting no matches", function()

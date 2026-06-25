@@ -12,7 +12,7 @@ local Tools = {}
 
 local MAX_RESULT_CHARS = 6000
 local DEFAULT_SEARCH_RESULTS = 8
-local MAX_SEARCH_RESULTS = 20
+local MAX_SEARCH_RESULTS = 40
 local FINDALL_CONTEXT_WORDS = 10
 local FINDALL_MAX_HITS = 5000
 local DEFAULT_HIGHLIGHTS = 100
@@ -223,14 +223,25 @@ local function tool_grep(ui, input)
         end
     end
 
-    -- Partition hits into visible / hidden by page vs cap. A nil page is treated as
-    -- visible (we can't prove it's a spoiler).
-    local visible, hidden = {}, 0
+    -- min_page is a pure display window, NOT a spoiler control: an earlier match is
+    -- never a spoiler, so (unlike max_page, which folds into `cap` above) it filters
+    -- even when spoiler=true, and its dropped hits get their own `before` tally rather
+    -- than the spoiler-only `hidden` one.
+    local min_page = tonumber(input.min_page)
+
+    -- Partition hits into visible / hidden (spoiler) / before (below the window) by
+    -- page. A nil page is treated as visible in both checks (we can't prove it's out
+    -- of range). Cap check first: a hit both past the spoiler cap AND below min_page
+    -- (only possible when min_page > cap) counts as a spoiler-hidden, not `before`.
+    local visible, hidden, before = {}, 0, 0
     for i = 1, #results do
         local item = results[i]
         local page = pageOfResult(ui, item)
-        if cap ~= nil and page ~= nil and tonumber(page) and tonumber(page) > cap then
+        local pg = tonumber(page)
+        if cap ~= nil and pg ~= nil and pg > cap then
             hidden = hidden + 1
+        elseif min_page ~= nil and pg ~= nil and pg < min_page then
+            before = before + 1
         else
             item._page = page
             visible[#visible + 1] = item
@@ -277,6 +288,14 @@ local function tool_grep(ui, input)
             return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden)),
                 _("all hidden")
         end
+        if before > 0 then
+            return T(
+                _("%1 match(es) found, all before page %2; lower min_page to see them."),
+                tostring(before),
+                tostring(min_page)
+            ),
+                _("all earlier")
+        end
         return string.format("No matches found for %q.", query), _("no matches")
     end
 
@@ -295,6 +314,15 @@ local function tool_grep(ui, input)
     if hidden > 0 and not spoiler then
         out[#out + 1] =
             T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden))
+    end
+    -- Not spoiler-gated: a match before min_page is never a spoiler, so report it
+    -- regardless of the spoiler flag (mirrors the partition's independence above).
+    if before > 0 then
+        out[#out + 1] = T(
+            _("%1 earlier match(es) before page %2 (lower min_page to include them)."),
+            tostring(before),
+            tostring(min_page)
+        )
     end
     return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
@@ -942,7 +970,7 @@ function Tools.getSpecs()
     return {
         {
             name = "grep",
-            description = "Search the current book for text and return matching passages with a little surrounding context, each with a page number and a locator you can pass to read or create_highlight. Literal by default; set regex=true for a pattern. By default only matches at or before the reader's current page are shown (spoiler-safe); later matches are counted but hidden. Set spoiler=true to reveal them, or max_page to tighten the cap to an even earlier page.",
+            description = "Search the current book for text and return matching passages with a little surrounding context, each with a page number and a locator you can pass to read or create_highlight. Literal by default; set regex=true for a pattern. By default only matches at or before the reader's current page are shown (spoiler-safe); later matches are counted but hidden. Set spoiler=true to reveal them, or max_page to tighten the cap to an even earlier page. For a term that recurs often, narrow to a chapter or region with min_page/max_page (use get_toc's page numbers) rather than wading through the earliest hits.",
             input_schema = {
                 type = "object",
                 properties = {
@@ -959,7 +987,7 @@ function Tools.getSpecs()
                         enum = { "words", "sentence" },
                         description = "How much context to show per hit: a short word window ('words', the default) or the whole sentence ('sentence').",
                     },
-                    max_results = { type = "integer", description = "Maximum matches to return (default 8, max 20)." },
+                    max_results = { type = "integer", description = "Maximum matches to return (default 8, max 40)." },
                     spoiler = {
                         type = "boolean",
                         description = "Allow matches past the reader's current page (default false). Left false, later-page matches are hidden so the reader is not spoiled; only their count is reported.",
@@ -968,12 +996,17 @@ function Tools.getSpecs()
                         type = "integer",
                         description = "Hide matches on pages greater than this (1-based). Only tightens the spoiler-safe window to an earlier page; it never reveals past the reader's current page.",
                     },
+                    min_page = {
+                        type = "integer",
+                        description = "Hide matches on pages less than this (1-based). Pair with max_page to search only a chapter or region; unlike max_page it also filters when spoiler=true, since an earlier match is never a spoiler.",
+                    },
                 },
                 required = { "query" },
                 input_examples = {
                     { query = "Mara" },
                     { query = "the harbour", max_results = 5 },
                     { query = "harbour", context = "sentence" },
+                    { query = "Mara", min_page = 120, max_page = 160 },
                 },
             },
         },
