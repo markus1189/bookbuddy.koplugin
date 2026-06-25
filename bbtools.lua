@@ -986,10 +986,13 @@ function Tools.getSpecs()
             name = "read",
             description = "Read the current book's text in order, starting from a locator (from grep or "
                 .. "get_toc), a page number, or — if you give neither — the reader's current page. "
-                .. "Returns a chunk of text and a 'next' locator; call read again with from=next to "
-                .. "keep going to the end of what you were asked about; a chunk ending in "
-                .. '"(Not the end …)" means there is more, so don\'t stop or conclude there. Reflowable '
-                .. "(EPUB) books only; don't re-read chunks you already pulled.",
+                .. "Returns a chunk of text that ends in one of three trailers telling you what to do "
+                .. 'next: "(Not the end …)" carries a next locator and means more follows — call read '
+                .. "again with from=next to keep going to the end of what you were asked about; "
+                .. '"(End of book reached.)" means that was the final passage; "(Stopped at your current '
+                .. 'page to avoid spoilers …)" means the reader has not read further, so stop there '
+                .. "unless they asked to read ahead. Reflowable (EPUB) books only; continue forward with "
+                .. "the next locator rather than re-reading chunks you already pulled.",
             input_schema = {
                 type = "object",
                 properties = {
@@ -1081,7 +1084,7 @@ function Tools.getSpecs()
         {
             name = "create_highlight",
             description = "Create a highlight in the book (reflowable/EPUB books only). "
-                .. "Provide ONE of: locator -- a loc: token of a grep hit (a passage), the "
+                .. "Provide exactly one of: locator -- a loc: token of a grep hit (a passage), the "
                 .. "reliable way; OR search_result -- the number of a match from your most "
                 .. "recent grep call (also reuses that match's exact position) -- OR text, a "
                 .. "short verbatim passage to find and highlight. "
@@ -1156,7 +1159,7 @@ function Tools.getSpecs()
                 .. "book, gathering every mention of something -- so all that intermediate searching stays "
                 .. "out of our conversation. Answer simple or single-passage questions yourself instead of "
                 .. "delegating. The helper is spoiler-safe and reads only up to the reader's current page; "
-                .. "set allow_spoiler=true ONLY when the reader has explicitly asked to read ahead.",
+                .. "set allow_spoiler=true only when the reader has explicitly asked to read ahead.",
             input_schema = {
                 type = "object",
                 properties = {
