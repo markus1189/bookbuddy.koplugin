@@ -18,17 +18,18 @@
 ## 2. The `_askUser` method + dispatch branch (D2, D3, D4, D5, D8)
 
 - [x] 2.1 Add an `ask_user` branch in the tool-dispatch loop next to `memory`/`delegate`
-  (`bbconversation.lua:671-677`): append an `Asked: <question>` `tool_entry`, `_flushNow()`, call
-  `self:_askUser(tu.input, tool_entry)`, fold the outcome into the line (`— "<answer>"` /
-  `— skipped`, truncated), and append the returned string as the `tool_result` for `tu.id`.
-- [x] 2.2 Implement `Conversation:_askUser(input, tool_entry)`: capture `co =
-  coroutine.running()`, build the dialog (D7), `UIManager:show`, then `coroutine.yield()`; return
-  the chosen string. Use a one-shot `resumed` guard and a single `resume(answer)` helper, exactly
+  (`bbconversation.lua:671-677`): call `result, summary = self:_askUser(tu.input)` and let the
+  generic loop fold the outcome — the `Asked: <question>` line comes from `_toolActionPhrase`, the
+  truncated `— "<answer>"` / `— skipped` tail from the returned `summary`, and `result` is appended
+  as the `tool_result` for `tu.id`.
+- [x] 2.2 Implement `Conversation:_askUser(input)`: capture `co = coroutine.running()`, build the
+  dialog (D7), `UIManager:show`, then `coroutine.yield()`; return the chosen string plus a short
+  transcript summary. Use a one-shot `resumed` guard and a single `resume(answer)` helper, exactly
   like `backoff` (`:177-191`).
 - [x] 2.3 Wire the `resume` helper into **every** close path: each option button, the typed-answer
   Send, the typed-answer Cancel, the Skip button, **and** the dialog's dismissal hook
   (tap-outside / Back). The dismissal and Skip paths resolve to the recoverable note
-  `"[The reader skipped the question without answering.]"`.
+  `"[The reader closed the question without answering. Proceed with your best judgement, or ask differently.]"`.
 - [x] 2.4 Add the load-bearing comment at the branch recording the reentrancy invariant (dispatch
   site is reached only after the parent stream fully returned, so the coroutine is parked at an
   ordinary call site — never mid-yield — making the dialog-park legal) **and** the no-hang rule
@@ -75,5 +76,11 @@
 ## 6. Gate
 
 - [x] 6.1 Run `nix run .#check` (stylua + luacheck + busted) and make it green.
-- [ ] 6.2 Run tier-2 (`nix run .#test-real`) to exercise the real coroutine-park-under-a-live-modal
-  timing that tier-1 fakes, before relying on the default-on behavior in a release.
+- [x] 6.2 Run tier-2 (`nix run .#test-real`): green (31/31). Added `tests/integration/real/
+  question_tool_real.lua`, which drives `Conversation:_askUser` against **real** KOReader widgets
+  (ButtonDialog / InputDialog) on the **real** UIManager — the coroutine-park-under-a-live-modal
+  timing tier-1 can only fake. It covers all five close paths: a real option tap, the real Skip
+  button, a bare dismissal via `ButtonDialog:onClose` (the no-hang invariant, exercising the real
+  `UIManager:close → CloseWidget → onCloseWidget` dispatch), the real free-text handoff, and an
+  empty Send → skip. The coroutine resume crosses the real UIManager task queue, drained via
+  `_checkTasks`, so the reentrancy invariant is now test-covered, not comment-asserted only.
