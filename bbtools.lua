@@ -1208,6 +1208,42 @@ function Tools.getSpecs()
                 required = { "task" },
             },
         },
+        -- Clarifying question. Like web_search/delegate there is NO DISPATCH entry and
+        -- NO executor: ask_user must pause the live conversation coroutine and show a
+        -- reader dialog, neither of which bbtools may touch (Tools.execute runs with only
+        -- (name, input, ui) and no coroutine contract -- dispatching ask_user through it
+        -- would park a coroutine that nothing resumes and deadlock). bbconversation
+        -- special-cases this name next to the memory/delegate branches and calls
+        -- Conversation:_askUser. Advertised to the PARENT only -- childSpecs strips it
+        -- (a headless subagent has no reader at the keyboard) -- and Conversation:new
+        -- removes it when enable_clarifying_questions is explicitly off (default on).
+        {
+            name = "ask_user",
+            description = "Ask the reader one short clarifying question when it is genuinely unclear what THEY "
+                .. "want -- which of several characters they mean, how far back to look, which of two readings "
+                .. "of their question to answer. The reader picks an option or types their own reply, and you "
+                .. "get it back as the tool result and continue in the same turn. Offer 2-4 short options when "
+                .. "you can; the reader can always type instead or skip. Do NOT use this for anything you can "
+                .. "settle by reading the book -- read it. Ask at most one question, then act. The question and "
+                .. "options are shown to the reader verbatim, so they are bound by the same spoiler rule as your "
+                .. "answer: never phrase one so it reveals something past the reader's current position.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    question = {
+                        type = "string",
+                        description = "The clarifying question to show the reader, in plain prose.",
+                    },
+                    options = {
+                        type = "array",
+                        items = { type = "string" },
+                        description = "Optional 2-4 short answer choices to offer as buttons. The reader can "
+                            .. "always type their own answer or skip regardless.",
+                    },
+                },
+                required = { "question" },
+            },
+        },
     }
 end
 

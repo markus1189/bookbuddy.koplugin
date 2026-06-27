@@ -7,6 +7,7 @@
 -- they touch the live document. We keep two parallel structures: `messages` (the
 -- exact Anthropic wire format, resent every turn) and `transcript` (a
 -- human-readable log rendered in the viewer).
+local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local NetworkMgr = require("ui/network/manager")
@@ -279,6 +280,18 @@ function Conversation:new(o)
         for i = #o.tool_specs, 1, -1 do
             local t = o.tool_specs[i]
             if type(t) == "table" and t.name == "delegate" then
+                table.remove(o.tool_specs, i)
+            end
+        end
+    end
+    -- The clarifying-question tool (ask_user) is on by default -- it costs no extra
+    -- tokens and opens no new spoiler surface, so unlike subagents it ships enabled --
+    -- but stays toggleable. Same polarity as web_search above: only an explicit false
+    -- removes it, so an absent flag keeps the default-on behaviour.
+    if o.settings and o.settings:getConfig().enable_clarifying_questions == false then
+        for i = #o.tool_specs, 1, -1 do
+            local t = o.tool_specs[i]
+            if type(t) == "table" and t.name == "ask_user" then
                 table.remove(o.tool_specs, i)
             end
         end
@@ -672,6 +685,17 @@ function Conversation:_loop()
                     result = self.memory:execute(tu.input)
                 elseif tu.name == "delegate" then
                     result, summary = self:_runDelegate(tu, cfg, tool_entry)
+                elseif tu.name == "ask_user" then
+                    -- REENTRANCY INVARIANT: this dispatch site is reached only AFTER the
+                    -- parent stream fully returned, so the loop's coroutine is parked at an
+                    -- ordinary call site, never mid-yield -- which is exactly what makes it
+                    -- legal for _askUser to yield AGAIN to await the reader's dialog (same
+                    -- reasoning the delegate nested-stream comment relies on). _askUser MUST
+                    -- resume the coroutine on every dialog close path (answer/skip/dismiss)
+                    -- or the turn parks forever; it always returns a non-empty string, so
+                    -- the tool_use below is always answered and the wire history stays
+                    -- balanced (an unanswered ask_user tool_use would 400 on the next resend).
+                    result, summary = self:_askUser(tu.input)
                 else
                     result, summary = Tools.execute(tu.name, tu.input, self.ui)
                 end
@@ -821,6 +845,8 @@ function Conversation:_toolActionPhrase(tu)
         phrase = self:_memoryPhrase(input)
     elseif tu.name == "delegate" then
         phrase = T(_("Researching: %1…"), input.task or "")
+    elseif tu.name == "ask_user" then
+        phrase = T(_("Asked: %1"), input.question or "")
     else
         phrase = T(_("Used %1"), tu.name)
     end
@@ -930,6 +956,167 @@ function Conversation:_runDelegate(tu, cfg, tool_entry)
     -- A recoverable failure: feed the model a plain note so it can apologize or try
     -- another approach, instead of treating a missing answer as a complete one.
     return T(_("The delegated task did not complete: %1"), tostring(err or _("unknown error"))), _("failed")
+end
+
+-- Show the reader a clarifying question (ask_user) and PARK the turn loop until they
+-- answer, then return their reply as the tool result plus a short transcript summary.
+--
+-- Mechanism: the same yield/resume shape as backoff() -- capture this coroutine, build a
+-- dialog whose callbacks resume it, then coroutine.yield(). The dialog callbacks run on
+-- the UIManager event loop (a real reader tap) and feed the answer back through the
+-- resume.
+--
+-- NO-HANG INVARIANT (load-bearing): EVERY way the dialog can close -- each option button,
+-- the typed-answer Send/Skip, the Skip button, AND a plain dismissal (tap-outside / Back,
+-- which closes the widget through onCloseWidget without running any button callback) --
+-- routes through resume(). A close path that forgets to resume parks the loop forever with
+-- no Stop target. The one-shot `resumed` guard makes a double-close (a button answer that
+-- then triggers onCloseWidget) safe: the first resume wins, later ones are no-ops. We
+-- resume on the NEXT tick (not inline) so the dialog is fully closed before the loop runs
+-- on, and so a real button answer set before onCloseWidget's fallback fires takes priority.
+-- _askUser always returns a NON-EMPTY string, so the ask_user tool_use is always answered.
+function Conversation:_askUser(input)
+    input = input or {}
+    local question = tostring(input.question or _("Could you clarify what you mean?"))
+    local options = input.options
+
+    -- A skip/dismiss is recoverable, not an answer: hand the model a plain note (like a
+    -- failed delegate) so it proceeds on its own judgement or asks again differently,
+    -- rather than treating an empty reply as the reader's choice.
+    local SKIP =
+        _("[The reader closed the question without answering. Proceed with your best judgement, or ask differently.]")
+
+    local co = coroutine.running()
+    local resumed = false
+    local answer
+    local function resume(reply)
+        if resumed then
+            return
+        end
+        resumed = true
+        answer = reply
+        UIManager:nextTick(function()
+            coroutine.resume(co)
+        end)
+    end
+
+    local dialog, input_dialog
+    -- Set while the options dialog hands off to the free-text dialog: its onCloseWidget
+    -- fallback must NOT fire a premature SKIP during that handoff (the free-text dialog
+    -- then owns the resume).
+    local handing_off = false
+
+    -- Free-text path: an InputDialog mirroring _promptFollowup's construction. An empty
+    -- Send counts as a skip (the model gets the recoverable note, never a blank result).
+    local function promptFreeText()
+        local buttons = {
+            {
+                {
+                    text = _("Skip"),
+                    callback = function()
+                        resume(SKIP)
+                        UIManager:close(input_dialog)
+                    end,
+                },
+                {
+                    text = _("Send"),
+                    is_enter_default = true,
+                    callback = function()
+                        local a = input_dialog and input_dialog:getInputText()
+                        resume((a and a ~= "") and a or SKIP)
+                        UIManager:close(input_dialog)
+                    end,
+                },
+            },
+        }
+        input_dialog = InputDialog:new({
+            title = _("Your answer"),
+            description = question,
+            input = "",
+            input_hint = _("Type your answer"),
+            text_height = Presets.inputLines(2),
+            buttons = buttons,
+        })
+        -- NO-HANG net: a dismissal frees the widget through onCloseWidget without any
+        -- button callback; chain a resume(SKIP) so the loop still wakes. Guarded, so a
+        -- real answer (which resumed first) makes this a no-op.
+        local orig = input_dialog.onCloseWidget
+        input_dialog.onCloseWidget = function(d)
+            if orig then
+                orig(d)
+            end
+            resume(SKIP)
+        end
+        UIManager:show(input_dialog)
+        input_dialog:onShowKeyboard()
+    end
+
+    if type(options) == "table" and #options > 0 then
+        local rows = {}
+        for _, opt in ipairs(options) do
+            local label = tostring(opt)
+            rows[#rows + 1] = {
+                {
+                    text = label,
+                    callback = function()
+                        resume(label)
+                        UIManager:close(dialog)
+                    end,
+                },
+            }
+        end
+        rows[#rows + 1] = {
+            {
+                text = _("Type my own…"),
+                callback = function()
+                    handing_off = true
+                    UIManager:close(dialog)
+                    dialog = nil
+                    promptFreeText()
+                end,
+            },
+            {
+                text = _("Skip"),
+                callback = function()
+                    resume(SKIP)
+                    UIManager:close(dialog)
+                end,
+            },
+        }
+        dialog = ButtonDialog:new({
+            title = question,
+            title_align = "center",
+            buttons = rows,
+        })
+        -- NO-HANG net, as in promptFreeText: a tap-outside / Back dismissal must still
+        -- resume. The "Type my own…" path deliberately closes this dialog WITHOUT
+        -- resuming -- it hands off to the free-text dialog, which owns the resume -- so
+        -- the fallback skips the SKIP while `handing_off` is set.
+        local orig = dialog.onCloseWidget
+        dialog.onCloseWidget = function(d)
+            if orig then
+                orig(d)
+            end
+            if not handing_off then
+                resume(SKIP)
+            end
+        end
+        UIManager:show(dialog)
+    else
+        promptFreeText()
+    end
+
+    coroutine.yield()
+
+    -- Fold a short, single-line summary into the "Asked: …" transcript entry.
+    if answer == SKIP then
+        return SKIP, _("skipped")
+    end
+    local shown = tostring(answer)
+    if #shown > 40 then
+        shown = shown:sub(1, 39) .. "…"
+    end
+    return answer, T(_("“%1”"), shown)
 end
 
 -- Re-render this turn's assistant content into the transcript in block order,

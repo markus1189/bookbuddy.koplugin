@@ -32,6 +32,13 @@ function Anthropic.buildBody(messages, tool_specs, cfg)
     if cfg.enable_subagents then
         system_text = system_text .. "\n\n" .. Prompts.DELEGATE_NOTE
     end
+    -- Tell the model about ask_user only when the tool is actually advertised. The tool
+    -- is on by default, so a nil (never-set) flag must read as enabled, matching the
+    -- enable_clarifying_questions resolution in bbsettings:getConfig and the spec strip
+    -- in Conversation:new (only an explicit false removes it).
+    if cfg.enable_clarifying_questions ~= false then
+        system_text = system_text .. "\n\n" .. Prompts.ASK_USER_NOTE
+    end
     local extra = cfg.additional_system_prompt
     if extra and extra ~= "" then
         system_text = system_text .. "\n\n<additional_system_prompt>\n" .. extra .. "\n</additional_system_prompt>"

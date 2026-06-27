@@ -319,6 +319,14 @@ function M.install()
             return o or {}
         end,
     }
+    -- ButtonDialog backs the ask_user clarifying-question tool (one button per option).
+    -- The default double just echoes the construction table; the question-tool spec
+    -- overrides it with one that fires a scripted choice through the nextTick pump.
+    package.loaded["ui/widget/buttondialog"] = {
+        new = function(_, o)
+            return o or {}
+        end,
+    }
     -- bbpresets.inputLines() reads Font:getFace(name).size to size the input box.
     package.loaded["ui/font"] = {
         getFace = function(_, _name)

@@ -100,6 +100,18 @@ Prompts.DELEGATE_NOTE = "<delegation>\n"
     .. "has explicitly asked to look ahead.\n"
     .. "</delegation>"
 
+-- One-line note appended to the parent's system prompt (in buildBody, gated on
+-- enable_clarifying_questions) telling it when to ask the reader. Kept out of the base
+-- prompt so the model is never told about a tool the feature gate has removed.
+Prompts.ASK_USER_NOTE = "<clarifying_questions>\n"
+    .. "When it is genuinely unclear what the reader wants -- which of several characters or "
+    .. "threads they mean, how far back to look, which of two readings of their question to answer "
+    .. "-- you can ask them with the ask_user tool instead of guessing; offer a few short options "
+    .. "when you can. Use it only for ambiguity about the reader's intent, never for anything you "
+    .. "could settle by reading the book, and ask at most one question before acting. The question "
+    .. "is shown to the reader verbatim, so keep it spoiler-safe like the rest of your reply.\n"
+    .. "</clarifying_questions>"
+
 Prompts.MEMORY_PROTOCOL = "<memory_protocol>\n"
     .. "You have a persistent memory directory at /memories, private to this book. "
     .. "At the start of every conversation, use the memory "

@@ -47,6 +47,12 @@ local DEFAULTS = {
     -- Bounded (well under SUBAGENT_MAX_TURNS_CEILING) so one delegation can't grind
     -- unbounded double-billed rounds, but generous enough for genuinely wide research.
     subagent_max_turns = 12,
+    -- Clarifying questions: an `ask_user` tool that lets BookBuddy pause mid-turn to ask
+    -- the reader one disambiguating question (button choices and/or free text) and resume
+    -- the same turn with their answer. On by default (unlike subagents): it spends no
+    -- extra tokens and opens no new spoiler surface, and an agent that can ask beats one
+    -- that guesses. When off, the tool is not advertised.
+    enable_clarifying_questions = true,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.
@@ -95,6 +101,9 @@ function Settings:getConfig()
         show_streaming_thinking = self:get("show_streaming_thinking") and true or false,
         enable_web_search = self:get("enable_web_search") and true or false,
         enable_subagents = self:get("enable_subagents") and true or false,
+        -- Default ON: a nil (never-set) value must resolve true, so coalesce nil to the
+        -- default rather than the usual `and true or false` (which would force nil->false).
+        enable_clarifying_questions = self:get("enable_clarifying_questions") ~= false,
         subagent_max_turns = math.max(
             1,
             math.min(
@@ -418,6 +427,23 @@ function Settings:getMenu(ui)
                     description = _("How many tool-using rounds a delegated helper may take before it must answer."),
                     input_type = "number",
                 })
+            end,
+        },
+        {
+            text = _("Clarifying questions"),
+            help_text = _(
+                "Let BookBuddy pause to ask you a short question when it is unclear what you meant -- which character you mean, how far back to look -- and continue once you pick an option or type a reply. On by default: it costs no extra tokens and never reveals anything past your current page. Turn it off if you would rather it always answer without asking."
+            ),
+            -- Default on: a never-set value is nil, which must read as checked, so test ~= false.
+            checked_func = function()
+                return self:get("enable_clarifying_questions") ~= false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("enable_clarifying_questions", self:get("enable_clarifying_questions") == false)
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
             end,
         },
     }
