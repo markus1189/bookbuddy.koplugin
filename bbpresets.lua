@@ -20,6 +20,12 @@ Presets.book = {
     { _("Recap"), _("Recap what has happened up to where I am.") },
     { _("Highlights"), _("Let's chat about my current highlights and notes") },
     { _("Memories"), _("Let's chat about the book memories") },
+    {
+        _("Update notes"),
+        _(
+            "Update your memory notes up to my current position, then end with a short section on the most important progressions."
+        ),
+    },
 }
 
 Presets.passage = {
