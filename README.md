@@ -63,7 +63,8 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 - **Streams the reply live** into a chat view, coalesced so it stays readable on
   e-ink, with each tool call shown as a line you can follow.
 - **Quick-action presets** in the chat prompts: one tap fills the input box with a
-  starter like *Overview* / *Characters* / *Themes* for a book, *Explain* / *Why it
+  starter like *Get started* (an onboarding interview about what to focus on as you
+  read) / *Overview* / *Characters* / *Themes* for a book, *Explain* / *Why it
   matters* / *Simpler* for a highlighted passage, or *Yes* / *Memorize* / *Highlight*
   when replying. They prefill rather than send, so you can tweak the wording before tapping
   **Send** — handy for sidestepping the on-screen keyboard.

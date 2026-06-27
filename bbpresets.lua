@@ -14,6 +14,12 @@ function Presets.inputLines(n)
 end
 
 Presets.book = {
+    {
+        _("Get started"),
+        _(
+            "I'm just starting this book. Before I get into it, interview me about what I want to focus on or pay attention to as I read -- ask a few short questions, one at a time, then note what I tell you so you can keep it in mind as we go."
+        ),
+    },
     { _("Overview"), _("Give me a brief overview of this book.") },
     { _("Characters"), _("Who are the main characters so far?") },
     { _("Themes"), _("What are the main themes of this book?") },
