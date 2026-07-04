@@ -15,6 +15,7 @@
 -- after the parent stream fully returned, so a nested Stream.run is legal. The child
 -- MUST NOT spin its own Trapper:wrap.
 local Anthropic = require("bbanthropic")
+local History = require("bbhistory")
 local Prompts = require("bbprompts")
 local Retry = require("bbretry") -- the shared single-call retry/backoff policy
 local Tools = require("bbtools")
@@ -56,23 +57,6 @@ local function sanitizeInput(name, input, ui, allow_spoiler)
         end
     end
     return input
-end
-
--- Pull the assistant turn's text + client tool_use blocks apart, like
--- Conversation:_split but local to the child (no transcript concerns).
-local function splitContent(content)
-    local text_parts, tool_uses = {}, {}
-    if type(content) ~= "table" then
-        return text_parts, tool_uses
-    end
-    for _, b in ipairs(content) do
-        if b.type == "text" and b.text then
-            text_parts[#text_parts + 1] = b.text
-        elseif b.type == "tool_use" then
-            tool_uses[#tool_uses + 1] = b
-        end
-    end
-    return text_parts, tool_uses
 end
 
 -- Run one delegated sub-task to completion and return (text, err): the child's final
@@ -178,7 +162,7 @@ function Subagents.runSubagent(o)
         -- Commit the assistant turn to the CHILD's history (never the parent's).
         messages[#messages + 1] = { role = "assistant", content = res.content }
 
-        local text_parts, tool_uses = splitContent(res.content)
+        local text_parts, tool_uses = History.split(res.content)
         if #text_parts > 0 then
             final_text = table.concat(text_parts, "\n")
         end

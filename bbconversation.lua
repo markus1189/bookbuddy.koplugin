@@ -19,6 +19,7 @@ local T = require("ffi/util").template
 
 local Anthropic = require("bbanthropic")
 local ChatViewer = require("bbchatviewer")
+local History = require("bbhistory")
 local Memory = require("bbmemory")
 local Presets = require("bbpresets")
 local Retry = require("bbretry")
@@ -60,42 +61,6 @@ local function strippedEntry(turn)
         turn._md_out = stripMarkdown(turn.text)
     end
     return turn._md_out
-end
-
--- Vertex AI's request validator (unlike Anthropic's first-party API) rejects any
--- server_tool_use that lacks a paired web_search_tool_result in the same assistant
--- message. A pause_turn can stop right after the in-flight web search's
--- server_tool_use, before its result arrives, so resending that turn verbatim --
--- which the pause_turn contract otherwise prescribes -- makes the next request 400
--- ("web_search tool use ... without a corresponding web_search_tool_result block").
--- Pair each orphan with a synthetic "unavailable" error result so the resend
--- validates; the model then resumes and either retries the search (a fresh turn
--- has a fresh search budget) or answers without it.
-local function pairDanglingWebSearch(content)
-    if type(content) ~= "table" then
-        return
-    end
-    local has_result = {}
-    for _, b in ipairs(content) do
-        if b.type == "web_search_tool_result" and b.tool_use_id then
-            has_result[b.tool_use_id] = true
-        end
-    end
-    local i = 1
-    while i <= #content do
-        local b = content[i]
-        if b.type == "server_tool_use" and b.id and not has_result[b.id] then
-            table.insert(content, i + 1, {
-                type = "web_search_tool_result",
-                tool_use_id = b.id,
-                content = { type = "web_search_tool_result_error", error_code = "unavailable" },
-            })
-            has_result[b.id] = true
-            i = i + 2
-        else
-            i = i + 1
-        end
-    end
 end
 
 local Conversation = {}
@@ -492,8 +457,8 @@ function Conversation:_loop()
         -- pairDanglingWebSearch's has_result guard makes this an idempotent no-op
         -- when the result block is already present (the common case), so running it
         -- unconditionally is safe. Operate on the freshly merged message content.
-        pairDanglingWebSearch(self.messages[#self.messages].content)
-        local tool_uses = select(2, self:_split(res.content))
+        History.pairDanglingWebSearch(self.messages[#self.messages].content)
+        local tool_uses = select(2, History.split(res.content))
         -- Replace this turn's live streamed entries with content-ordered ones, so a
         -- server-side web search shows between the lead-in and the answer rather than
         -- hoisted above them. Client tool calls are added below, after execution.
@@ -570,67 +535,17 @@ function Conversation:_loop()
     self:_render()
 end
 
--- Record an assistant reply in the wire history. A pause_turn continuation
--- (is_resume) extends the existing assistant turn instead of adding a second
--- assistant message in a row: a paused-then-resumed turn is one logical turn, and
--- two consecutive assistant messages make the gateway 400 ("roles must alternate")
--- once a later user turn resends the pair. Merging also keeps each server_tool_use
--- in the same message as its web_search_tool_result.
+-- Record an assistant reply in the wire history (History.storeAssistant holds the
+-- pause_turn merge rule and its role-alternation rationale).
 function Conversation:_storeAssistant(blocks, is_resume)
-    local prev = self.messages[#self.messages]
-    if is_resume and prev and prev.role == "assistant" and type(prev.content) == "table" then
-        for i = 1, #blocks do
-            prev.content[#prev.content + 1] = blocks[i]
-        end
-    else
-        self.messages[#self.messages + 1] = { role = "assistant", content = blocks }
-    end
+    History.storeAssistant(self.messages, blocks, is_resume)
 end
 
--- After an error/cancel exit, _loop has appended a user (seed or tool_result)
--- turn but never stored the assistant reply for it, so history ends on a
--- dangling, unanswered user turn. ask() would then append a *second* user
--- message and the gateway 400s ("roles must alternate"); dropping only the
--- trailing user would instead expose an unanswered client tool_use (also a
--- 400). Walk back over the whole in-flight tool round to the last clean
--- assistant turn (or empty history, which lets ask() re-seed) so the stored
--- history is always resendable before the next ask(). This makes explicit the
--- "history ends with an assistant reply" invariant that was, until now, only
--- upheld by the error path closing the viewer.
+-- After an error/cancel exit, roll the wire history back to the last resendable
+-- state (History.dropDanglingTail holds the walk-back rule and its rationale), then
+-- unwind the human-readable transcript to match.
 function Conversation:_dropDanglingTail()
-    local m = self.messages
-    while #m > 0 do
-        local last = m[#m]
-        local dangling = (last.role == "user")
-        if last.role == "assistant" and type(last.content) == "table" then
-            -- Which web searches already have their result in THIS message; an
-            -- orphan server_tool_use (paired result missing) makes the resend 400 on
-            -- Vertex just like an unanswered client tool_use, so it is dangling too.
-            -- This self-heals orphans persisted by older sessions whose check only
-            -- matched type=="tool_use" (server_tool_use predates the pairing fix).
-            local has_result = {}
-            for _, b in ipairs(last.content) do
-                if b.type == "web_search_tool_result" and b.tool_use_id then
-                    has_result[b.tool_use_id] = true
-                end
-            end
-            for _, b in ipairs(last.content) do
-                if b.type == "tool_use" then
-                    dangling = true
-                    break
-                end
-                if b.type == "server_tool_use" and b.id and not has_result[b.id] then
-                    dangling = true
-                    break
-                end
-            end
-        end
-        if not dangling then
-            break
-        end
-        m[#m] = nil
-    end
-
+    History.dropDanglingTail(self.messages)
     self:_trimTranscript()
 end
 
@@ -650,21 +565,6 @@ function Conversation:_trimTranscript()
     for i = #self.transcript, cp + 1, -1 do
         self.transcript[i] = nil
     end
-end
-
-function Conversation:_split(content)
-    local text_parts, tool_uses = {}, {}
-    if type(content) ~= "table" then
-        return text_parts, tool_uses
-    end
-    for _, block in ipairs(content) do
-        if block.type == "text" and block.text then
-            text_parts[#text_parts + 1] = block.text
-        elseif block.type == "tool_use" then
-            tool_uses[#tool_uses + 1] = block
-        end
-    end
-    return text_parts, tool_uses
 end
 
 -- A friendly, present-completed description of one tool call, e.g.
