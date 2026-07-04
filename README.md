@@ -93,6 +93,13 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   any tool-using endpoint — gateways included — not just a native Anthropic one.
   Off by default since it's opt-in and spends a little extra each conversation
   recalling and updating notes.
+- **Chat history**: every finished conversation is saved to the book's `.sdr`
+  sidecar (under `bookbuddy_chats/`), so chats survive closing the viewer, the
+  book, or KOReader itself — and travel with the book like memory does. Reopen
+  any past chat from menu → BookBuddy → **Chat history** and just keep talking;
+  a follow-up after a restart works exactly like an in-session reply. Long-press
+  a chat to delete it; **Saved chats per book** (default 20) caps how many are
+  kept, oldest dropped first.
 - **Extended (adaptive) thinking** (on by default): a `Thinking...` indicator shows
   while the model reasons before it replies. **Show streaming thinking** can
   surface the reasoning text live, but it's off by default since the reasoning
@@ -169,6 +176,8 @@ Open any book, then go to the top menu → **BookBuddy**:
 - **Per-book memory** / **Extended thinking** / **Show streaming thinking** /
   **Web search** — toggles. *Show streaming thinking* (off by default, requires
   *Extended thinking*) surfaces the reasoning text live and can spoil unread plot.
+- **Saved chats per book** — how many finished chats to keep in the book's sidecar
+  (default 20); saving past the cap deletes the oldest.
 - **Show book memory** — view the notes BookBuddy has stored for the current book, with a
   button to clear them. Appears only with a book open.
 
@@ -187,6 +196,9 @@ The reply streams in; you can Stop it or reply to continue the conversation — 
 You can also start a chat about the whole book (no selection needed) from the menu's
 **Chat about this book** entry, or bind either "Chat with BookBuddy about selection" (for
 the current selection) or "Chat with BookBuddy about this book" to a gesture/shortcut.
+
+Closing a chat doesn't lose it: reopen it later — even after restarting KOReader —
+from menu → BookBuddy → **Chat history**, tap it, and hit **Reply** to continue.
 
 ## Self-update
 

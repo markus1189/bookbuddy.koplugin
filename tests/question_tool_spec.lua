@@ -53,6 +53,7 @@ describe("ask_user gate in Conversation:new", function()
     setup(function()
         stubs.load_tools() -- installs the KOReader doubles + the REAL bbtools
         stubs.install_bbmemory_stub()
+        stubs.install_bbchats_stub()
         sse.new_fake_stream({}) -- registers the bbstream fake bbconversation requires
         package.loaded["bbconversation"] = nil
         Conversation = require("bbconversation")
@@ -97,6 +98,7 @@ describe("ask_user dispatch + pause/resume", function()
         local h = stubs.install()
         chatviewer = h.chatviewer
         mem = stubs.install_bbmemory_stub()
+        stubs.install_bbchats_stub()
         stubs.install_bbtools_stub(h) -- registers the loop's tool double (book_context etc.)
 
         -- Dialog doubles that drive _askUser to completion through the nextTick pump: on

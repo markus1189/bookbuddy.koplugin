@@ -83,6 +83,7 @@ describe("subagent driver", function()
         local h = stubs.install()
         chatviewer = h.chatviewer
         stubs.install_bbmemory_stub()
+        stubs.install_bbchats_stub()
         install_tools_stub()
         fake = sse.new_fake_stream({}, chatviewer)
         Conversation = require("bbconversation")
