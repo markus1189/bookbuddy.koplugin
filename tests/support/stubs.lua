@@ -272,7 +272,7 @@ function M.install()
     package.loaded["ui/uimanager"] = {
         -- scheduleIn models a delayed callback. Headlessly we don't honor the delay;
         -- we enqueue onto the same nextTick pump Trapper:wrap drains, so a
-        -- coroutine-friendly backoff (bbconversation:_backoff) resumes synchronously
+        -- coroutine-friendly backoff (bbretry's backoff) resumes synchronously
         -- instead of suspending forever. Ignore the delay arg, take the callback.
         scheduleIn = function(_, _delay, fn)
             handle.tick_queue[#handle.tick_queue + 1] = fn

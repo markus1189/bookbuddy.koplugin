@@ -7,6 +7,11 @@
 -- they touch the live document. We keep two parallel structures: `messages` (the
 -- exact Anthropic wire format, resent every turn) and `transcript` (a
 -- human-readable log rendered in the viewer).
+--
+-- Collaborators: bbretry owns the per-call retry/backoff/classify policy,
+-- bbhistory the resendability invariants over `messages`, and bbtranscript the
+-- plain-text rendering of `transcript`. What remains here is the orchestration:
+-- the turn loop, tool dispatch, the reader-facing dialogs, and the viewer.
 local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
@@ -603,7 +608,7 @@ end
 -- Show the reader a clarifying question (ask_user) and PARK the turn loop until they
 -- answer, then return their reply as the tool result plus a short transcript summary.
 --
--- Mechanism: the same yield/resume shape as backoff() -- capture this coroutine, build a
+-- Mechanism: the same yield/resume shape as bbretry's backoff -- capture this coroutine, build a
 -- dialog whose callbacks resume it, then coroutine.yield(). The dialog callbacks run on
 -- the UIManager event loop (a real reader tap) and feed the answer back through the
 -- resume.
