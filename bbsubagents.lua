@@ -4,7 +4,7 @@
 -- and returns a single condensed string. The headline win is context isolation.
 --
 -- Deliberately NOT built via Conversation:new (D2): that constructor CLEARS the
--- shared ui's locator/search state (bbconversation:193-196), so a child built
+-- shared ui's locator/search state (the _bookbuddy_* reset in Conversation:new), so a child built
 -- mid-conversation would silently wipe the parent's live locator table and break a
 -- later parent create_highlight{search_result=N} / read{from=loc:N}. This driver is
 -- a plain function over a private messages array; it touches the shared ui only
@@ -15,8 +15,8 @@
 -- after the parent stream fully returned, so a nested Stream.run is legal. The child
 -- MUST NOT spin its own Trapper:wrap.
 local Anthropic = require("bbanthropic")
-local Conversation = require("bbconversation") -- shared streamWithRetries + backoff
 local Prompts = require("bbprompts")
+local Retry = require("bbretry") -- the shared single-call retry/backoff policy
 local Tools = require("bbtools")
 local logger = require("logger")
 
@@ -150,9 +150,9 @@ function Subagents.runSubagent(o)
         -- Headless: a bare parser (no on_text/on_thinking), no flush, no viewer (D9).
         -- set_cancel routes the child stream's cancel closure into the parent's single
         -- _cancel slot so a Stop aborts the live child stream; stop() catches a Stop
-        -- that lands during a backoff. backoff/streamWithRetries are shared with the
-        -- parent (the single source of the retry policy).
-        local r, res, verdict = Conversation.streamWithRetries({
+        -- that lands during a backoff. Retry.streamWithRetries is shared with the
+        -- parent loop (bbretry is the single source of the retry policy).
+        local r, res, verdict = Retry.streamWithRetries({
             body = body,
             cfg = cfg,
             make_parser = function()
