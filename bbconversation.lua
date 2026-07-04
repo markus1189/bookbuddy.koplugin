@@ -602,8 +602,10 @@ function Conversation:_loop()
             self.usage.output = self.usage.output + (u.output_tokens or 0)
             self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
             self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
-            self.context_size = (u.input_tokens or 0) + (u.cache_read_input_tokens or 0)
-                + (u.cache_creation_input_tokens or 0) + (u.output_tokens or 0)
+            self.context_size = (u.input_tokens or 0)
+                + (u.cache_read_input_tokens or 0)
+                + (u.cache_creation_input_tokens or 0)
+                + (u.output_tokens or 0)
         end
 
         -- Record the terminal turn's stop_reason so a headless driver (and the warn
