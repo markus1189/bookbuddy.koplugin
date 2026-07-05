@@ -7,7 +7,7 @@ local stubs = require("support.stubs")
 local sse = require("support.sse")
 
 describe("conversation", function()
-    local Conversation, fake, captured, chatviewer, bbtools, mem
+    local Conversation, fake, captured, chatviewer, statusbar, bbtools, mem
     local cfg = {}
     local stubSettings = {
         getConfig = function()
@@ -18,6 +18,7 @@ describe("conversation", function()
     setup(function()
         local h = stubs.install()
         chatviewer = h.chatviewer
+        statusbar = h.statusbar
         mem = stubs.install_bbmemory_stub()
         bbtools = stubs.install_bbtools_stub(h)
         fake = sse.new_fake_stream({}, chatviewer)
@@ -39,6 +40,9 @@ describe("conversation", function()
         fake:reset(sc.responses)
         chatviewer.last_on_stop = nil
         chatviewer.last_text = nil
+        chatviewer.last_status = nil
+        statusbar.events = {}
+        statusbar.instances = 0
         bbtools.state.stop_during_tool = sc.stop_during_tool or false
         cfg.base_url = "https://example"
         cfg.api_key = "k"
@@ -964,6 +968,123 @@ describe("conversation", function()
             assert.are_not.equal("assistant", m.role)
         end
         assert.are.equal(0, #sse.validateMessages(conv.messages))
+    end)
+
+    -- The status bar's lifecycle wiring, via the recording double (see stubs.lua
+    -- for why the real ticker can't run under the Trapper pump). The double logs
+    -- "start" / "state:<state>[:<detail>]" / "freeze" / "stop" in call order;
+    -- _setStatus dedupes, so per-delta on_text traffic yields ONE "writing" event.
+    describe("status bar wiring", function()
+        it("B1: animates through a streamed answer and freezes for the reader's turn", function()
+            run({
+                responses = { sse.buildTurnSSE({ blocks = { { type = "text", text = "The answer." } } }) },
+            })
+            assert.are.same({ "start", "state:connecting", "state:writing", "freeze" }, statusbar.events)
+            -- The streaming build seeded the bar with the double's text() sentinel;
+            -- the Reply-mode rebuild carries the frozen line.
+            assert.are.equal("FROZEN", chatviewer.last_status)
+        end)
+
+        it("B2: reports the tool in use, then reconnects for the next round", function()
+            run({
+                responses = {
+                    sse.buildTurnSSE({
+                        blocks = {
+                            { type = "text", text = "Let me check the book." },
+                            { type = "tool_use", id = "toolu_B2", name = "grep", input = { query = "whales" } },
+                        },
+                        stop_reason = "tool_use",
+                    }),
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Found it." } } }),
+                },
+            })
+            assert.are.same({
+                "start",
+                "state:connecting",
+                "state:writing",
+                "state:tool:grep",
+                "state:connecting", -- round 2, same bar: one clock spans the whole turn
+                "state:writing",
+                "freeze",
+            }, statusbar.events)
+            assert.are.equal(1, statusbar.instances)
+            assert.are.equal("FROZEN", chatviewer.last_status)
+        end)
+
+        it("B3: surfaces thinking before the text lands", function()
+            run({
+                enable_thinking = true,
+                responses = {
+                    sse.buildTurnSSE({
+                        blocks = {
+                            { type = "thinking", thinking = "hmm" },
+                            { type = "text", text = "The answer." },
+                        },
+                    }),
+                },
+            })
+            assert.are.same(
+                { "start", "state:connecting", "state:thinking", "state:writing", "freeze" },
+                statusbar.events
+            )
+        end)
+
+        it("B4: a Stop during a tool ends in stop, never freeze", function()
+            run({
+                stop_during_tool = true,
+                responses = {
+                    sse.buildTurnSSE({
+                        blocks = {
+                            { type = "text", text = "Let me check the book." },
+                            { type = "tool_use", id = "toolu_B4", name = "grep", input = { query = "whales" } },
+                        },
+                        stop_reason = "tool_use",
+                    }),
+                },
+            })
+            assert.are.equal("stop", statusbar.events[#statusbar.events])
+            for _, e in ipairs(statusbar.events) do
+                assert.are_not.equal("freeze", e)
+            end
+        end)
+
+        it("B5: a terminal API error ends in stop, never freeze", function()
+            run({
+                responses = { non200SSE(400) },
+            })
+            assert.are.equal("stop", statusbar.events[#statusbar.events])
+            for _, e in ipairs(statusbar.events) do
+                assert.are_not.equal("freeze", e)
+            end
+        end)
+
+        it("B6: a retried attempt reports the retry counter", function()
+            run({
+                responses = {
+                    { outcome = "read_error" },
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Recovered." } } }),
+                },
+            })
+            local seen_retry = false
+            for _, e in ipairs(statusbar.events) do
+                if e == "state:retrying:2/3" then
+                    seen_retry = true
+                end
+            end
+            assert.is_true(seen_retry)
+            assert.are.equal("freeze", statusbar.events[#statusbar.events])
+        end)
+
+        it("B7: a follow-up gets a fresh bar (fresh clock)", function()
+            run({
+                responses = {
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "First answer." } } }),
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Second answer." } } }),
+                },
+                followups = { "Tell me more." },
+            })
+            assert.are.equal(2, statusbar.instances)
+        end)
     end)
 
     describe("_toolActionPhrase", function()
