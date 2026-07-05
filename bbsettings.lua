@@ -53,6 +53,15 @@ local DEFAULTS = {
     -- extra tokens and opens no new spoiler surface, and an agent that can ask beats one
     -- that guesses. When off, the tool is not advertised.
     enable_clarifying_questions = true,
+    -- Spoiler confirmation: when the model wants a tool to look past the reader's
+    -- current position (grep/read with spoiler=true, delegate with
+    -- allow_spoiler=true), pause and ask the reader to approve first -- once, or
+    -- for the rest of the conversation. On by default: spoiler safety is the
+    -- product's core promise, and without this gate the main agent can pass
+    -- spoiler=true on its own judgement with only the prompt discouraging it
+    -- (subagents are hard-clamped; the parent was not). Off restores that
+    -- prompt-trust behaviour.
+    confirm_spoilers = true,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.
@@ -104,6 +113,8 @@ function Settings:getConfig()
         -- Default ON: a nil (never-set) value must resolve true, so coalesce nil to the
         -- default rather than the usual `and true or false` (which would force nil->false).
         enable_clarifying_questions = self:get("enable_clarifying_questions") ~= false,
+        -- Default ON, same nil-coalescing shape as enable_clarifying_questions above.
+        confirm_spoilers = self:get("confirm_spoilers") ~= false,
         subagent_max_turns = math.max(
             1,
             math.min(
@@ -441,6 +452,23 @@ function Settings:getMenu(ui)
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:set("enable_clarifying_questions", self:get("enable_clarifying_questions") == false)
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        },
+        {
+            text = _("Confirm spoilers"),
+            help_text = _(
+                "Ask you before BookBuddy searches or reads past your current page, or sends a helper ahead with spoilers allowed. You can allow it once or for the rest of the conversation. On by default; turn it off to let BookBuddy decide on its own judgement when you ask about things ahead."
+            ),
+            -- Default on: a never-set value is nil, which must read as checked, so test ~= false.
+            checked_func = function()
+                return self:get("confirm_spoilers") ~= false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("confirm_spoilers", self:get("confirm_spoilers") == false)
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()
                 end
