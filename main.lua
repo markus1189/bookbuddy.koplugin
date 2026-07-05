@@ -137,7 +137,8 @@ function BookBuddy:promptAndStart(text, note)
     end
 
     local dialog
-    local buttons = Presets.buttonRows(has_text and Presets.passage or Presets.book, function()
+    local presets = Presets.withCustom(has_text and Presets.passage or Presets.book, self.settings:getCustomPresets())
+    local buttons = Presets.buttonRows(presets, function()
         return dialog
     end)
     buttons[#buttons + 1] = {

@@ -38,6 +38,11 @@ describe("bbsettings", function()
                 return o or {}
             end,
         }
+        package.loaded["ui/widget/multiinputdialog"] = {
+            new = function(_, o)
+                return o or {}
+            end,
+        }
         package.loaded["ui/widget/textviewer"] = {
             new = function(_, o)
                 return o or {}
@@ -138,6 +143,74 @@ describe("bbsettings", function()
             local s = fresh()
             s:set("api_key", "secret")
             assert.is_true(s:isConfigured())
+        end)
+    end)
+
+    describe("getCustomPresets", function()
+        it("returns an empty list when nothing is stored", function()
+            assert.are.same({}, fresh():getCustomPresets())
+        end)
+
+        it("returns an empty list for a non-table stored value", function()
+            local s = fresh()
+            s:set("custom_presets", "oops")
+            assert.are.same({}, s:getCustomPresets())
+        end)
+
+        it("round-trips entries in stored order, trimming label and prompt", function()
+            local s = fresh()
+            s:set("custom_presets", {
+                { label = "  Vocab ", prompt = " List the difficult vocabulary. " },
+                { label = "Recap", prompt = "Recap the chapter." },
+            })
+            local presets = s:getCustomPresets()
+            assert.are.equal(2, #presets)
+            assert.are.equal("Vocab", presets[1].label)
+            assert.are.equal("List the difficult vocabulary.", presets[1].prompt)
+            assert.are.equal("Recap", presets[2].label)
+        end)
+
+        it("preserves interior newlines in the prompt", function()
+            local s = fresh()
+            s:set("custom_presets", { { label = "Multi", prompt = "First line.\nSecond line." } })
+            assert.are.equal("First line.\nSecond line.", s:getCustomPresets()[1].prompt)
+        end)
+
+        it("skips malformed entries but keeps the valid ones", function()
+            local s = fresh()
+            s:set("custom_presets", {
+                "not a table",
+                { label = "No prompt" },
+                { label = "Blank prompt", prompt = "   " },
+                { label = "Numeric prompt", prompt = 42 },
+                { label = "Good", prompt = "A real prompt." },
+            })
+            local presets = s:getCustomPresets()
+            assert.are.equal(1, #presets)
+            assert.are.equal("Good", presets[1].label)
+        end)
+
+        it("derives a label from the prompt's first line when the label is blank or missing", function()
+            local s = fresh()
+            s:set("custom_presets", {
+                { prompt = "Recap the chapter." },
+                { label = "   ", prompt = "Short one.\nSecond line is ignored." },
+            })
+            local presets = s:getCustomPresets()
+            assert.are.equal("Recap the chapter.", presets[1].label)
+            assert.are.equal("Short one.", presets[2].label)
+        end)
+
+        it("cuts a long derived label back to the last completed word", function()
+            local s = fresh()
+            s:set("custom_presets", { { prompt = "Summarize this chapter in three sentences." } })
+            assert.are.equal("Summarize this chapter", s:getCustomPresets()[1].label)
+        end)
+
+        it("hard-cuts a derived label whose first word alone exceeds the cap", function()
+            local s = fresh()
+            s:set("custom_presets", { { prompt = string.rep("x", 40) } })
+            assert.are.equal(string.rep("x", 24), s:getCustomPresets()[1].label)
         end)
     end)
 

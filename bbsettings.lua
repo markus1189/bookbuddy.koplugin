@@ -3,6 +3,7 @@ local DataStorage = require("datastorage")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local LuaSettings = require("luasettings")
+local MultiInputDialog = require("ui/widget/multiinputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local _ = require("gettext")
@@ -58,6 +59,39 @@ local DEFAULTS = {
     -- user-editable, so customizations don't have to restate the internals.
     additional_system_prompt = "",
 }
+
+-- The reader's own prompt templates ("custom presets") are stored under the
+-- custom_presets key as a list of { label = ..., prompt = ... } tables. They are
+-- not in DEFAULTS (an absent key reads as an empty list) and are normalized on
+-- every read (getCustomPresets), so a hand-edited settings file with junk entries
+-- degrades to missing buttons rather than a crashed chat dialog.
+
+-- Longest derived button label. The chat dialogs lay preset buttons out two per
+-- row, so anything much longer than this gets ellipsized by the button widget
+-- anyway; explicit labels are the reader's own and are not capped.
+local PRESET_LABEL_MAX_CHARS = 24
+
+local function trim(s)
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- Button label derived from a prompt when the reader left the label blank: the
+-- prompt's first line, whitespace-collapsed, cut back to the last completed word
+-- within PRESET_LABEL_MAX_CHARS. The back-off lands on a space (ASCII), so it can
+-- never split a multibyte character; only a single first word longer than the cap
+-- falls through to a hard byte cut (display-only, mirrors bbtools' truncate()).
+local function deriveLabel(prompt)
+    local line = prompt:match("[^\r\n]*") or ""
+    line = trim(line:gsub("%s+", " "))
+    if #line <= PRESET_LABEL_MAX_CHARS then
+        return line
+    end
+    local head = line:sub(1, PRESET_LABEL_MAX_CHARS)
+    if line:sub(PRESET_LABEL_MAX_CHARS + 1):match("^%S") then
+        head = head:match("^(.-)%s+%S*$") or head
+    end
+    return trim(head)
+end
 
 -- Upper bound on subagent_max_turns at resolve time. The setting is a free number
 -- field (see the menu), so a mistyped large value would otherwise let one delegation
@@ -117,6 +151,137 @@ end
 function Settings:isConfigured()
     local key = self:get("api_key")
     return key ~= nil and key ~= ""
+end
+
+-- Validated, display-ready form of the stored custom_presets list, in stored
+-- order: each entry with a usable prompt keeps it trimmed, and a blank/missing
+-- label is derived from the prompt. Malformed entries (non-tables, no prompt
+-- text) are skipped. Both the chat dialogs (via Presets.withCustom) and the
+-- template editor below consume THIS list, so their 1-based indices agree.
+function Settings:getCustomPresets()
+    local raw = self:get("custom_presets")
+    local out = {}
+    if type(raw) ~= "table" then
+        return out
+    end
+    for _, entry in ipairs(raw) do
+        if type(entry) == "table" and type(entry.prompt) == "string" then
+            local prompt = trim(entry.prompt)
+            if prompt ~= "" then
+                local label = type(entry.label) == "string" and trim(entry.label) or ""
+                if label == "" then
+                    label = deriveLabel(prompt)
+                end
+                out[#out + 1] = { label = label, prompt = prompt }
+            end
+        end
+    end
+    return out
+end
+
+-- Add/edit dialog for one custom prompt template. index nil creates a new
+-- template; otherwise the index-th entry of the normalized list is edited (or
+-- deleted). Every write stores the whole normalized list back, so junk entries
+-- in a hand-edited file are flushed on the first save, and the indices the menu
+-- rows captured stay valid. The label field may be left blank -- getCustomPresets
+-- derives one from the prompt on the next read.
+function Settings:editCustomPreset(touchmenu_instance, index)
+    local presets = self:getCustomPresets()
+    local existing = index and presets[index] or nil
+    local dialog
+    local function saveList()
+        self:set("custom_presets", presets)
+        UIManager:close(dialog)
+        -- Rebuild the submenu rows in place: updateItems() re-renders from
+        -- item_table, so reassigning it is how a row list changes size (a plain
+        -- updateItems() would repaint the stale rows).
+        if touchmenu_instance then
+            touchmenu_instance.item_table = self:customPresetMenuItems()
+            touchmenu_instance:updateItems()
+        end
+    end
+    local rows = {}
+    if existing then
+        rows[#rows + 1] = {
+            {
+                text = _("Delete"),
+                callback = function()
+                    UIManager:show(ConfirmBox:new({
+                        text = T(_('Delete the prompt template "%1"?'), existing.label),
+                        ok_text = _("Delete"),
+                        ok_callback = function()
+                            table.remove(presets, index)
+                            saveList()
+                        end,
+                    }))
+                end,
+            },
+        }
+    end
+    rows[#rows + 1] = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+                UIManager:close(dialog)
+            end,
+        },
+        {
+            text = _("Save"),
+            callback = function()
+                local fields = dialog:getFields()
+                local label, prompt = fields[1] or "", fields[2] or ""
+                if prompt:gsub("%s", "") == "" then
+                    UIManager:show(InfoMessage:new({ text = _("Enter the prompt text first."), timeout = 2 }))
+                    return -- keep the dialog open so the reader can fill it in
+                end
+                local entry = { label = label, prompt = prompt }
+                if index then
+                    presets[index] = entry
+                else
+                    presets[#presets + 1] = entry
+                end
+                saveList()
+            end,
+        },
+    }
+    dialog = MultiInputDialog:new({
+        title = existing and _("Edit prompt template") or _("Add prompt template"),
+        fields = {
+            { text = existing and existing.label or "", hint = _("Button label (optional)") },
+            { text = existing and existing.prompt or "", hint = _("Prompt text") },
+        },
+        buttons = rows,
+    })
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+-- Rows for the "Prompt templates" submenu: a leading "Add" row, then one row per
+-- stored template (tap to edit or delete; hold shows the full prompt as help
+-- text). Rebuilt fresh by sub_item_table_func each time the submenu opens, and
+-- reassigned into the live touchmenu after every save/delete (see saveList).
+function Settings:customPresetMenuItems()
+    local items = {
+        {
+            text = _("Add a prompt template"),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:editCustomPreset(touchmenu_instance, nil)
+            end,
+        },
+    }
+    for i, preset in ipairs(self:getCustomPresets()) do
+        items[#items + 1] = {
+            text = preset.label,
+            help_text = preset.prompt,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:editCustomPreset(touchmenu_instance, i)
+            end,
+        }
+    end
+    return items
 end
 
 -- Generic single-line string/number editor.
@@ -327,6 +492,15 @@ function Settings:getMenu(ui)
                         "Appended to BookBuddy's built-in system prompt. Leave empty for the default behavior."
                     ),
                 })
+            end,
+        },
+        {
+            text = _("Prompt templates"),
+            help_text = _(
+                "Your own quick-prompt buttons, shown alongside the built-in ones in every chat dialog. Tapping one prefills the input box with its prompt so you can tweak the wording before sending. Tap a template here to edit or delete it; long-press it to preview the full prompt."
+            ),
+            sub_item_table_func = function()
+                return self:customPresetMenuItems()
             end,
         },
         {
