@@ -68,6 +68,9 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   matters* / *Simpler* for a highlighted passage, or *Yes* / *Memorize* / *Highlight*
   when replying. They prefill rather than send, so you can tweak the wording before tapping
   **Send** — handy for sidestepping the on-screen keyboard.
+- **Your own prompt templates**: add reusable prompts of your own (menu →
+  BookBuddy → **Prompt templates**) and they appear as extra preset buttons in
+  every chat dialog, after the built-in ones. Type the prompt once, tap it forever.
 - **Grounds answers in the real text** with tools that read the book instead of
   guessing:
   - `grep` — full-text search within the book
@@ -175,6 +178,10 @@ Open any book, then go to the top menu → **BookBuddy**:
 - **Additional system prompt** — optional text appended to BookBuddy's built-in
   system prompt; add your own preferences (tone, language, focus) without restating
   the built-in instructions. Leave empty for the default behavior.
+- **Prompt templates** — your own quick-prompt buttons, shown after the built-in
+  presets in every chat dialog. Each template has a prompt and an optional button
+  label (left blank, the label is derived from the prompt's first words). Tap a
+  template to edit or delete it; long-press it to preview the full prompt.
 - **Per-book memory** / **Extended thinking** / **Show streaming thinking** /
   **Web search** / **Subagent delegation** / **Clarifying questions** — toggles.
   *Show streaming thinking* (off by default, requires *Extended thinking*) surfaces

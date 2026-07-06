@@ -876,7 +876,10 @@ end
 
 function Conversation:_promptFollowup()
     local dialog
-    local buttons = Presets.buttonRows(Presets.followup, function()
+    -- Guarded access: spec stubs legitimately pass a partial settings double
+    -- (getConfig only), and withCustom treats a nil custom list as "none".
+    local custom = self.settings and self.settings.getCustomPresets and self.settings:getCustomPresets()
+    local buttons = Presets.buttonRows(Presets.withCustom(Presets.followup, custom), function()
         return dialog
     end)
     buttons[#buttons + 1] = {

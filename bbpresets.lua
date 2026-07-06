@@ -47,6 +47,24 @@ Presets.followup = {
     { _("Highlight"), _("Create a highlight with a note") },
 }
 
+-- A built-in preset list followed by the reader's own prompt templates (from
+-- bbsettings:getCustomPresets(), entries with named label/prompt fields),
+-- converted to the positional {label, prompt} pair shape buttonRows consumes.
+-- Returns a fresh list -- the shared built-in tables are never mutated, and a
+-- nil/empty custom list just yields a copy of the built-ins.
+function Presets.withCustom(list, custom)
+    local out = {}
+    for i = 1, #list do
+        out[i] = list[i]
+    end
+    if type(custom) == "table" then
+        for _, p in ipairs(custom) do
+            out[#out + 1] = { p.label, p.prompt }
+        end
+    end
+    return out
+end
+
 function Presets.buttonRows(list, get_dialog, per_row)
     per_row = per_row or 2
 

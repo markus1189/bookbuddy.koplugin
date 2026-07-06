@@ -1,7 +1,8 @@
--- Pure-luajit checks for bbpresets `buttonRows`: the row-chunking, the prefill
--- button formatting (trailing ellipsis + non-bold weight), and the callback that
--- prefills the dialog input. The static preset tables (book/passage/followup) and
--- the DPI-dependent inputLines() pixel math are data/device concerns, out of scope.
+-- Pure-luajit checks for bbpresets `buttonRows` (the row-chunking, the prefill
+-- button formatting -- trailing ellipsis + non-bold weight -- and the callback that
+-- prefills the dialog input) and `withCustom` (merging the reader's own prompt
+-- templates after a built-in list). The static preset tables (book/passage/followup)
+-- and the DPI-dependent inputLines() pixel math are data/device concerns, out of scope.
 
 local stubs = require("support.stubs")
 
@@ -63,5 +64,60 @@ describe("Presets.buttonRows", function()
         assert.has_no.errors(function()
             rows[1][1].callback()
         end)
+    end)
+end)
+
+describe("Presets.withCustom", function()
+    local Presets
+    setup(function()
+        stubs.install()
+        Presets = require("bbpresets")
+    end)
+
+    local builtin = { { "Explain", "Explain this passage." }, { "Define", "Define terms." } }
+
+    it("appends custom templates after the built-ins as {label, prompt} pairs", function()
+        local merged = Presets.withCustom(builtin, {
+            { label = "Vocab", prompt = "List the difficult vocabulary." },
+        })
+        assert.are.equal(3, #merged)
+        assert.are.equal("Explain", merged[1][1])
+        assert.are.equal("Vocab", merged[3][1])
+        assert.are.equal("List the difficult vocabulary.", merged[3][2])
+    end)
+
+    it("keeps the custom templates' stored order", function()
+        local merged = Presets.withCustom({}, {
+            { label = "A", prompt = "pa" },
+            { label = "B", prompt = "pb" },
+        })
+        assert.are.equal("A", merged[1][1])
+        assert.are.equal("B", merged[2][1])
+    end)
+
+    it("returns a plain copy of the built-ins for a nil or empty custom list", function()
+        assert.are.equal(2, #Presets.withCustom(builtin, nil))
+        assert.are.equal(2, #Presets.withCustom(builtin, {}))
+    end)
+
+    it("does not mutate the built-in list", function()
+        Presets.withCustom(builtin, { { label = "X", prompt = "px" } })
+        assert.are.equal(2, #builtin)
+    end)
+
+    it("feeds buttonRows so a custom template prefills the dialog", function()
+        local captured
+        local dialog = {
+            setInputText = function(_, text)
+                captured = text
+            end,
+        }
+        local merged = Presets.withCustom({}, { { label = "Vocab", prompt = "List the difficult vocabulary." } })
+        local rows = Presets.buttonRows(merged, function()
+            return dialog
+        end)
+        assert.are.equal("Vocab…", rows[1][1].text)
+        rows[1][1].callback()
+        assert.are.equal("List the difficult vocabulary.", captured)
     end)
 end)
