@@ -28,6 +28,7 @@ local History = require("bbhistory")
 local Memory = require("bbmemory")
 local Presets = require("bbpresets")
 local Retry = require("bbretry")
+local StatusBar = require("bbstatusbar")
 local Tools = require("bbtools")
 local Transcript = require("bbtranscript")
 
@@ -241,6 +242,9 @@ function Conversation:_loop()
         local body = Anthropic.buildBody(self.messages, tools, cfg)
         logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages, "tools:", tools and #tools or 0)
         self:_ensureStreamingViewer()
+        -- Every round (fresh, tool continuation, resume) starts back at
+        -- "connecting" until the stream's first delta lands.
+        self:_setStatus("connecting")
 
         -- Each entry is created on its first delta so a turn that produces no
         -- thinking (or no text) leaves no empty line in the transcript. These live
@@ -298,6 +302,7 @@ function Conversation:_loop()
                             thinking_entry = { role = "thinking", done = false }
                             self.transcript[#self.transcript + 1] = thinking_entry
                         end
+                        self:_setStatus("thinking")
                         if cfg.show_streaming_thinking and delta and delta ~= "" then
                             thinking_entry.text = (thinking_entry.text or "") .. delta
                         end
@@ -314,6 +319,7 @@ function Conversation:_loop()
                         if thinking_entry then
                             thinking_entry.done = true
                         end
+                        self:_setStatus("writing")
                         if not entry then
                             entry = { role = "assistant", text = "" }
                             self.transcript[#self.transcript + 1] = entry
@@ -332,6 +338,7 @@ function Conversation:_loop()
             on_retry = function(next_attempt)
                 self:_trimTranscript()
                 self:_showRetryStatus(next_attempt)
+                self:_setStatus("retrying", tostring(next_attempt) .. "/" .. tostring(Retry.MAX_STREAM_ATTEMPTS))
             end,
             stopped = function()
                 return self.stop_requested
@@ -465,6 +472,11 @@ function Conversation:_loop()
                 -- summary into the same line once the executor returns.
                 local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
                 self.transcript[#self.transcript + 1] = tool_entry
+                -- Paint the status BEFORE the executor: tools run synchronously and
+                -- block the event loop, so the ticker can't fire mid-call -- this
+                -- line is the bar's last update until the tool returns, and it must
+                -- say what the turn is stuck on.
+                self:_setStatus("tool", tu.name)
                 self:_flushNow()
                 local result, summary
                 if tu.name == "memory" and self.memory then
@@ -624,6 +636,9 @@ end
 -- _askUser always returns a NON-EMPTY string, so the ask_user tool_use is always answered.
 function Conversation:_askUser(input)
     input = input or {}
+    -- The turn is parked on the reader's dialog, not on the model or a tool;
+    -- say so (the ticker keeps running -- this path yields, unlike client tools).
+    self:_setStatus("asking")
     local question = tostring(input.question or _("Could you clarify what you mean?"))
     local options = input.options
 
@@ -792,6 +807,24 @@ function Conversation:_ensureStreamingViewer()
         UIManager:close(self.viewer)
         self.viewer = nil
     end
+    -- One status bar (one clock) per user turn: created here at turn start --
+    -- multi-round turns never re-enter past the early return above -- and
+    -- retired by _render (freeze) or _closeViewer (stop). The paint callback
+    -- reads self.viewer at call time, so it follows a rebuilt viewer.
+    if not self._statusbar_active then
+        self._statusbar = StatusBar.new({
+            get_context = function()
+                return self.context_size
+            end,
+            on_paint = function(text)
+                if self.viewer then
+                    ChatViewer.updateStatus(self.viewer, text)
+                end
+            end,
+        })
+        self._statusbar_active = true
+        self._status_key = nil
+    end
     self.viewer = ChatViewer.build({
         title = _("BookBuddy"),
         text = self:_transcriptText(),
@@ -805,14 +838,45 @@ function Conversation:_ensureStreamingViewer()
                 self._cancel()
             end
         end,
+        status_text = self._statusbar:text(),
+        on_close = function()
+            -- Reader closed the viewer mid-stream: without this the ticker would
+            -- keep repainting a dead widget once a second until the turn ends.
+            if self._statusbar then
+                self._statusbar:stop()
+            end
+        end,
         scroll_to_bottom = true,
     })
     self.streaming_viewer = true
     UIManager:show(self.viewer)
+    -- Start after show so the initial paint lands on the live viewer; idempotent
+    -- on a rebuilt viewer mid-turn (keeps t0 and the pending tick).
+    self._statusbar:start()
+end
+
+-- Route an activity change to the status bar, deduped: on_text fires per stream
+-- delta, so without the key check the bar would repaint the same "writing" line
+-- dozens of times a second.
+function Conversation:_setStatus(state, detail)
+    if not self._statusbar then
+        return
+    end
+    local key = state .. "\0" .. tostring(detail or "")
+    if self._status_key == key then
+        return
+    end
+    self._status_key = key
+    self._statusbar:setState(state, detail)
 end
 
 function Conversation:_closeViewer()
     self:_cancelFlush()
+    -- Cancel/error path: kill the ticker without painting a "done" line.
+    if self._statusbar then
+        self._statusbar:stop()
+        self._statusbar_active = false
+    end
     if self.viewer then
         UIManager:close(self.viewer)
         self.viewer = nil
@@ -858,6 +922,14 @@ end
 
 function Conversation:_render()
     self:_cancelFlush()
+    -- The turn is over -- it's the reader's move. Freeze BEFORE closing the old
+    -- viewer (freeze stops the ticker and pins the elapsed time) and seed the
+    -- rebuilt Reply-mode viewer with the static "✓ m:ss · done · ctx Nk" line.
+    local frozen_status
+    if self._statusbar then
+        frozen_status = self._statusbar:freeze()
+        self._statusbar_active = false
+    end
     if self.viewer then
         UIManager:close(self.viewer)
         self.viewer = nil
@@ -868,6 +940,7 @@ function Conversation:_render()
         on_followup = function()
             self:_promptFollowup()
         end,
+        status_text = frozen_status,
         scroll_to_bottom = true,
     })
     self.streaming_viewer = false

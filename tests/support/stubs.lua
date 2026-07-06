@@ -337,19 +337,62 @@ function M.install()
     local chatviewer = {
         last_text = nil,
         last_on_stop = nil,
+        last_status = nil,
+        last_on_close = nil,
     }
     chatviewer.build = function(o)
         chatviewer.last_text = o and o.text
         if o and o.on_stop then
             chatviewer.last_on_stop = o.on_stop
         end
+        chatviewer.last_status = o and o.status_text
+        chatviewer.last_on_close = o and o.on_close
         return { _stub = true }
     end
     chatviewer.updateText = function(_, text)
         chatviewer.last_text = text
     end
+    chatviewer.updateStatus = function(_, text)
+        chatviewer.last_status = text
+    end
     package.loaded["bbchatviewer"] = chatviewer
     handle.chatviewer = chatviewer
+
+    -- Recording double for bbstatusbar. The REAL module must never run under the
+    -- Trapper pump above: its ticker re-arms itself via scheduleIn, and the
+    -- `while suspended` drain pops-and-runs until the queue empties -- a
+    -- self-rearming callback keeps the queue non-empty forever whenever the
+    -- conversation coroutine parks (backoff, ask_user dialog), spinning the pump.
+    -- The real ticker is exercised in statusbar_spec.lua, which pops
+    -- handle.tick_queue by hand instead. Here we just record lifecycle events so
+    -- conversation specs can assert the wiring (start/state/freeze/stop order).
+    local statusbar = { events = {}, instances = 0 }
+    statusbar.new = function()
+        statusbar.instances = statusbar.instances + 1
+        local function rec(e)
+            statusbar.events[#statusbar.events + 1] = e
+        end
+        return {
+            start = function()
+                rec("start")
+            end,
+            setState = function(_, state, detail)
+                rec("state:" .. state .. (detail ~= nil and (":" .. tostring(detail)) or ""))
+            end,
+            freeze = function()
+                rec("freeze")
+                return "FROZEN"
+            end,
+            stop = function()
+                rec("stop")
+            end,
+            text = function()
+                return "STATUS0"
+            end,
+        }
+    end
+    package.loaded["bbstatusbar"] = statusbar
+    handle.statusbar = statusbar
 
     return handle
 end
