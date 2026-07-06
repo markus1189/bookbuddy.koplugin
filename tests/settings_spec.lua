@@ -69,6 +69,16 @@ describe("bbsettings", function()
             assert.is_false(c.enable_subagents)
             assert.are.equal(12, c.subagent_max_turns)
             assert.are.equal("", c.additional_system_prompt)
+            assert.is_true(c.confirm_spoilers)
+        end)
+
+        it("resolves confirm_spoilers default-on: only an explicit false disables it", function()
+            local s = fresh()
+            assert.is_true(s:getConfig().confirm_spoilers) -- never set (nil) reads as on
+            s:set("confirm_spoilers", false)
+            assert.is_false(s:getConfig().confirm_spoilers)
+            s:set("confirm_spoilers", true)
+            assert.is_true(s:getConfig().confirm_spoilers)
         end)
 
         it("falls back to the default max_tokens for a non-numeric stored value", function()

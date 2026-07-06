@@ -509,9 +509,12 @@ end
 -- no live stream, _cancel is nil). When set, execute() fires the chat-viewer's captured
 -- on_stop closure mid-execution; the loop must then abort at its next UI boundary
 -- without issuing another request. Pass the handle from install() so the double can
--- reach the chat-viewer's on_stop.
+-- reach the chat-viewer's on_stop. Every execute() (except the loop's own seed
+-- book_context) is recorded onto stub.state.calls as {name=, input=}, so a spec can
+-- assert exactly which tools ran and with what inputs (the spoiler gate's denial
+-- path asserts a tool did NOT run).
 function M.install_bbtools_stub(handle)
-    local state = { stop_during_tool = false }
+    local state = { stop_during_tool = false, calls = {} }
     local stub = {
         state = state,
         getSpecs = function()
@@ -520,10 +523,11 @@ function M.install_bbtools_stub(handle)
                 { type = "web_search_20250305", name = "web_search", max_uses = 5 },
             }
         end,
-        execute = function(name)
+        execute = function(name, input)
             if name == "book_context" then
                 return "Title: Test Book\nAuthor: Tester\nCurrent page: 10 of 200", "page 10 of 200"
             end
+            state.calls[#state.calls + 1] = { name = name, input = input }
             local cv = handle and handle.chatviewer
             if state.stop_during_tool and cv and cv.last_on_stop then
                 state.stop_during_tool = false

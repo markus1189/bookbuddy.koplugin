@@ -118,7 +118,9 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
   surface the reasoning text live, but it's off by default since the reasoning
   may name plot points you haven't read yet.
 - **Spoiler-aware throughout** — it avoids revealing anything past your current
-  position unless you explicitly ask.
+  position unless you explicitly ask. When it does want to look ahead (a search or
+  read past your page, or a helper sent ahead), **Confirm spoilers** (on by
+  default) first asks you to allow it — once, or for the rest of the conversation.
 - A **token-usage footer** tracks what each conversation cost.
 
 ## Requirements

@@ -37,6 +37,26 @@ local Transcript = require("bbtranscript")
 -- transport wakes every 0.125s; coalescing to ~2.5 fps keeps e-ink usable.
 local FLUSH_INTERVAL_SEC = 0.4
 
+-- Does this client tool call ask to look past the reader's current position?
+-- grep/read expose it as spoiler=true (removing their current-page cap); delegate
+-- as allow_spoiler=true (relaxing the child driver's hard clamp, see bbsubagents).
+-- These are the only three spoiler surfaces in the tool set: navigate moves the
+-- reader visibly (and reversibly), which is not a hidden reveal, and everything
+-- else is position-bound by construction.
+local function wantsSpoiler(tu)
+    local input = tu.input
+    if type(input) ~= "table" then
+        return false
+    end
+    if tu.name == "grep" or tu.name == "read" then
+        return input.spoiler == true
+    end
+    if tu.name == "delegate" then
+        return input.allow_spoiler == true
+    end
+    return false
+end
+
 local Conversation = {}
 Conversation.__index = Conversation
 
@@ -105,6 +125,11 @@ function Conversation:new(o)
     o.viewer = nil
     o.streaming_viewer = false
     o._cancel = nil
+    -- Set true when the reader picks "Allow for this conversation" in the spoiler
+    -- confirmation dialog (_confirmSpoiler); later spoiler requests in THIS
+    -- Conversation then pass without asking again. Per-conversation by design: a
+    -- new chat starts spoiler-safe regardless of what a previous one allowed.
+    o.spoiler_approved = false
     -- Set true by the viewer's Stop button. A Stop pressed while a stream is live
     -- cancels it immediately via _cancel; a Stop pressed during a synchronous tool
     -- call (no live stream, _cancel is nil) can only be recorded here and is
@@ -519,7 +544,20 @@ function Conversation:_loop()
                 self:_setStatus("tool", tu.name)
                 self:_flushNow()
                 local result, summary
-                if tu.name == "memory" and self.memory then
+                -- Spoiler gate: a tool call that asks to look past the reader's
+                -- current position must be approved by the READER, not the model --
+                -- the same shape as a sandbox-escalation approval. Checked before
+                -- dispatch so a denial never runs the tool at all; the denial is an
+                -- ordinary recoverable tool_result (like a skipped ask_user), so the
+                -- model answers spoiler-free instead of the turn failing. Same
+                -- park-and-resume legality as ask_user below: we are past the
+                -- stream, at an ordinary call site, so _confirmSpoiler may yield.
+                if wantsSpoiler(tu) and not self:_confirmSpoiler(cfg) then
+                    result = _(
+                        "[The reader declined to reveal anything past their current position. Answer spoiler-free using only the text up to their current page, and do not request spoiler access again unless the reader asks to look ahead.]"
+                    )
+                    summary = _("not allowed")
+                elseif tu.name == "memory" and self.memory then
                     result = self.memory:execute(tu.input)
                 elseif tu.name == "delegate" then
                     result, summary = self:_runDelegate(tu, cfg, tool_entry)
@@ -819,6 +857,92 @@ function Conversation:_askUser(input)
         shown = shown:sub(1, 39) .. "…"
     end
     return answer, T(_("“%1”"), shown)
+end
+
+-- Ask the reader to approve a tool call that wants to look past their current
+-- position, PARKing the turn loop until they choose. Returns true to run the tool
+-- with spoilers, false to refuse it. "Allow for this conversation" latches
+-- self.spoiler_approved so later requests in this chat pass without asking again.
+--
+-- Same mechanism as _askUser above -- capture this coroutine, resume from the
+-- dialog callbacks on the next tick, coroutine.yield() -- and the same NO-HANG
+-- INVARIANT: EVERY close path (each button AND a bare tap-outside/Back dismissal
+-- through onCloseWidget) routes through the one-shot resume(), or the loop parks
+-- forever. A dismissal counts as a refusal: deny is the safe default for the
+-- product's core promise, and the model recovers from the refusal note either way.
+function Conversation:_confirmSpoiler(cfg)
+    if cfg.confirm_spoilers == false then
+        return true -- gate disabled in settings: the model's judgement stands, as before
+    end
+    if self.spoiler_approved then
+        return true -- the reader already opened this conversation up
+    end
+
+    local co = coroutine.running()
+    local resumed = false
+    local allowed = false
+    local function resume(ok)
+        if resumed then
+            return
+        end
+        resumed = true
+        allowed = ok
+        UIManager:nextTick(function()
+            coroutine.resume(co)
+        end)
+    end
+
+    local dialog
+    dialog = ButtonDialog:new({
+        title = _(
+            "BookBuddy wants to look past your current page to answer. This can reveal parts of the book you haven't read yet."
+        ),
+        title_align = "center",
+        buttons = {
+            {
+                {
+                    text = _("Allow once"),
+                    callback = function()
+                        resume(true)
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Allow for this conversation"),
+                    callback = function()
+                        self.spoiler_approved = true
+                        resume(true)
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+            {
+                {
+                    text = _("Don't allow"),
+                    callback = function()
+                        resume(false)
+                        UIManager:close(dialog)
+                    end,
+                },
+            },
+        },
+    })
+    -- NO-HANG net (see _askUser): a dismissal frees the widget through
+    -- onCloseWidget without any button callback; chain a refusal resume so the
+    -- loop still wakes. Guarded, so a real button choice makes this a no-op.
+    local orig = dialog.onCloseWidget
+    dialog.onCloseWidget = function(d)
+        if orig then
+            orig(d)
+        end
+        resume(false)
+    end
+    UIManager:show(dialog)
+
+    coroutine.yield()
+    return allowed
 end
 
 -- Re-render this turn's assistant content into the transcript in block order,
