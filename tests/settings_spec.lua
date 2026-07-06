@@ -29,6 +29,9 @@ describe("bbsettings", function()
                 function store:saveSetting(key, value)
                     self._data[key] = value
                 end
+                function store:delSetting(key)
+                    self._data[key] = nil
+                end
                 function store:flush() end
                 return store
             end,
@@ -230,5 +233,113 @@ describe("bbsettings", function()
         local c = s:getConfig()
         assert.are.equal(false, c.enable_memory)
         assert.are.equal("boolean", type(c.enable_thinking))
+    end)
+
+    -- A store backed by a caller-supplied table, so tests can seed the file
+    -- state a migration runs against (fresh()'s open() always starts empty).
+    local function store_with(data)
+        local store = { _data = data or {} }
+        function store:readSetting(key, default)
+            local v = self._data[key]
+            if v == nil then
+                return default
+            end
+            return v
+        end
+        function store:saveSetting(key, value)
+            self._data[key] = value
+        end
+        function store:delSetting(key)
+            self._data[key] = nil
+        end
+        function store:flush() end
+        return store
+    end
+
+    describe("set stores only deviations from the current default", function()
+        it("persists a value that differs from the default", function()
+            local s = fresh()
+            s:set("max_tokens", 1000)
+            assert.are.equal(1000, s.store._data.max_tokens)
+        end)
+
+        it("forgets a value equal to the default so a future default bump reaches it", function()
+            local s = fresh()
+            s:set("max_tokens", 1000)
+            s:set("max_tokens", 64000) -- == DEFAULTS.max_tokens
+            assert.is_nil(s.store._data.max_tokens)
+            assert.are.equal(64000, s:get("max_tokens"))
+        end)
+
+        it("still persists keys that have no default (api_key, custom_presets)", function()
+            local s = fresh()
+            s:set("api_key", "")
+            assert.are.equal("", s.store._data.api_key)
+        end)
+    end)
+
+    describe("reset", function()
+        it("forgets a single customized key, restoring the live default", function()
+            local s = fresh()
+            s:set("model", "custom/model")
+            s:reset("model")
+            assert.is_nil(s.store._data.model)
+            assert.are.equal("anthropic/claude-opus-4.8", s:get("model"))
+        end)
+    end)
+
+    describe("resetToDefaults", function()
+        it("clears preferences but keeps connection config and custom presets", function()
+            local s = fresh()
+            s:set("api_key", "secret")
+            s:set("base_url", "https://my.gateway")
+            s:set("model", "custom/model")
+            s:set("max_turns", 5)
+            s:set("enable_subagents", true)
+            s:set("custom_presets", { { label = "X", prompt = "do x" } })
+
+            s:resetToDefaults()
+
+            -- Connection config and user-authored presets survive.
+            assert.are.equal("secret", s:get("api_key"))
+            assert.are.equal("https://my.gateway", s:get("base_url"))
+            assert.are.equal(1, #s:getCustomPresets())
+            -- Preferences fall back to defaults.
+            assert.are.equal("anthropic/claude-opus-4.8", s:get("model"))
+            assert.are.equal(20, s:getConfig().max_turns)
+            assert.is_false(s:getConfig().enable_subagents)
+        end)
+    end)
+
+    describe("migrate", function()
+        local function migrated(data)
+            local s = setmetatable({ store = store_with(data) }, Settings)
+            s:migrate()
+            return s
+        end
+
+        it("un-pins a reader still carrying the previous default model", function()
+            local s = migrated({ model = "anthropic/claude-opus-4.7" })
+            assert.is_nil(s.store._data.model) -- forgotten, floats to new default
+            assert.are.equal("anthropic/claude-opus-4.8", s:get("model"))
+            assert.are.equal(2, s.store._data.settings_version)
+        end)
+
+        it("leaves a deliberately chosen model alone", function()
+            local s = migrated({ model = "some/other-model" })
+            assert.are.equal("some/other-model", s:get("model"))
+            assert.are.equal(2, s.store._data.settings_version)
+        end)
+
+        it("is a no-op on an already-current store", function()
+            local s = migrated({ settings_version = 2, model = "anthropic/claude-opus-4.7" })
+            assert.are.equal("anthropic/claude-opus-4.7", s:get("model")) -- migration skipped
+        end)
+
+        it("stamps the version on a brand-new (empty) store without touching anything", function()
+            local s = migrated({})
+            assert.are.equal(2, s.store._data.settings_version)
+            assert.are.equal("anthropic/claude-opus-4.8", s:get("model"))
+        end)
     end)
 end)

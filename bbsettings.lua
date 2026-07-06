@@ -79,6 +79,48 @@ local DEFAULTS = {
 -- every read (getCustomPresets), so a hand-edited settings file with junk entries
 -- degrades to missing buttons rather than a crashed chat dialog.
 
+-- Bump SETTINGS_VERSION and add a MIGRATIONS[v] entry whenever a *default*
+-- changes in a way that should reach readers who never deliberately customized
+-- that key. Each migration runs once, in order; keep it self-contained (do not
+-- reference the current DEFAULTS, which drift out from under old versions) and
+-- guarded so it only touches a value still equal to the specific old default --
+-- a deliberate pick is left alone. Together with set()/reset() below, this is
+-- how a shipped default actually reaches existing installs.
+local SETTINGS_VERSION = 2
+
+-- migrations[v] transforms a store from version v-1 to v.
+local MIGRATIONS = {
+    -- v2: the default model moved to anthropic/claude-opus-4.8. Un-pin readers
+    -- still carrying the previous default so they float up to the new one;
+    -- anyone who chose a different model keeps it.
+    [2] = function(store)
+        if store:readSetting("model") == "anthropic/claude-opus-4.7" then
+            store:delSetting("model")
+        end
+    end,
+}
+
+-- Preference keys eligible for "Reset settings to defaults". Connection config
+-- (api_key, base_url) is excluded on purpose: it's onboarding state, not a
+-- preference, and clearing it would lock the reader out of their endpoint. The
+-- reader's own custom_presets are user-authored content, not a default, so a
+-- blanket reset leaves them alone too; settings_version is bookkeeping.
+local RESETTABLE = {
+    "model",
+    "max_tokens",
+    "max_turns",
+    "enable_memory",
+    "enable_thinking",
+    "show_streaming_thinking",
+    "enable_web_search",
+    "enable_subagents",
+    "subagent_max_turns",
+    "enable_clarifying_questions",
+    "confirm_spoilers",
+    "additional_system_prompt",
+    "max_saved_chats",
+}
+
 -- Longest derived button label. The chat dialogs lay preset buttons out two per
 -- row, so anything much longer than this gets ellipsized by the button widget
 -- anyway; explicit labels are the reader's own and are not capped.
@@ -119,15 +161,61 @@ function Settings:new(plugin_name)
     local o = setmetatable({}, self)
     o.file = DataStorage:getSettingsDir() .. "/" .. plugin_name .. ".lua"
     o.store = LuaSettings:open(o.file)
+    o:migrate()
     return o
+end
+
+-- Run any pending MIGRATIONS once, then stamp the file at SETTINGS_VERSION. A
+-- pre-versioning install has no stored version and reads as 1 (the baseline
+-- before this scheme existed); a brand-new install also lands there, but the
+-- guards inside each migration make it a no-op since nothing is stored yet.
+function Settings:migrate()
+    local from = self.store:readSetting("settings_version", 1)
+    if from >= SETTINGS_VERSION then
+        return
+    end
+    for v = from + 1, SETTINGS_VERSION do
+        local step = MIGRATIONS[v]
+        if step then
+            step(self.store)
+        end
+    end
+    self.store:saveSetting("settings_version", SETTINGS_VERSION)
+    self.store:flush()
 end
 
 function Settings:get(key)
     return self.store:readSetting(key, DEFAULTS[key])
 end
 
+-- Persist only genuine deviations: a value equal to the current default is
+-- stored as *absence* (delSetting), so a later DEFAULTS bump reaches everyone
+-- who never deviated -- get() falls back through the live default. Keys absent
+-- from DEFAULTS (api_key, custom_presets) have a nil default, so a real value
+-- never compares equal and always persists.
 function Settings:set(key, value)
-    self.store:saveSetting(key, value)
+    if value == DEFAULTS[key] then
+        self.store:delSetting(key)
+    else
+        self.store:saveSetting(key, value)
+    end
+    self.store:flush()
+end
+
+-- Forget a single key so get() falls back to the live default. The one-key
+-- primitive under both the per-field "Reset to default" buttons and the bulk
+-- resetToDefaults() below.
+function Settings:reset(key)
+    self.store:delSetting(key)
+    self.store:flush()
+end
+
+-- Clear every resettable preference in one flush, restoring defaults for all of
+-- them. Connection config and custom_presets are preserved (see RESETTABLE).
+function Settings:resetToDefaults()
+    for _, key in ipairs(RESETTABLE) do
+        self.store:delSetting(key)
+    end
     self.store:flush()
 end
 
@@ -302,37 +390,51 @@ end
 -- Generic single-line string/number editor.
 function Settings:editText(touchmenu_instance, opts)
     local dialog
+    local row = {
+        {
+            text = _("Cancel"),
+            id = "close",
+            callback = function()
+                UIManager:close(dialog)
+            end,
+        },
+    }
+    -- Offer a reset only for keys that have a default to fall back to. api_key
+    -- has none (DEFAULTS[api_key] is nil), and "reset" there would just blank
+    -- the credential -- not a default, so no button.
+    if DEFAULTS[opts.key] ~= nil then
+        row[#row + 1] = {
+            text = _("Reset to default"),
+            callback = function()
+                self:reset(opts.key)
+                UIManager:close(dialog)
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        }
+    end
+    row[#row + 1] = {
+        text = _("Save"),
+        is_enter_default = true,
+        callback = function()
+            local value = dialog:getInputText()
+            if opts.input_type == "number" then
+                value = tonumber(value) or DEFAULTS[opts.key]
+            end
+            self:set(opts.key, value)
+            UIManager:close(dialog)
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
     dialog = InputDialog:new({
         title = opts.title,
         description = opts.description,
         input = tostring(self:get(opts.key) or ""),
         input_type = opts.input_type,
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(dialog)
-                    end,
-                },
-                {
-                    text = _("Save"),
-                    is_enter_default = true,
-                    callback = function()
-                        local value = dialog:getInputText()
-                        if opts.input_type == "number" then
-                            value = tonumber(value) or DEFAULTS[opts.key]
-                        end
-                        self:set(opts.key, value)
-                        UIManager:close(dialog)
-                        if touchmenu_instance then
-                            touchmenu_instance:updateItems()
-                        end
-                    end,
-                },
-            },
-        },
+        buttons = { row },
     })
     UIManager:show(dialog)
     dialog:onShowKeyboard()
@@ -360,8 +462,11 @@ function Settings:editMultiline(touchmenu_instance, opts)
                 },
                 {
                     text = _("Reset to default"),
+                    -- reset() (delSetting), not set(default): both land on the
+                    -- default now, but forgetting the key keeps floating with a
+                    -- future DEFAULTS bump instead of pinning today's value.
                     callback = function()
-                        self:set(opts.key, DEFAULTS[opts.key])
+                        self:reset(opts.key)
                         UIManager:close(dialog)
                         if touchmenu_instance then
                             touchmenu_instance:updateItems()
@@ -723,6 +828,27 @@ function Settings:getMenu(ui)
                 description = _("Oldest chats are deleted when a new one is saved past this limit."),
                 input_type = "number",
             })
+        end,
+    }
+    items[#items + 1] = {
+        text = _("Reset settings to defaults"),
+        help_text = _(
+            "Restore behavior, prompt, and limit settings to their defaults. Your API key, base URL, and saved prompt templates are kept."
+        ),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            UIManager:show(ConfirmBox:new({
+                text = _(
+                    "Reset BookBuddy settings to their defaults? Your API key, base URL, and prompt templates are kept."
+                ),
+                ok_text = _("Reset"),
+                ok_callback = function()
+                    self:resetToDefaults()
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            }))
         end,
     }
     return {
