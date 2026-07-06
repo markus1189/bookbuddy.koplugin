@@ -611,6 +611,38 @@ tests:
           const env = JSON.parse(output);
           return !/[*_#`]/.test(env.output || '');
 
+# --- Clarifying questions / ask_user (category ASK) ---------------------------
+  # ASK1 "Get-started preset asks the reader about their interests" — the ANCHOR for the
+  # clarifying-question category. juliet.epub @ start_page 1 (very start of the book),
+  # enable_clarifying_questions ON (the driver's default, declared explicitly here). The
+  # task is the built-in "Get started" preset verbatim (bbpresets.lua Presets.book[1]): it
+  # asks the agent to INTERVIEW the reader about what they want to focus on. The intended
+  # behaviour is to turn the question around and elicit that via the ask_user tool rather
+  # than guessing or launching into an overview. Expected trace: an ask_user tool_use.
+  # The headless _askUser stub returns a skip without hanging (tier3_driver.lua sec. 5) and
+  # the tool_use is still recorded, so the assert can confirm the call. Graded on the trace
+  # (asked_user_interests.js) plus the plain-text constraint. NOTE: run WITHOUT any prompt
+  # tweaks first — this is the baseline measurement of whether the model reaches for
+  # ask_user unaided; if it under-fires, the ASK_USER_NOTE is the tuning surface (as
+  # DELEGATE_NOTE was for delegation), but that is a follow-up, not part of this baseline.
+  - description: ASK1 — turns the "Get started" preset into an ask_user interview about the reader's interests (Romeo & Juliet @ start)
+    vars:
+      epub: juliet.epub
+      start_page: 1
+      enable_clarifying_questions: true
+      task: I'm just starting this book. Before I get into it, interview me about what I want to focus on or pay attention to as I read -- ask a few short questions, one at a time, then note what I tell you so you can keep it in mind as we go.
+    assert:
+      # Deterministic trace grade: an ask_user tool_use, ideally asking about the reader's
+      # interests/focus. Reads metadata.trace.
+      - type: javascript
+        value: file://asserts/asked_user_interests.js
+      # Product constraint: plain text, no markdown. Grade the PROSE (env.output), not the
+      # JSON envelope (whose tool names contain '_').
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:

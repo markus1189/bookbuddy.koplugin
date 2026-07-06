@@ -101,6 +101,27 @@ local function resolveEnableSubagents()
 end
 local enable_subagents = resolveEnableSubagents()
 
+-- 1h. The clarifying-question tool (ask_user) ships ON by default -- unlike memory and
+--     subagents, only an explicit enable_clarifying_questions=false strips it (see
+--     Conversation:new + the ASK_USER_NOTE gate in Anthropic.buildBody, both keyed on
+--     `~= false`). A per-test var can force it either way; absent, it follows the
+--     production default (on). Scenarios that assert on an ask_user call set it true to
+--     declare the dependency explicitly rather than leaning on the default. The headless
+--     hang the tool would otherwise cause is handled at the seam in section 5 (_askUser
+--     is stubbed to a skip), so enabling it here is safe.
+local function resolveEnableClarifyingQuestions()
+    local q = ctx_vars.enable_clarifying_questions
+    if q == nil then
+        local env = os.getenv("BB_ENABLE_CLARIFYING_QUESTIONS")
+        if env == nil or env == "" then
+            return true -- production default
+        end
+        return env == "1"
+    end
+    return q == true
+end
+local enable_clarifying_questions = resolveEnableClarifyingQuestions()
+
 -- 2. Open a real ReaderUI over the resolved epub (runs commonrequire/disable_plugins,
 --    which set up the require paths + globals the rest depends on). The test env uses
 --    the "dir" sidecar location (centralized under KO_HOME/docsettings), so the
@@ -150,6 +171,7 @@ local config = {
     additional_system_prompt = "",
     enable_memory = enable_memory,
     enable_subagents = enable_subagents,
+    enable_clarifying_questions = enable_clarifying_questions,
     enable_thinking = false,
     -- confirm_spoilers stays at the PRODUCTION default (on). The headless deadlock it
     -- would otherwise cause is fixed at the UI seam in section 5 (auto-approve), not by
@@ -257,6 +279,7 @@ if os.getenv("BB_DRY_RUN") then
             seed_sdr = seed_sdr,
             enable_memory = enable_memory,
             enable_subagents = enable_subagents,
+            enable_clarifying_questions = enable_clarifying_questions,
             start_page = start_page,
             current_page = current_page,
             probe_grep = probe_grep,
@@ -358,6 +381,7 @@ emit({
         seed_sdr = seed_sdr,
         enable_memory = enable_memory,
         enable_subagents = enable_subagents,
+        enable_clarifying_questions = enable_clarifying_questions,
         start_page = start_page,
         current_page = current_page,
     },
