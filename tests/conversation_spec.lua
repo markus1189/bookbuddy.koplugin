@@ -349,26 +349,9 @@ describe("conversation", function()
         })
         assert.are.equal(20, conv.usage.input)
         assert.are.equal(40, conv.usage.output)
+        -- context_size tracks the latest call only; it feeds the live status bar's
+        -- ctx segment (no inline footer renders it anymore).
         assert.are.equal(30, conv.context_size)
-        assert.is_not_nil(conv:_usageText():find("[context — 30]", 1, true))
-    end)
-
-    it("U2: the footer abbreviates thousands as k and flags a context over 250k", function()
-        local conv = run({
-            responses = { sse.buildTurnSSE({ blocks = { { type = "text", text = "Hi." } } }) },
-        })
-        conv.usage.input = 156888
-        conv.context_size = 156888
-        local text = conv:_usageText()
-        assert.is_not_nil(text:find("input 157k", 1, true))
-        assert.is_not_nil(text:find("[context — 157k]", 1, true))
-        -- context line is its own line, distinct from the cumulative token line.
-        assert.is_not_nil(text:find("]\n[", 1, true))
-        assert.is_nil(text:find("🔥", 1, true))
-
-        conv.context_size = 251000
-        text = conv:_usageText()
-        assert.is_not_nil(text:find("[context — 251k] 🔥", 1, true))
     end)
 
     it("S6: pauses do not consume the substantive turn budget", function()
@@ -439,7 +422,7 @@ describe("conversation", function()
         assert.is_not_nil(txt:find("Thinking: ", 1, true))
     end)
 
-    it("S6b: hides the thinking text by default, keeping only the indicator", function()
+    it("S6b: hides the thinking text and shows no inline indicator by default", function()
         run({
             enable_thinking = true,
             show_streaming_thinking = false,
@@ -453,7 +436,9 @@ describe("conversation", function()
             },
         })
         assert.is_nil((chatviewer.last_text or ""):find("the butler did it", 1, true))
-        assert.is_not_nil((chatviewer.last_text or ""):find("Thinking", 1, true))
+        -- The reasoning text is hidden AND no "Thinking..." placeholder renders inline:
+        -- the live status bar's "thinking" activity is the sole progress signal now.
+        assert.is_nil((chatviewer.last_text or ""):find("Thinking", 1, true))
     end)
 
     it("S7: a retryable mid-stream error on a follow-up auto-recovers via retry", function()
@@ -1217,13 +1202,12 @@ describe("conversation", function()
             local conv = Conversation:new({ ui = {}, settings = stubSettings, resume_state = state })
             conv:reopen()
 
-            -- Reopen shows the finished chat: prior turns, the tool line WITH its
-            -- summary, and the restored usage footer.
+            -- Reopen shows the finished chat: prior turns and the tool line WITH its
+            -- summary. (No usage footer: cost/context now live only on the status bar.)
             local shown = chatviewer.last_text or ""
             assert.is_not_nil(shown:find("You: Q1", 1, true))
             assert.is_not_nil(shown:find('Searched book for "whales" — 12 matches', 1, true))
             assert.is_not_nil(shown:find("BookBuddy: A1", 1, true))
-            assert.is_not_nil(shown:find("input 30", 1, true))
             -- A mere reopen adds nothing, so it must not rewrite the payload.
             assert.are.equal(0, #chats.rec.saved)
 

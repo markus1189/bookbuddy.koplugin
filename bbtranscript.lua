@@ -170,46 +170,11 @@ function Transcript.renderAssistantTurn(transcript, content, turn_start, show_th
     end
 end
 
--- Footer summarizing token spend across the whole conversation. Counts >= 1000 are
--- abbreviated as "k" (rounded).
-local function abbrevTokens(n)
-    if n >= 1000 then
-        return string.format("%dk", math.floor(n / 1000 + 0.5))
-    end
-    return tostring(n)
-end
-
--- nil until at least one API call has reported usage. cache_read/cache_write are
--- the prompt tokens served from / written to the prompt cache (Anthropic reports
--- them separately from input_tokens). "context" is the live window occupancy
--- (latest call only) on its own line, not a cumulative -- see
--- Conversation.context_size. A context over 250k gets a flame to warn the window
--- is filling up.
-function Transcript.usageText(usage, context_size)
-    local u = usage
-    if u.input + u.output == 0 then
-        return nil
-    end
-    local parts = { T(_("input %1"), abbrevTokens(u.input)), T(_("output %1"), abbrevTokens(u.output)) }
-    local cached = u.cache_read + u.cache_write
-    if cached > 0 then
-        parts[#parts + 1] = T(_("cached %1"), abbrevTokens(cached))
-    end
-    local line = T(_("[tokens — %1]"), table.concat(parts, ", "))
-    if context_size > 0 then
-        local ctx = T(_("[context — %1]"), abbrevTokens(context_size))
-        if context_size > 250000 then
-            ctx = ctx .. " 🔥"
-        end
-        line = line .. "\n" .. ctx
-    end
-    return line
-end
-
--- The full plain-text rendering the viewer shows. `usage_line` is the optional
--- footer from Transcript.usageText (kept a separate argument so the conversation
--- decides when usage is worth showing).
-function Transcript.text(transcript, usage_line)
+-- The full plain-text rendering the viewer shows. Transient status (activity,
+-- elapsed, context occupancy) lives on the live status bar (bbstatusbar), NOT
+-- here: this is the durable transcript, so it carries no token/context footer and
+-- no "Thinking..." placeholder -- those would only double what the bar already shows.
+function Transcript.text(transcript)
     local out = {}
     for i = 1, #transcript do
         local turn = transcript[i]
@@ -218,22 +183,15 @@ function Transcript.text(transcript, usage_line)
         elseif turn.role == "assistant" then
             out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
         elseif turn.role == "thinking" then
+            -- Only surface reasoning the reader opted into streaming (show_streaming_thinking):
+            -- the text itself is the content. An indicator-only entry (empty text) renders
+            -- nothing -- the status bar's "thinking" activity is the sole progress signal.
             if turn.text and turn.text ~= "" then
-                -- show_streaming_thinking on: the live reasoning replaces the
-                -- "Thinking..."/"Thinking... Done" indicator outright -- the text itself
-                -- is the progress signal, so the placeholder label would only be noise.
                 out[#out + 1] = T(_("Thinking: %1"), turn.text)
-            else
-                -- Indicator-only (streaming thinking off, or before the first fragment):
-                -- a status that flips to Done once the answer starts.
-                out[#out + 1] = turn.done and _("Thinking... Done") or _("Thinking...")
             end
         else
             out[#out + 1] = turn.text
         end
-    end
-    if usage_line then
-        out[#out + 1] = usage_line
     end
     return table.concat(out, "\n\n")
 end

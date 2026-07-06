@@ -953,11 +953,7 @@ function Conversation:_renderAssistantTurn(content, turn_start, show_thinking)
 end
 
 function Conversation:_transcriptText()
-    return Transcript.text(self.transcript, self:_usageText())
-end
-
-function Conversation:_usageText()
-    return Transcript.usageText(self.usage, self.context_size)
+    return Transcript.text(self.transcript)
 end
 
 -- Show (or re-show) the viewer in streaming mode, i.e. with a Stop button. A
