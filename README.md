@@ -86,6 +86,15 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
     Anthropic's server-side search, so it only runs on a native-Anthropic-backed
     endpoint (native API, or OpenRouter's `anthropic/` models); toggle it off on
     Vertex/Bedrock-routed gateways, which silently ignore it
+- **Clarifying questions** (on by default): when your request is genuinely ambiguous —
+  which character you meant, how far back to look — it pauses and asks one short
+  question, with tappable answer options, then continues in the same turn. Never used
+  for things it can settle by reading the book.
+- **Subagent delegation** (off by default): wide, multi-step research — tracing a
+  motif or a minor character across the whole book — can be handed to a read-only
+  helper agent, so all that searching stays out of your conversation and only a
+  condensed summary comes back. Costs extra tokens and adds a pause while the
+  helper works; the helper follows the same spoiler rules.
 - **Per-book memory** (optional): notes Claude saves live in the book's `.sdr`
   sidecar, so they travel with the book, stay isolated to it, and are still there
   next session — ask it to remember who a character is and it won't forget.
@@ -105,11 +114,10 @@ next — search, read more, navigate, or answer. Nothing is hidden; you see each
 
 - KOReader (recent enough to have `Device:unpackArchive` and the modern `NetworkMgr`).
 - Access to a Claude model through any Anthropic-compatible endpoint. The defaults
-  target [OpenRouter](https://openrouter.ai) (`https://openrouter.ai/api`, so the
-  Messages endpoint is `https://openrouter.ai/api/v1/messages`) with the model slug
-  `anthropic/claude-opus-4.8`. The key is sent as both an `Authorization: Bearer`
-  token and an `x-api-key` header, so the same key authenticates against gateways
-  *and* against `api.anthropic.com` directly. Point the base URL / model elsewhere — e.g. a
+  target [OpenRouter](https://openrouter.ai): base URL `https://openrouter.ai/api`,
+  model slug `anthropic/claude-opus-4.8`. The same key authenticates against
+  gateways *and* against `api.anthropic.com` directly (see
+  [Configuration](#configuration)). Point the base URL / model elsewhere — e.g. a
   [Requesty](https://requesty.ai) gateway (`https://router.eu.requesty.ai`,
   `vertex/claude-opus-4-8@eu`) or Anthropic directly
   (`https://api.anthropic.com`, `claude-opus-4-8`) — if your setup differs.
@@ -167,8 +175,11 @@ Open any book, then go to the top menu → **BookBuddy**:
   system prompt; add your own preferences (tone, language, focus) without restating
   the built-in instructions. Leave empty for the default behavior.
 - **Per-book memory** / **Extended thinking** / **Show streaming thinking** /
-  **Web search** — toggles. *Show streaming thinking* (off by default, requires
-  *Extended thinking*) surfaces the reasoning text live and can spoil unread plot.
+  **Web search** / **Subagent delegation** / **Clarifying questions** — toggles.
+  *Show streaming thinking* (off by default, requires *Extended thinking*) surfaces
+  the reasoning text live and can spoil unread plot.
+- **Helper tool rounds** — how many tool rounds a delegated helper may take before
+  it must answer (enabled with *Subagent delegation*).
 - **Show book memory** — view the notes BookBuddy has stored for the current book, with a
   button to clear them. Appears only with a book open.
 
