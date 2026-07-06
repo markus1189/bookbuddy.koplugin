@@ -103,6 +103,9 @@ function BookBuddy:addToMainMenu(menu_items)
     -- rebuilds the rows on every open, so the list reflects saves/deletes made since.
     table.insert(menu.sub_item_table, 2, {
         text = _("Chat history"),
+        -- Divider closing the action cluster; the next row up (Check for updates)
+        -- is then framed on its own for prominence.
+        separator = true,
         sub_item_table_func = function()
             return self:getChatHistoryItems()
         end,

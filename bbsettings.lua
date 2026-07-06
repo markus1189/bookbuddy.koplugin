@@ -425,7 +425,9 @@ function Settings:showMemory(ui)
 end
 
 function Settings:getMenu(ui)
-    local items = {
+    -- Set-once connection config: touched at onboarding, then never again, so it
+    -- lives in a submenu instead of hogging page 1's best seats.
+    local connection = {
         {
             text_func = function()
                 return T(_("Claude API key: %1"), self:isConfigured() and _("set") or _("not set"))
@@ -493,31 +495,11 @@ function Settings:getMenu(ui)
                 })
             end,
         },
-        {
-            text = _("Additional system prompt"),
-            help_text = _(
-                "Optional text appended to BookBuddy's built-in system prompt. Use it to add your own preferences (tone, language, focus) without restating the built-in instructions. Leave empty for the default behavior."
-            ),
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self:editMultiline(touchmenu_instance, {
-                    key = "additional_system_prompt",
-                    title = _("Additional system prompt"),
-                    description = _(
-                        "Appended to BookBuddy's built-in system prompt. Leave empty for the default behavior."
-                    ),
-                })
-            end,
-        },
-        {
-            text = _("Prompt templates"),
-            help_text = _(
-                "Your own quick-prompt buttons, shown alongside the built-in ones in every chat dialog. Tapping one prefills the input box with its prompt so you can tweak the wording before sending. Tap a template here to edit or delete it; long-press it to preview the full prompt."
-            ),
-            sub_item_table_func = function()
-                return self:customPresetMenuItems()
-            end,
-        },
+    }
+    -- Occasional behavior toggles. Extended thinking and Confirm spoilers are
+    -- promoted to the top level (below) as the two most people flip; the rest,
+    -- plus the numeric fields gated on them, stay grouped here.
+    local behavior = {
         {
             text = _("Per-book memory"),
             help_text = _(
@@ -529,22 +511,6 @@ function Settings:getMenu(ui)
             keep_menu_open = true,
             callback = function(touchmenu_instance)
                 self:set("enable_memory", not (self:get("enable_memory") and true or false))
-                if touchmenu_instance then
-                    touchmenu_instance:updateItems()
-                end
-            end,
-        },
-        {
-            text = _("Extended thinking"),
-            help_text = _(
-                'Let the model reason before answering. A "Thinking..." indicator appears while it reasons. Requires a model that supports adaptive thinking, such as Claude Opus 4.8.'
-            ),
-            checked_func = function()
-                return self:get("enable_thinking") and true or false
-            end,
-            keep_menu_open = true,
-            callback = function(touchmenu_instance)
-                self:set("enable_thinking", not (self:get("enable_thinking") and true or false))
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()
                 end
@@ -635,6 +601,67 @@ function Settings:getMenu(ui)
                 end
             end,
         },
+    }
+    -- Prompt-shaping controls, grouped: your quick-prompt buttons and the extra
+    -- system-prompt text.
+    local prompts = {
+        {
+            text = _("Prompt templates"),
+            help_text = _(
+                "Your own quick-prompt buttons, shown alongside the built-in ones in every chat dialog. Tapping one prefills the input box with its prompt so you can tweak the wording before sending. Tap a template here to edit or delete it; long-press it to preview the full prompt."
+            ),
+            sub_item_table_func = function()
+                return self:customPresetMenuItems()
+            end,
+        },
+        {
+            text = _("Additional system prompt"),
+            help_text = _(
+                "Optional text appended to BookBuddy's built-in system prompt. Use it to add your own preferences (tone, language, focus) without restating the built-in instructions. Leave empty for the default behavior."
+            ),
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:editMultiline(touchmenu_instance, {
+                    key = "additional_system_prompt",
+                    title = _("Additional system prompt"),
+                    description = _(
+                        "Appended to BookBuddy's built-in system prompt. Leave empty for the default behavior."
+                    ),
+                })
+            end,
+        },
+    }
+    -- Top level, following the "Chat about this book" / "Chat history" actions
+    -- that addToMainMenu prepends. Check for updates rides up here on purpose:
+    -- during active development it's checked far more than any setting, so it sits
+    -- framed on its own between separators rather than buried in a maintenance tail.
+    local items = {
+        {
+            text_func = function()
+                return T(_("Check for updates (v%1)"), Updater.getInstalledVersion())
+            end,
+            keep_menu_open = true,
+            separator = true,
+            callback = function()
+                Updater.check()
+            end,
+        },
+        {
+            text = _("Extended thinking"),
+            help_text = _(
+                'Let the model reason before answering. A "Thinking..." indicator appears while it reasons. Requires a model that supports adaptive thinking, such as Claude Opus 4.8.'
+            ),
+            checked_func = function()
+                return self:get("enable_thinking") and true or false
+            end,
+            keep_menu_open = true,
+            callback = function(touchmenu_instance)
+                self:set("enable_thinking", not (self:get("enable_thinking") and true or false))
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end,
+        },
         {
             text = _("Confirm spoilers"),
             help_text = _(
@@ -645,6 +672,7 @@ function Settings:getMenu(ui)
                 return self:get("confirm_spoilers") ~= false
             end,
             keep_menu_open = true,
+            separator = true,
             callback = function(touchmenu_instance)
                 self:set("confirm_spoilers", self:get("confirm_spoilers") == false)
                 if touchmenu_instance then
@@ -652,7 +680,34 @@ function Settings:getMenu(ui)
                 end
             end,
         },
+        {
+            text = _("Connection"),
+            help_text = _("Endpoint and model: API key, base URL, model slug, token and tool-round limits."),
+            sub_item_table = connection,
+        },
+        {
+            text = _("Behavior"),
+            help_text = _(
+                "How BookBuddy works: per-book memory, streaming reasoning, web search, subagent delegation, and clarifying questions."
+            ),
+            sub_item_table = behavior,
+        },
+        {
+            text = _("Prompts"),
+            help_text = _("Prompt templates and extra system-prompt text."),
+            sub_item_table = prompts,
+            separator = true,
+        },
     }
+    if ui then
+        items[#items + 1] = {
+            text = _("Show book memory"),
+            keep_menu_open = true,
+            callback = function()
+                self:showMemory(ui)
+            end,
+        }
+    end
     items[#items + 1] = {
         text_func = function()
             return T(_("Saved chats per book: %1"), tostring(self:get("max_saved_chats")))
@@ -668,24 +723,6 @@ function Settings:getMenu(ui)
                 description = _("Oldest chats are deleted when a new one is saved past this limit."),
                 input_type = "number",
             })
-        end,
-    }
-    if ui then
-        items[#items + 1] = {
-            text = _("Show book memory"),
-            keep_menu_open = true,
-            callback = function()
-                self:showMemory(ui)
-            end,
-        }
-    end
-    items[#items + 1] = {
-        text_func = function()
-            return T(_("Check for updates (v%1)"), Updater.getInstalledVersion())
-        end,
-        keep_menu_open = true,
-        callback = function()
-            Updater.check()
         end,
     }
     return {
