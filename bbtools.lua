@@ -1191,7 +1191,9 @@ function Tools.getSpecs()
                 .. "wide, multi-step exploration -- tracing a motif or a minor character across the whole "
                 .. "book, gathering every mention of something -- so all that intermediate searching stays "
                 .. "out of our conversation. Answer simple or single-passage questions yourself instead of "
-                .. "delegating. The helper is spoiler-safe and reads only up to the reader's current page; "
+                .. "delegating. When a request splits into independent threads -- several characters or "
+                .. "separate motifs -- send a separate helper for each rather than bundling them into one. "
+                .. "The helper is spoiler-safe and reads only up to the reader's current page; "
                 .. "set allow_spoiler=true only when the reader has explicitly asked to read ahead.",
             input_schema = {
                 type = "object",
