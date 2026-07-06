@@ -114,11 +114,18 @@ describe("subagent driver", function()
     local function aheadReadingThenAnswer()
         return {
             sse.buildTurnSSE({
-                blocks = { { type = "tool_use", id = "g1", name = "grep", input = {
-                    query = "x",
-                    spoiler = true,
-                    max_page = 9999,
-                } } },
+                blocks = {
+                    {
+                        type = "tool_use",
+                        id = "g1",
+                        name = "grep",
+                        input = {
+                            query = "x",
+                            spoiler = true,
+                            max_page = 9999,
+                        },
+                    },
+                },
                 stop_reason = "tool_use",
             }),
             sse.buildTurnSSE({
@@ -131,7 +138,8 @@ describe("subagent driver", function()
     describe("spoiler scrub", function()
         it("forces spoiler=false and clamps max_page to the current page by default", function()
             fake:reset(aheadReadingThenAnswer())
-            local text = Subagents.runSubagent({ ui = {}, settings = stubSettings, cfg = cfg, task = "trace", depth = 1 })
+            local text =
+                Subagents.runSubagent({ ui = {}, settings = stubSettings, cfg = cfg, task = "trace", depth = 1 })
             assert.are.equal("Found it on page 5.", text)
             -- rec.calls[1] is the child's grep (book_context is not recorded).
             assert.are.equal("grep", rec.calls[1].name)
@@ -175,7 +183,8 @@ describe("subagent driver", function()
         fake:reset({})
         -- A whitespace-only task is treated as empty: trimmed, then refused before any
         -- stream is forked (the gateway may not enforce the schema's required `task`).
-        local text, err = Subagents.runSubagent({ ui = {}, settings = stubSettings, cfg = cfg, task = "   ", depth = 1 })
+        local text, err =
+            Subagents.runSubagent({ ui = {}, settings = stubSettings, cfg = cfg, task = "   ", depth = 1 })
         assert.is_nil(text)
         assert.is_truthy(err)
         assert.are.equal(0, fake.idx, "an empty-task delegation must not fork a stream")
@@ -217,7 +226,9 @@ describe("subagent driver", function()
             fake:reset({
                 -- parent delegates
                 sse.buildTurnSSE({
-                    blocks = { { type = "tool_use", id = "d1", name = "delegate", input = { task = "trace the locket" } } },
+                    blocks = {
+                        { type = "tool_use", id = "d1", name = "delegate", input = { task = "trace the locket" } },
+                    },
                     stop_reason = "tool_use",
                 }),
                 -- child round 1: a grep (intermediate churn)
@@ -274,7 +285,9 @@ describe("subagent driver", function()
             fake:reset({
                 -- parent delegates
                 sse.buildTurnSSE({
-                    blocks = { { type = "tool_use", id = "d1", name = "delegate", input = { task = "trace the locket" } } },
+                    blocks = {
+                        { type = "tool_use", id = "d1", name = "delegate", input = { task = "trace the locket" } },
+                    },
                     stop_reason = "tool_use",
                 }),
                 -- child round 1: a grep (intermediate churn)
@@ -307,7 +320,10 @@ describe("subagent driver", function()
             assert.is_true(saw_step, "a live (step N/6) counter must reach the viewer during delegation")
             -- ...and the counter is gone from the settled transcript: the Researching line
             -- is restored to its base phrase plus the clean "done" summary.
-            assert.is_nil(conv:_transcriptText():find("%(step"), "the step counter must not linger after the child finishes")
+            assert.is_nil(
+                conv:_transcriptText():find("%(step"),
+                "the step counter must not linger after the child finishes"
+            )
         end)
 
         it("turns a failed child into a recoverable tool_result the parent continues from", function()

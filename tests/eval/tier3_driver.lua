@@ -74,7 +74,7 @@ local function resolveSeedSdr()
 end
 local seed_sdr = resolveSeedSdr()
 
--- 1f. Memory is offered to the model only when enabled (bbconversation:135) AND a
+-- 1f. Memory is offered to the model only when enabled (the memory gate in Conversation:new) AND a
 --     writable sidecar exists. Off by default (cheaper, deterministic); a per-test
 --     `enable_memory` var or BB_ENABLE_MEMORY turns it on for memory scenarios.
 local function resolveEnableMemory()

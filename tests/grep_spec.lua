@@ -279,7 +279,8 @@ describe("grep (pure)", function()
     end)
 
     it("uses the plain 'Found N' header when nothing is dropped", function()
-        local ui = makeGrepUI({ current_page = 100, hits = { { start = "a", matched_text = "x" } }, page_of = { a = 1 } })
+        local ui =
+            makeGrepUI({ current_page = 100, hits = { { start = "a", matched_text = "x" } }, page_of = { a = 1 } })
         local text = Tools.execute("grep", { query = "solo", ["max_page"] = nil }, ui)
         assert.truthy(text:find('Found 1 match(es) for "solo":', 1, true))
         assert.is_nil(text:find("Showing", 1, true))

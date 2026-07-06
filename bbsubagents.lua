@@ -4,7 +4,7 @@
 -- and returns a single condensed string. The headline win is context isolation.
 --
 -- Deliberately NOT built via Conversation:new (D2): that constructor CLEARS the
--- shared ui's locator/search state (bbconversation:193-196), so a child built
+-- shared ui's locator/search state (the _bookbuddy_* reset in Conversation:new), so a child built
 -- mid-conversation would silently wipe the parent's live locator table and break a
 -- later parent create_highlight{search_result=N} / read{from=loc:N}. This driver is
 -- a plain function over a private messages array; it touches the shared ui only
@@ -15,8 +15,9 @@
 -- after the parent stream fully returned, so a nested Stream.run is legal. The child
 -- MUST NOT spin its own Trapper:wrap.
 local Anthropic = require("bbanthropic")
-local Conversation = require("bbconversation") -- shared streamWithRetries + backoff
+local History = require("bbhistory")
 local Prompts = require("bbprompts")
+local Retry = require("bbretry") -- the shared single-call retry/backoff policy
 local Tools = require("bbtools")
 local logger = require("logger")
 
@@ -56,23 +57,6 @@ local function sanitizeInput(name, input, ui, allow_spoiler)
         end
     end
     return input
-end
-
--- Pull the assistant turn's text + client tool_use blocks apart, like
--- Conversation:_split but local to the child (no transcript concerns).
-local function splitContent(content)
-    local text_parts, tool_uses = {}, {}
-    if type(content) ~= "table" then
-        return text_parts, tool_uses
-    end
-    for _, b in ipairs(content) do
-        if b.type == "text" and b.text then
-            text_parts[#text_parts + 1] = b.text
-        elseif b.type == "tool_use" then
-            tool_uses[#tool_uses + 1] = b
-        end
-    end
-    return text_parts, tool_uses
 end
 
 -- Run one delegated sub-task to completion and return (text, err): the child's final
@@ -150,9 +134,9 @@ function Subagents.runSubagent(o)
         -- Headless: a bare parser (no on_text/on_thinking), no flush, no viewer (D9).
         -- set_cancel routes the child stream's cancel closure into the parent's single
         -- _cancel slot so a Stop aborts the live child stream; stop() catches a Stop
-        -- that lands during a backoff. backoff/streamWithRetries are shared with the
-        -- parent (the single source of the retry policy).
-        local r, res, verdict = Conversation.streamWithRetries({
+        -- that lands during a backoff. Retry.streamWithRetries is shared with the
+        -- parent loop (bbretry is the single source of the retry policy).
+        local r, res, verdict = Retry.streamWithRetries({
             body = body,
             cfg = cfg,
             make_parser = function()
@@ -178,7 +162,7 @@ function Subagents.runSubagent(o)
         -- Commit the assistant turn to the CHILD's history (never the parent's).
         messages[#messages + 1] = { role = "assistant", content = res.content }
 
-        local text_parts, tool_uses = splitContent(res.content)
+        local text_parts, tool_uses = History.split(res.content)
         if #text_parts > 0 then
             final_text = table.concat(text_parts, "\n")
         end

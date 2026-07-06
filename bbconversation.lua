@@ -7,6 +7,11 @@
 -- they touch the live document. We keep two parallel structures: `messages` (the
 -- exact Anthropic wire format, resent every turn) and `transcript` (a
 -- human-readable log rendered in the viewer).
+--
+-- Collaborators: bbretry owns the per-call retry/backoff/classify policy,
+-- bbhistory the resendability invariants over `messages`, and bbtranscript the
+-- plain-text rendering of `transcript`. What remains here is the orchestration:
+-- the turn loop, tool dispatch, the reader-facing dialogs, and the viewer.
 local ButtonDialog = require("ui/widget/buttondialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
@@ -19,240 +24,19 @@ local T = require("ffi/util").template
 
 local Anthropic = require("bbanthropic")
 local ChatViewer = require("bbchatviewer")
+local History = require("bbhistory")
 local Memory = require("bbmemory")
 local Presets = require("bbpresets")
-local Stream = require("bbstream")
+local Retry = require("bbretry")
 local Tools = require("bbtools")
+local Transcript = require("bbtranscript")
 
 -- Repaint the live transcript at most this often while text streams in. The
 -- transport wakes every 0.125s; coalescing to ~2.5 fps keeps e-ink usable.
 local FLUSH_INTERVAL_SEC = 0.4
 
--- The viewer is plain text, so drop the markdown markers the model emits rather
--- than show them literally. Applied on every render (streaming and final) so the
--- text reads the same throughout; safe on the partial markdown seen mid-stream.
--- We deliberately skip "_"/"__" emphasis: it collides with snake_case and URLs.
-local function stripMarkdown(text)
-    if not text or text == "" then
-        return text
-    end
-    text = text:gsub("```[%w%-]*\n?", "") -- fenced code markers
-    text = text:gsub("%*%*(.-)%*%*", "%1") -- **bold**
-    text = text:gsub("%*(%S.-%S)%*", "%1") -- *italic* (multi-char)
-    text = text:gsub("%*(%S)%*", "%1") -- *i* (single char)
-    text = text:gsub("~~(.-)~~", "%1") -- ~~strike~~
-    text = text:gsub("`(.-)`", "%1") -- `inline code`
-    text = text:gsub("%[(.-)%]%((.-)%)", "%1 (%2)") -- [text](url) -> text (url)
-    text = text:gsub("^#+%s*", "") -- heading on the first line
-    text = text:gsub("(\n)#+%s*", "%1") -- headings on later lines
-    return text
-end
-
--- Per-entry memo for stripMarkdown: _transcriptText re-renders the whole
--- transcript on every ~2.5fps flush, but only the still-streaming entry's
--- .text changes. Cache the stripped text keyed on the entry's current .text;
--- the live entry (mutating .text) misses and re-strips, finalized entries hit.
--- _renderAssistantTurn replaces live entries with fresh tables, so a stale
--- memo can never outlive its source.
-local function strippedEntry(turn)
-    if turn._md_src ~= turn.text then
-        turn._md_src = turn.text
-        turn._md_out = stripMarkdown(turn.text)
-    end
-    return turn._md_out
-end
-
--- Vertex AI's request validator (unlike Anthropic's first-party API) rejects any
--- server_tool_use that lacks a paired web_search_tool_result in the same assistant
--- message. A pause_turn can stop right after the in-flight web search's
--- server_tool_use, before its result arrives, so resending that turn verbatim --
--- which the pause_turn contract otherwise prescribes -- makes the next request 400
--- ("web_search tool use ... without a corresponding web_search_tool_result block").
--- Pair each orphan with a synthetic "unavailable" error result so the resend
--- validates; the model then resumes and either retries the search (a fresh turn
--- has a fresh search budget) or answers without it.
-local function pairDanglingWebSearch(content)
-    if type(content) ~= "table" then
-        return
-    end
-    local has_result = {}
-    for _, b in ipairs(content) do
-        if b.type == "web_search_tool_result" and b.tool_use_id then
-            has_result[b.tool_use_id] = true
-        end
-    end
-    local i = 1
-    while i <= #content do
-        local b = content[i]
-        if b.type == "server_tool_use" and b.id and not has_result[b.id] then
-            table.insert(content, i + 1, {
-                type = "web_search_tool_result",
-                tool_use_id = b.id,
-                content = { type = "web_search_tool_result_error", error_code = "unavailable" },
-            })
-            has_result[b.id] = true
-            i = i + 2
-        else
-            i = i + 1
-        end
-    end
-end
-
--- Bounded retry around the Stream.run + parser:result() acquisition (see _loop).
--- Nothing is stored until _storeAssistant, so re-forking with a fresh parser
--- between attempts is clean and idempotent. 3 attempts is the safety net against a
--- classifier mistake (a misbucketed-retryable error stops after 3, never loops).
-local MAX_STREAM_ATTEMPTS = 3
--- Exponential backoff base; attempt N waits BACKOFF_BASE_SEC * 2^(N-1) plus jitter.
-local BACKOFF_BASE_SEC = 1.0
-local BACKOFF_JITTER_SEC = 0.5
-
--- Classifier sets, named so the retry decision reads as policy, not magic numbers.
--- RETRYABLE HTTP: transient transport/throttle/5xx. TERMINAL HTTP: a request the
--- gateway will reject identically on every resend (bad request / auth / not found
--- / unprocessable), so retrying only burns quota.
-local RETRYABLE_HTTP =
-    { [408] = true, [425] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
-local TERMINAL_HTTP = { [400] = true, [401] = true, [403] = true, [404] = true, [422] = true }
--- A mid-stream "error" event carries an Anthropic error type. Only the transient
--- classes retry; everything else (invalid_request_error, authentication_error, …)
--- is terminal.
-local RETRYABLE_ERROR_TYPE = { overloaded_error = true, api_error = true, rate_limit_error = true }
-
--- Classify a finished stream attempt into "ok" / "retry" / "terminal". `r` is
--- Stream.run's return ({cancelled, read_error, …}); `res` is parser:result(). A
--- cancel is ALWAYS terminal and checked first: a user Stop must abort instantly
--- and must never be retried. The empty-200 case (res.ok but no content blocks) is
--- retryable here so the loop re-forks before falling back to the placeholder; the
--- placeholder only stands in after retries are exhausted.
-local function classifyAttempt(r, res)
-    if r.cancelled then
-        return "terminal"
-    end
-    if r.read_error then
-        return "retry" -- network/transport drop, incl. R4's stall watchdog
-    end
-    if res.network_error then
-        -- A child-side transport failure: the fork wrote the X-BB-NETWORK-ERROR
-        -- marker then closed cleanly (so the parent sees EOF, not read_error) when
-        -- http.request returned no response -- connection refused/reset, DNS/TLS
-        -- failure, or the 120s block-timeout firing. All are the same transient class
-        -- as r.read_error (a WiFi blip, a gateway dropping the connection), so retry.
-        return "retry"
-    end
-    if res.ok then
-        if type(res.content) ~= "table" or #res.content == 0 then
-            return "retry" -- empty-200: a known-transient gateway hiccup (R2)
-        end
-        return "ok"
-    end
-    if res.incomplete then
-        return "retry" -- truncated/undecodable stream (R3)
-    end
-    if res.code then
-        if RETRYABLE_HTTP[res.code] then
-            return "retry"
-        end
-        if TERMINAL_HTTP[res.code] then
-            return "terminal"
-        end
-        -- An unlisted non-200 (e.g. a novel 5xx) is treated as terminal so an
-        -- unknown code can't cause an unbounded-feeling 3x retry on a hard failure.
-        return "terminal"
-    end
-    if res.error_type and RETRYABLE_ERROR_TYPE[res.error_type] then
-        return "retry"
-    end
-    return "terminal" -- mid-stream non-retryable error type
-end
-
--- Coroutine-friendly backoff between retry attempts: schedule a delayed resume and
--- yield, mirroring Stream.run's tick idiom so the UI stays live (and a Stop pressed
--- during the wait is delivered, setting stop_requested, which the caller re-checks
--- after we return). Exponential with jitter to avoid a thundering-herd resend.
--- Module-level (not a method) so the subagent driver can share the exact same
--- backoff without a Conversation instance.
--- TODO: honor a server Retry-After header here once the child plumbs it through;
--- the child currently only writes a status marker, not response headers (out of
--- scope for this change).
-local function backoff(attempt)
-    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1)) + math.random() * BACKOFF_JITTER_SEC
-    local co = coroutine.running()
-    -- One-shot resume: scheduleIn fires it after the real wall-clock delay in
-    -- production. (Under the busted harness scheduleIn enqueues onto the nextTick
-    -- pump, so the resume runs synchronously and the backoff collapses to instant.)
-    local resumed = false
-    UIManager:scheduleIn(delay, function()
-        if not resumed then
-            resumed = true
-            coroutine.resume(co)
-        end
-    end)
-    coroutine.yield()
-end
-
--- One streamed Claude call with the bounded retry/backoff/classify policy, lifted
--- out of _loop (D4) so the parent turn loop AND the subagent driver share ONE copy
--- of the retry semantics -- classifyAttempt and MAX_STREAM_ATTEMPTS stay the single
--- source of truth here, never reimplemented in the child. Returns (r, res, verdict)
--- where verdict is "ok" / "terminal" / "retry" (retries exhausted) / "stopped" (a
--- Stop landed during a backoff). The caller owns ALL transcript / viewer / history
--- side effects through the injected hooks, so a transcript-less child passes none:
---   body, cfg            request body + config for the fork
---   make_parser()        a FRESH Anthropic stream parser per attempt (the parent's
---                        closes over its live transcript entries; the child's is bare)
---   register_cancel(fn)  install/clear the cancel closure into the caller's _cancel slot
---   on_attempt_done()    optional: after Stream.run returns (parent cancels its flush)
---   on_retry(next)       optional: before the backoff (parent trims + shows "Retrying")
---   stopped()            optional: predicate checked after a backoff; true => "stopped"
--- This is safe to re-fork between attempts precisely because nothing durable is
--- stored until the caller commits past the helper -- the wire history is already the
--- resendable state to re-fork FROM, so a retry is idempotent (see _loop's callers).
-local function streamWithRetries(opts)
-    local r, res, verdict
-    for attempt = 1, MAX_STREAM_ATTEMPTS do
-        local parser = opts.make_parser()
-        r = Stream.run({
-            child_fn = Anthropic.streamChildFn(opts.body, opts.cfg),
-            on_line = function(line)
-                parser:feed(line)
-            end,
-            register_cancel = opts.register_cancel,
-        })
-        if opts.on_attempt_done then
-            opts.on_attempt_done()
-        end
-        res = parser:result()
-        verdict = classifyAttempt(r, res)
-        if verdict ~= "retry" then
-            return r, res, verdict
-        end
-        -- Retryable, and attempts remain. The caller's on_retry only trims its
-        -- live-stream display partials; the wire history is untouched and resendable.
-        if attempt < MAX_STREAM_ATTEMPTS then
-            if opts.on_retry then
-                opts.on_retry(attempt + 1)
-            end
-            backoff(attempt)
-            -- A Stop tapped during the backoff must abort instantly, never silently
-            -- consume a retry (it set the stopped() flag; there was no live stream to
-            -- cancel during the wait). Signal it and let the caller unwind.
-            if opts.stopped and opts.stopped() then
-                return r, res, "stopped"
-            end
-        end
-    end
-    return r, res, verdict -- "retry": exhausted
-end
-
 local Conversation = {}
 Conversation.__index = Conversation
-
--- Exported for the subagent driver (bbsubagents): the child reuses the exact same
--- single-call retry policy on the parent's coroutine, so it is not copied. backoff /
--- classifyAttempt / MAX_STREAM_ATTEMPTS stay private (reached only inside
--- streamWithRetries), keeping one source of truth.
-Conversation.streamWithRetries = streamWithRetries
 
 function Conversation:new(o)
     o = o or {}
@@ -484,8 +268,8 @@ function Conversation:_loop()
             self._clean_transcript_len = turn_transcript_start
         end
 
-        -- Bounded retry around the fork+parse, via the shared streamWithRetries
-        -- helper (also driving the subagent loop). The make_parser hook rebuilds the
+        -- Bounded retry around the fork+parse, via the shared Retry.streamWithRetries
+        -- policy (also driving the subagent loop). The make_parser hook rebuilds the
         -- live transcript entries FRESH per attempt (a retried attempt must not append
         -- onto an aborted attempt's partials); on_retry trims those partials back to
         -- the checkpoint and shows the "Retrying" status -- _dropDanglingTail, which
@@ -494,7 +278,7 @@ function Conversation:_loop()
         -- _storeAssistant past the helper, so the wire history is already the
         -- resendable state we re-fork FROM (a committed [assistant tool_use][user
         -- tool_result] pair must be RESENT, not dropped).
-        local r, res, verdict = streamWithRetries({
+        local r, res, verdict = Retry.streamWithRetries({
             body = body,
             cfg = cfg,
             make_parser = function()
@@ -602,8 +386,10 @@ function Conversation:_loop()
             self.usage.output = self.usage.output + (u.output_tokens or 0)
             self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
             self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
-            self.context_size = (u.input_tokens or 0) + (u.cache_read_input_tokens or 0)
-                + (u.cache_creation_input_tokens or 0) + (u.output_tokens or 0)
+            self.context_size = (u.input_tokens or 0)
+                + (u.cache_read_input_tokens or 0)
+                + (u.cache_creation_input_tokens or 0)
+                + (u.output_tokens or 0)
         end
 
         -- Record the terminal turn's stop_reason so a headless driver (and the warn
@@ -643,8 +429,8 @@ function Conversation:_loop()
         -- pairDanglingWebSearch's has_result guard makes this an idempotent no-op
         -- when the result block is already present (the common case), so running it
         -- unconditionally is safe. Operate on the freshly merged message content.
-        pairDanglingWebSearch(self.messages[#self.messages].content)
-        local tool_uses = select(2, self:_split(res.content))
+        History.pairDanglingWebSearch(self.messages[#self.messages].content)
+        local tool_uses = select(2, History.split(res.content))
         -- Replace this turn's live streamed entries with content-ordered ones, so a
         -- server-side web search shows between the lead-in and the answer rather than
         -- hoisted above them. Client tool calls are added below, after execution.
@@ -721,67 +507,17 @@ function Conversation:_loop()
     self:_render()
 end
 
--- Record an assistant reply in the wire history. A pause_turn continuation
--- (is_resume) extends the existing assistant turn instead of adding a second
--- assistant message in a row: a paused-then-resumed turn is one logical turn, and
--- two consecutive assistant messages make the gateway 400 ("roles must alternate")
--- once a later user turn resends the pair. Merging also keeps each server_tool_use
--- in the same message as its web_search_tool_result.
+-- Record an assistant reply in the wire history (History.storeAssistant holds the
+-- pause_turn merge rule and its role-alternation rationale).
 function Conversation:_storeAssistant(blocks, is_resume)
-    local prev = self.messages[#self.messages]
-    if is_resume and prev and prev.role == "assistant" and type(prev.content) == "table" then
-        for i = 1, #blocks do
-            prev.content[#prev.content + 1] = blocks[i]
-        end
-    else
-        self.messages[#self.messages + 1] = { role = "assistant", content = blocks }
-    end
+    History.storeAssistant(self.messages, blocks, is_resume)
 end
 
--- After an error/cancel exit, _loop has appended a user (seed or tool_result)
--- turn but never stored the assistant reply for it, so history ends on a
--- dangling, unanswered user turn. ask() would then append a *second* user
--- message and the gateway 400s ("roles must alternate"); dropping only the
--- trailing user would instead expose an unanswered client tool_use (also a
--- 400). Walk back over the whole in-flight tool round to the last clean
--- assistant turn (or empty history, which lets ask() re-seed) so the stored
--- history is always resendable before the next ask(). This makes explicit the
--- "history ends with an assistant reply" invariant that was, until now, only
--- upheld by the error path closing the viewer.
+-- After an error/cancel exit, roll the wire history back to the last resendable
+-- state (History.dropDanglingTail holds the walk-back rule and its rationale), then
+-- unwind the human-readable transcript to match.
 function Conversation:_dropDanglingTail()
-    local m = self.messages
-    while #m > 0 do
-        local last = m[#m]
-        local dangling = (last.role == "user")
-        if last.role == "assistant" and type(last.content) == "table" then
-            -- Which web searches already have their result in THIS message; an
-            -- orphan server_tool_use (paired result missing) makes the resend 400 on
-            -- Vertex just like an unanswered client tool_use, so it is dangling too.
-            -- This self-heals orphans persisted by older sessions whose check only
-            -- matched type=="tool_use" (server_tool_use predates the pairing fix).
-            local has_result = {}
-            for _, b in ipairs(last.content) do
-                if b.type == "web_search_tool_result" and b.tool_use_id then
-                    has_result[b.tool_use_id] = true
-                end
-            end
-            for _, b in ipairs(last.content) do
-                if b.type == "tool_use" then
-                    dangling = true
-                    break
-                end
-                if b.type == "server_tool_use" and b.id and not has_result[b.id] then
-                    dangling = true
-                    break
-                end
-            end
-        end
-        if not dangling then
-            break
-        end
-        m[#m] = nil
-    end
-
+    History.dropDanglingTail(self.messages)
     self:_trimTranscript()
 end
 
@@ -803,100 +539,11 @@ function Conversation:_trimTranscript()
     end
 end
 
-function Conversation:_split(content)
-    local text_parts, tool_uses = {}, {}
-    if type(content) ~= "table" then
-        return text_parts, tool_uses
-    end
-    for _, block in ipairs(content) do
-        if block.type == "text" and block.text then
-            text_parts[#text_parts + 1] = block.text
-        elseif block.type == "tool_use" then
-            tool_uses[#tool_uses + 1] = block
-        end
-    end
-    return text_parts, tool_uses
-end
-
--- A friendly, present-completed description of one tool call, e.g.
---   "  → Searched book for "whales"". The leading arrow/indent set tool lines
--- apart from the You:/BookBuddy: turns in the plain-text transcript. The outcome
--- summary (match count, word count, …) is appended by the caller once known.
+-- A friendly, present-completed description of one tool call (see
+-- Transcript.toolActionPhrase, which owns the per-tool phrasing). Kept as a
+-- method because the loop appends the outcome summary to the entry it creates.
 function Conversation:_toolActionPhrase(tu)
-    local input = tu.input or {}
-    local phrase
-    if tu.name == "grep" then
-        phrase = T(_("Searched book for %1"), string.format("%q", input.query or ""))
-    elseif tu.name == "read" then
-        phrase = T(_("Reading from %1"), (input.from and tostring(input.from)) or _("your current page"))
-    elseif tu.name == "get_toc" then
-        phrase = _("Fetched the table of contents")
-    elseif tu.name == "book_context" then
-        phrase = _("Checked the book details")
-    elseif tu.name == "get_highlights" then
-        phrase = _("Looked up your highlights")
-    elseif tu.name == "edit_highlight_note" then
-        phrase = T(_("Updated the note on highlight %1"), tostring(input.highlight_index))
-    elseif tu.name == "create_highlight" then
-        phrase = _("Created a highlight")
-    elseif tu.name == "navigate" then
-        phrase = self:_navigatePhrase(input)
-    elseif tu.name == "memory" then
-        phrase = self:_memoryPhrase(input)
-    elseif tu.name == "delegate" then
-        phrase = T(_("Researching: %1…"), input.task or "")
-    elseif tu.name == "ask_user" then
-        phrase = T(_("Asked: %1"), input.question or "")
-    else
-        phrase = T(_("Used %1"), tu.name)
-    end
-    return "  → " .. phrase
-end
-
-function Conversation:_navigatePhrase(input)
-    if input.back then
-        return _("Went back")
-    elseif input.page ~= nil then
-        return T(_("Went to page %1"), tostring(input.page))
-    elseif input.percent ~= nil then
-        return T(_("Went to %1%"), tostring(input.percent))
-    elseif input.chapter_index ~= nil then
-        return T(_("Went to chapter %1"), tostring(input.chapter_index))
-    end
-    return _("Navigated the book")
-end
-
--- "/memories/notes.md" -> "notes.md"; the /memories root -> nil (no useful name).
-local function memoryNoteName(path)
-    if type(path) ~= "string" then
-        return nil
-    end
-    local name = path:gsub("^/memories/?", "")
-    return name ~= "" and name or nil
-end
-
-function Conversation:_memoryPhrase(input)
-    local cmd = input.command
-    local name = memoryNoteName(input.path)
-    if cmd == "view" then
-        if name then
-            return T(_("Read memory note %1"), name)
-        end
-        return _("Reviewed saved memory")
-    elseif cmd == "create" then
-        return name and T(_("Saved memory note %1"), name) or _("Saved a memory note")
-    elseif cmd == "str_replace" or cmd == "insert" then
-        return name and T(_("Updated memory note %1"), name) or _("Updated a memory note")
-    elseif cmd == "delete" then
-        return name and T(_("Deleted memory note %1"), name) or _("Deleted a memory note")
-    elseif cmd == "rename" then
-        local from, to = memoryNoteName(input.old_path), memoryNoteName(input.new_path)
-        if from and to then
-            return T(_("Renamed memory note %1 to %2"), from, to)
-        end
-        return _("Renamed a memory note")
-    end
-    return _("Used memory")
+    return Transcript.toolActionPhrase(tu)
 end
 
 -- Run a `delegate` tool call: hand the sub-task to a read-only child agent and
@@ -912,7 +559,7 @@ end
 -- ticks deadlock). If a future change moves delegation onto a path that can yield
 -- before reaching here, that nested stream would deadlock the child.
 function Conversation:_runDelegate(tu, cfg, tool_entry)
-    local Subagents = require("bbsubagents") -- lazy: avoids a bbconversation<->bbsubagents cycle
+    local Subagents = require("bbsubagents") -- lazy: the delegate tool is feature-gated (default off)
     local input = tu.input or {}
     -- The child runs a bounded multi-round tool loop that can take many seconds; without
     -- a live signal the committed "Researching: …" line sits frozen and reads as a hang.
@@ -961,7 +608,7 @@ end
 -- Show the reader a clarifying question (ask_user) and PARK the turn loop until they
 -- answer, then return their reply as the tool result plus a short transcript summary.
 --
--- Mechanism: the same yield/resume shape as backoff() -- capture this coroutine, build a
+-- Mechanism: the same yield/resume shape as bbretry's backoff -- capture this coroutine, build a
 -- dialog whose callbacks resume it, then coroutine.yield(). The dialog callbacks run on
 -- the UIManager event loop (a real reader tap) and feed the answer back through the
 -- resume.
@@ -1120,116 +767,18 @@ function Conversation:_askUser(input)
 end
 
 -- Re-render this turn's assistant content into the transcript in block order,
--- replacing the live streamed entries (everything past turn_start). This keeps a
--- server-side web search between the model's lead-in and its answer instead of
--- hoisting it above them, and renders interleaved thinking/text in reading order.
--- Web search runs server-side, so its query never reaches the client tool loop;
--- we surface it here, with the result count from the matching result block when it
--- is in this turn (after a pause_turn the result can be absent, so we show the
--- query alone).
+-- replacing the live streamed entries (everything past turn_start); see
+-- Transcript.renderAssistantTurn for the ordering rationale.
 function Conversation:_renderAssistantTurn(content, turn_start, show_thinking)
-    for i = #self.transcript, turn_start + 1, -1 do
-        self.transcript[i] = nil
-    end
-    if type(content) ~= "table" then
-        return
-    end
-    local outcome = {}
-    for i = 1, #content do
-        local b = content[i]
-        if b.type == "web_search_tool_result" and b.tool_use_id then
-            local c = b.content
-            if type(c) == "table" and c.type == "web_search_tool_result_error" then
-                outcome[b.tool_use_id] = { error = c.error_code }
-            elseif type(c) == "table" then
-                outcome[b.tool_use_id] = { count = #c }
-            end
-        end
-    end
-    for i = 1, #content do
-        local b = content[i]
-        if b.type == "thinking" and b.thinking and b.thinking ~= "" then
-            self.transcript[#self.transcript + 1] =
-                { role = "thinking", done = true, text = show_thinking and b.thinking or nil }
-        elseif b.type == "text" and b.text and b.text ~= "" then
-            self.transcript[#self.transcript + 1] = { role = "assistant", text = b.text }
-        elseif b.type == "server_tool_use" and b.name == "web_search" then
-            local query = (b.input and b.input.query) or ""
-            local text = "  → " .. T(_("Searched the web for %1"), string.format("%q", query))
-            local r = outcome[b.id]
-            if r and r.error then
-                text = text .. " — " .. T(_("error: %1"), tostring(r.error))
-            elseif r and r.count then
-                text = text .. " — " .. T(_("%1 result(s)"), r.count)
-            end
-            self.transcript[#self.transcript + 1] = { role = "tool", text = text }
-        end
-    end
+    Transcript.renderAssistantTurn(self.transcript, content, turn_start, show_thinking)
 end
 
 function Conversation:_transcriptText()
-    local out = {}
-    for i = 1, #self.transcript do
-        local turn = self.transcript[i]
-        if turn.role == "user" then
-            out[#out + 1] = T(_("You: %1"), turn.text)
-        elseif turn.role == "assistant" then
-            out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
-        elseif turn.role == "thinking" then
-            if turn.text and turn.text ~= "" then
-                -- show_streaming_thinking on: the live reasoning replaces the
-                -- "Thinking..."/"Thinking... Done" indicator outright -- the text itself
-                -- is the progress signal, so the placeholder label would only be noise.
-                out[#out + 1] = T(_("Thinking: %1"), turn.text)
-            else
-                -- Indicator-only (streaming thinking off, or before the first fragment):
-                -- a status that flips to Done once the answer starts.
-                out[#out + 1] = turn.done and _("Thinking... Done") or _("Thinking...")
-            end
-        else
-            out[#out + 1] = turn.text
-        end
-    end
-    local usage = self:_usageText()
-    if usage then
-        out[#out + 1] = usage
-    end
-    return table.concat(out, "\n\n")
-end
-
--- Footer summarizing token spend across the whole conversation. nil until at
--- least one API call has reported usage. cache_read/cache_write are the prompt
--- tokens served from / written to the prompt cache (Anthropic reports them
--- separately from input_tokens). "context" is the live window occupancy (latest
--- call only) on its own line, not a cumulative -- see Conversation.context_size.
--- Counts >= 1000 are abbreviated as "k" (rounded), and a context over 250k gets a
--- flame to warn the window is filling up.
-local function abbrevTokens(n)
-    if n >= 1000 then
-        return string.format("%dk", math.floor(n / 1000 + 0.5))
-    end
-    return tostring(n)
+    return Transcript.text(self.transcript, self:_usageText())
 end
 
 function Conversation:_usageText()
-    local u = self.usage
-    if u.input + u.output == 0 then
-        return nil
-    end
-    local parts = { T(_("input %1"), abbrevTokens(u.input)), T(_("output %1"), abbrevTokens(u.output)) }
-    local cached = u.cache_read + u.cache_write
-    if cached > 0 then
-        parts[#parts + 1] = T(_("cached %1"), abbrevTokens(cached))
-    end
-    local line = T(_("[tokens — %1]"), table.concat(parts, ", "))
-    if self.context_size > 0 then
-        local ctx = T(_("[context — %1]"), abbrevTokens(self.context_size))
-        if self.context_size > 250000 then
-            ctx = ctx .. " 🔥"
-        end
-        line = line .. "\n" .. ctx
-    end
-    return line
+    return Transcript.usageText(self.usage, self.context_size)
 end
 
 -- Show (or re-show) the viewer in streaming mode, i.e. with a Stop button. A
@@ -1302,7 +851,7 @@ end
 -- naturally drops it; the recovered turn's real content replaces it.
 function Conversation:_showRetryStatus(attempt)
     if self.viewer then
-        local status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(MAX_STREAM_ATTEMPTS))
+        local status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(Retry.MAX_STREAM_ATTEMPTS))
         ChatViewer.updateText(self.viewer, self:_transcriptText() .. "\n\n" .. status, true)
     end
 end
