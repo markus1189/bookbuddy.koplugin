@@ -73,13 +73,16 @@ function json.encode(v)
     elseif t == "string" then
         return encodeString(v)
     elseif t == "table" then
-        -- An explicit __array marker (set by our decoder) wins; otherwise treat a
-        -- pure 1..#v sequence as an array and anything else as an object.
+        -- An explicit __array marker (set by our decoder) or a rapidjson-style
+        -- __jsontype='array' metatable (set by the rapidjson stub's array(), the
+        -- production idiom for empty arrays) wins; otherwise treat a pure 1..#v
+        -- sequence as an array and anything else as an object.
         local n = 0
         for _ in pairs(v) do
             n = n + 1
         end
-        local is_array = v.__array or (n > 0 and #v == n)
+        local mt = getmetatable(v)
+        local is_array = v.__array or (mt and mt.__jsontype == "array") or (n > 0 and #v == n)
         if is_array then
             local parts = {}
             for i = 1, #v do
@@ -242,6 +245,10 @@ function M.install()
         end,
         object = function(t)
             return t or {}
+        end,
+        -- Mirrors lua-rapidjson: tag a table so an EMPTY one still encodes as [].
+        array = function(t)
+            return setmetatable(t or {}, { __jsontype = "array" })
         end,
         null = json.null,
     }
@@ -446,6 +453,54 @@ function M.install_bbmemory_stub()
         clear = noop,
     }
     package.loaded["bbmemory"] = stub
+    return stub
+end
+
+-- A bbchats double for the conversation-loop specs, mirroring the bbmemory
+-- double's shape: baseDirForBook returns nil by default, so Conversation:_persist
+-- skips persistence in every pre-existing scenario. A spec opts in by setting
+-- stub.rec.base; save() then records a SNAPSHOT of each saved state (round-tripped
+-- through the JSON codec, which doubles as a serializability assertion — a
+-- function or userdata smuggled into the state would blow up here just like it
+-- would under real rapidjson) plus the max_chats cap the caller threaded through.
+function M.install_bbchats_stub()
+    local rec = { base = nil, saved = {}, next_id = 0 }
+    local stub = {
+        rec = rec,
+        DEFAULT_MAX = 20,
+        baseDirForBook = function()
+            return rec.base
+        end,
+        save = function(_ui, state, max_chats)
+            if not rec.base then
+                return nil
+            end
+            rec.next_id = rec.next_id + 1
+            state.id = state.id or ("chat-" .. rec.next_id)
+            state.ts_created = state.ts_created or rec.next_id
+            state.ts_updated = rec.next_id
+            rec.saved[#rec.saved + 1] = {
+                id = state.id,
+                max_chats = max_chats,
+                state = json.decode(json.encode(state)),
+            }
+            return state.id
+        end,
+        list = function()
+            return {}
+        end,
+        load = noop,
+        delete = noop,
+        clear = noop,
+        prune = noop,
+        title = function()
+            return ""
+        end,
+        relativeTime = function()
+            return ""
+        end,
+    }
+    package.loaded["bbchats"] = stub
     return stub
 end
 

@@ -34,7 +34,10 @@ Required by in-tree path (`require("ui/uimanager")`, etc.). Read the source, don
 - LuaJIT / Lua 5.1.
 - JSON: `rapidjson`. HTTP: `socket.http` + `ltn12`, `curl` fallback. Streaming: forked subprocess (`bbstream.lua`).
 - Strings via `_()` (gettext) + `T()` (`ffi/util.template`).
-- Persistence: `LuaSettings` (`bbsettings.lua`); per-book memory in `.sdr` sidecar (`bbmemory.lua`).
+- Persistence: `LuaSettings` (`bbsettings.lua`); per-book memory in `.sdr` sidecar (`bbmemory.lua`);
+  per-book chat history in `.sdr/bookbuddy_chats/` (`bbchats.lua`: an `index.json` metadata cache
+  plus one `<id>.json` payload per chat, capped by `max_saved_chats`, saved only at
+  completed-turn boundaries from `Conversation:_render`).
 - **Comments are load-bearing**: they encode gateway/API quirks (Vertex web_search pairing,
   OpenRouter null usage, empty-200 retries, role alternation, xpointer drift). Don't strip
   them when editing the logic they explain.

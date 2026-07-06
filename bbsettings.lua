@@ -54,6 +54,10 @@ local DEFAULTS = {
     -- extra tokens and opens no new spoiler surface, and an agent that can ask beats one
     -- that guesses. When off, the tool is not advertised.
     enable_clarifying_questions = true,
+    -- Cap on stored chats per book (bbchats): saving past the cap prunes the
+    -- oldest by last-updated time. Chats live in the book's .sdr sidecar and sync
+    -- with the book, so the cap also bounds what rides along via Syncthing.
+    max_saved_chats = 20,
     -- Optional user text appended to BookBuddy's built-in system prompt
     -- (Prompts.SYSTEM_PROMPT). Empty by default; the base prompt is no longer
     -- user-editable, so customizations don't have to restate the internals.
@@ -620,6 +624,23 @@ function Settings:getMenu(ui)
                 end
             end,
         },
+    }
+    items[#items + 1] = {
+        text_func = function()
+            return T(_("Saved chats per book: %1"), tostring(self:get("max_saved_chats")))
+        end,
+        help_text = _(
+            "How many finished chats to keep per book. Chats are saved in the book's sidecar so they survive restarts and travel with the book; saving past the cap deletes the oldest."
+        ),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            self:editText(touchmenu_instance, {
+                key = "max_saved_chats",
+                title = _("Saved chats per book"),
+                description = _("Oldest chats are deleted when a new one is saved past this limit."),
+                input_type = "number",
+            })
+        end,
     }
     if ui then
         items[#items + 1] = {

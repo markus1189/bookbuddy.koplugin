@@ -24,6 +24,7 @@ local T = require("ffi/util").template
 
 local Anthropic = require("bbanthropic")
 local ChatViewer = require("bbchatviewer")
+local Chats = require("bbchats")
 local History = require("bbhistory")
 local Memory = require("bbmemory")
 local Presets = require("bbpresets")
@@ -119,7 +120,46 @@ function Conversation:new(o)
     -- whether a token was billed fresh or served from cache) plus its output, which
     -- is now appended to history and will ride along in the next request.
     o.context_size = 0
+    -- Reopen a stored chat (see bbchats): restore the persisted wire history and
+    -- display transcript instead of starting empty, so a follow-up runs the SAME
+    -- ask() -> _loop path as an in-session reply — messages is non-empty, so ask()
+    -- appends the plain question and resends the full history. The wire format IS
+    -- the resume format; there is no separate resume protocol. chat_id makes the
+    -- next save overwrite this chat's payload rather than mint a new one.
+    -- _last_saved_len records where the stored history already ends, so merely
+    -- reopening (which _renders) doesn't rewrite an unchanged payload.
+    if o.resume_state then
+        local s = o.resume_state
+        o.resume_state = nil
+        o.messages = type(s.messages) == "table" and s.messages or {}
+        o.transcript = type(s.transcript) == "table" and s.transcript or {}
+        if type(s.usage) == "table" then
+            -- tonumber() both coerces decoded numbers and rejects rapidjson.null.
+            o.usage.input = tonumber(s.usage.input) or 0
+            o.usage.output = tonumber(s.usage.output) or 0
+            o.usage.cache_read = tonumber(s.usage.cache_read) or 0
+            o.usage.cache_write = tonumber(s.usage.cache_write) or 0
+        end
+        o.chat_id = s.id
+        o.chat_ts_created = tonumber(s.ts_created)
+        -- Cosmetic post-resume: these only shaped turn 1's seed, which already
+        -- happened. Restored for completeness (a decoded null must not stand in
+        -- for a string, hence the type guards).
+        if type(s.selected_text) == "string" then
+            o.selected_text = s.selected_text
+        end
+        if type(s.note) == "string" then
+            o.note = s.note
+        end
+        o._last_saved_len = #o.messages
+    end
     return o
+end
+
+-- Show a reopened chat's finished transcript in Reply mode. Just the terminal
+-- render: the follow-up path is the ordinary one from there.
+function Conversation:reopen()
+    self:_render()
 end
 
 function Conversation:ask(question)
@@ -920,7 +960,60 @@ function Conversation:_showRetryStatus(attempt)
     end
 end
 
+-- Persist this conversation to the book's sidecar (bbchats). Called only from
+-- _render — the single terminal render — so a stored chat always ends on a
+-- finished assistant answer, never a dangling mid-tool-round state (the wire
+-- history is guaranteed resendable here; that's _dropDanglingTail's invariant).
+-- A chat that never reaches a completed turn (turn-one error) is never saved.
+-- Failures are logged and swallowed: persistence must never break the render.
+function Conversation:_persist()
+    -- Nothing new since the last save (or since resume restored the stored
+    -- history): skip, so a mere reopen doesn't rewrite an unchanged payload and
+    -- bump its ts_updated.
+    if #self.messages == 0 or #self.messages == self._last_saved_len then
+        return
+    end
+    if not (self.ui and Chats.baseDirForBook(self.ui)) then
+        return
+    end
+    -- Copy transcript entries minus derived display caches: the stripMarkdown
+    -- memo (_md_src/_md_out) and any other _-prefixed transient are pure caches
+    -- keyed on the entry's live .text — persisting them bloats the payload and
+    -- could mislead after reload; they re-derive on the first render after reopen.
+    local transcript = {}
+    for i, e in ipairs(self.transcript) do
+        local copy = {}
+        for k, v in pairs(e) do
+            if not (type(k) == "string" and k:sub(1, 1) == "_") then
+                copy[k] = v
+            end
+        end
+        transcript[i] = copy
+    end
+    local state = {
+        id = self.chat_id,
+        ts_created = self.chat_ts_created,
+        selected_text = self.selected_text,
+        note = self.note,
+        messages = self.messages,
+        transcript = transcript,
+        usage = self.usage,
+    }
+    -- The settings double in some specs only implements getConfig; treat a
+    -- missing accessor like an unset value and fall back to the default cap.
+    local max_chats = self.settings and self.settings.get and tonumber(self.settings:get("max_saved_chats"))
+    local ok, id = pcall(Chats.save, self.ui, state, max_chats or Chats.DEFAULT_MAX)
+    if ok and id then
+        self.chat_id = id
+        self.chat_ts_created = state.ts_created
+        self._last_saved_len = #self.messages
+    elseif not ok then
+        logger.warn("BookBuddy: failed to save chat", id)
+    end
+end
+
 function Conversation:_render()
+    self:_persist()
     self:_cancelFlush()
     -- The turn is over -- it's the reader's move. Freeze BEFORE closing the old
     -- viewer (freeze stops the ticker and pins the elapsed time) and seed the

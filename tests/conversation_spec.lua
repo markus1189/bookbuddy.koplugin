@@ -7,7 +7,7 @@ local stubs = require("support.stubs")
 local sse = require("support.sse")
 
 describe("conversation", function()
-    local Conversation, fake, captured, chatviewer, statusbar, bbtools, mem
+    local Conversation, fake, captured, chatviewer, statusbar, bbtools, mem, chats
     local cfg = {}
     local stubSettings = {
         getConfig = function()
@@ -20,6 +20,7 @@ describe("conversation", function()
         chatviewer = h.chatviewer
         statusbar = h.statusbar
         mem = stubs.install_bbmemory_stub()
+        chats = stubs.install_bbchats_stub()
         bbtools = stubs.install_bbtools_stub(h)
         fake = sse.new_fake_stream({}, chatviewer)
         captured = (sse.capture_build_body())
@@ -58,6 +59,11 @@ describe("conversation", function()
         -- store (Memory.baseDirForBook returns it), otherwise memory stays off.
         mem.rec.calls = {}
         mem.rec.base = sc.memory_base
+        -- Same pattern for the chats recorder: sc.chats_base opts the book into
+        -- persistence, otherwise _persist skips (nil sidecar) as before.
+        chats.rec.saved = {}
+        chats.rec.next_id = 0
+        chats.rec.base = sc.chats_base
 
         local selected_text
         if not sc.book_level then
@@ -1084,6 +1090,160 @@ describe("conversation", function()
                 followups = { "Tell me more." },
             })
             assert.are.equal(2, statusbar.instances)
+        end)
+    end)
+
+    describe("chat persistence (P1-P6)", function()
+        it("P1: a completed turn saves a chat ending on the assistant answer", function()
+            run({
+                chats_base = "/sdr/bookbuddy_chats",
+                responses = {
+                    sse.buildTurnSSE({
+                        blocks = { { type = "tool_use", id = "toolu_P1", name = "grep", input = { query = "whales" } } },
+                        stop_reason = "tool_use",
+                    }),
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Final answer." } } }),
+                },
+            })
+            assert.are.equal(1, #chats.rec.saved)
+            local saved = chats.rec.saved[1].state
+            -- The stored wire history ends on the finished answer and is resendable.
+            local last = saved.messages[#saved.messages]
+            assert.are.equal("assistant", last.role)
+            assert.are.equal("Final answer.", last.content[#last.content].text)
+            assert.are.equal(0, #sse.validateMessages(saved.messages))
+            -- The default cap is threaded to the store when settings has no editor value.
+            assert.are.equal(20, chats.rec.saved[1].max_chats)
+        end)
+
+        it("P2: the stored transcript keeps the client-tool outcome summary but no display caches", function()
+            run({
+                chats_base = "/sdr/bookbuddy_chats",
+                responses = {
+                    sse.buildTurnSSE({
+                        blocks = { { type = "tool_use", id = "toolu_P2", name = "grep", input = { query = "whales" } } },
+                        stop_reason = "tool_use",
+                    }),
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Answer with *markdown*." } } }),
+                },
+            })
+            local saved = chats.rec.saved[1].state
+            -- The tool line's " — ok" summary exists ONLY on the transcript (it is
+            -- computed at execute time, not derivable from messages), so it must be
+            -- persisted verbatim.
+            local tool_line
+            for _, e in ipairs(saved.transcript) do
+                if e.role == "tool" then
+                    tool_line = e.text
+                end
+            end
+            assert.is_not_nil(tool_line)
+            assert.is_not_nil(tool_line:find('Searched book for "whales" — ok', 1, true))
+            -- The stripMarkdown memo (_md_src/_md_out) was populated by the live
+            -- renders; _persist must strip every _-prefixed transient.
+            for _, e in ipairs(saved.transcript) do
+                for k in pairs(e) do
+                    assert.is_false(
+                        type(k) == "string" and k:sub(1, 1) == "_",
+                        "transient key leaked into the payload: " .. tostring(k)
+                    )
+                end
+            end
+        end)
+
+        it("P3: a turn-one failure writes nothing", function()
+            run({
+                chats_base = "/sdr/bookbuddy_chats",
+                responses = {
+                    { outcome = "read_error" },
+                    { outcome = "read_error" },
+                    { outcome = "read_error" },
+                },
+            })
+            assert.are.equal(0, #chats.rec.saved)
+        end)
+
+        it("P4: a follow-up saves again under the same id, with the grown history", function()
+            run({
+                chats_base = "/sdr/bookbuddy_chats",
+                responses = {
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "First answer." } } }),
+                    sse.buildTurnSSE({ blocks = { { type = "text", text = "Second answer." } } }),
+                },
+                followups = { "Tell me more." },
+            })
+            assert.are.equal(2, #chats.rec.saved)
+            assert.are.equal(chats.rec.saved[1].id, chats.rec.saved[2].id)
+            assert.is_true(#chats.rec.saved[2].state.messages > #chats.rec.saved[1].state.messages)
+        end)
+
+        it("P5: no sidecar means no persistence and no error", function()
+            run({
+                -- chats_base omitted: baseDirForBook resolves nil, _persist skips.
+                responses = { sse.buildTurnSSE({ blocks = { { type = "text", text = "Answer." } } }) },
+            })
+            assert.are.equal(0, #chats.rec.saved)
+        end)
+
+        it("P6: reopening a stored chat renders it and a follow-up continues under the same id", function()
+            clear(captured)
+            chats.rec.saved = {}
+            chats.rec.next_id = 0
+            chats.rec.base = "/sdr/bookbuddy_chats"
+            chatviewer.last_text = nil
+            fake:reset({ sse.buildTurnSSE({ blocks = { { type = "text", text = "Follow-up answer." } } }) })
+            cfg.max_turns = 20
+            cfg.enable_thinking = false
+            cfg.show_streaming_thinking = false
+
+            -- A stored payload as bbchats would load it: seeded turn 1 plus a
+            -- client-tool transcript line whose outcome summary exists nowhere else.
+            local seed_text = "<book_context>\nCTX\n</book_context>\n\n<question>\nQ1\n</question>"
+            local state = {
+                id = "chat-restored",
+                ts_created = 42,
+                selected_text = "the passage",
+                messages = {
+                    { role = "user", content = seed_text },
+                    { role = "assistant", content = { { type = "text", text = "A1" } } },
+                },
+                transcript = {
+                    { role = "user", text = "Q1" },
+                    { role = "tool", text = '  → Searched book for "whales" — 12 matches' },
+                    { role = "assistant", text = "A1" },
+                },
+                usage = { input = 30, output = 12, cache_read = 1, cache_write = 2 },
+            }
+            local conv = Conversation:new({ ui = {}, settings = stubSettings, resume_state = state })
+            conv:reopen()
+
+            -- Reopen shows the finished chat: prior turns, the tool line WITH its
+            -- summary, and the restored usage footer.
+            local shown = chatviewer.last_text or ""
+            assert.is_not_nil(shown:find("You: Q1", 1, true))
+            assert.is_not_nil(shown:find('Searched book for "whales" — 12 matches', 1, true))
+            assert.is_not_nil(shown:find("BookBuddy: A1", 1, true))
+            assert.is_not_nil(shown:find("input 30", 1, true))
+            -- A mere reopen adds nothing, so it must not rewrite the payload.
+            assert.are.equal(0, #chats.rec.saved)
+
+            -- The follow-up resends the restored wire history plus the new question
+            -- through the ordinary ask() path...
+            conv:ask("Q2")
+            assert.are.equal(1, #captured)
+            local msgs = captured[1].messages
+            assert.are.equal(3, #msgs)
+            assert.are.equal(seed_text, msgs[1].content)
+            assert.are.equal("Q2", msgs[3].content)
+            assert.are.equal(0, #sse.validateMessages(msgs))
+            -- ...and the completed turn overwrites the SAME stored chat.
+            assert.are.equal(1, #chats.rec.saved)
+            assert.are.equal("chat-restored", chats.rec.saved[1].id)
+            local saved = chats.rec.saved[1].state
+            assert.are.equal(42, saved.ts_created)
+            local last = saved.messages[#saved.messages]
+            assert.are.equal("Follow-up answer.", last.content[#last.content].text)
+            assert.is_not_nil((chatviewer.last_text or ""):find("Follow-up answer.", 1, true))
         end)
     end)
 

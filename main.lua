@@ -1,3 +1,4 @@
+local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
@@ -8,6 +9,7 @@ local _ = require("gettext")
 local T = require("ffi/util").template
 
 local Settings = require("bbsettings")
+local Chats = require("bbchats")
 local Conversation = require("bbconversation")
 local Presets = require("bbpresets")
 
@@ -97,7 +99,87 @@ function BookBuddy:addToMainMenu(menu_items)
             self:promptAndStart(nil)
         end,
     })
+    -- Past chats for this book, stored in its sidecar (bbchats). sub_item_table_func
+    -- rebuilds the rows on every open, so the list reflects saves/deletes made since.
+    table.insert(menu.sub_item_table, 2, {
+        text = _("Chat history"),
+        sub_item_table_func = function()
+            return self:getChatHistoryItems()
+        end,
+    })
     menu_items.bookbuddy = menu
+end
+
+-- Menu rows for the stored chats: `title · relative-time`, tap to reopen and
+-- continue, long-press to delete (with confirmation), plus a trailing
+-- "Clear all chats" entry — mirroring Settings:showMemory's clear pattern.
+function BookBuddy:getChatHistoryItems()
+    local items = {}
+    -- The submenu was pushed with the table sub_item_table_func returned, so a
+    -- delete/clear must swap a freshly built table in before repainting — a bare
+    -- updateItems() would re-render the stale rows.
+    local function refresh(touchmenu_instance)
+        if touchmenu_instance then
+            touchmenu_instance.item_table = self:getChatHistoryItems()
+            touchmenu_instance:updateItems()
+        end
+    end
+    for _, row in ipairs(Chats.list(self.ui)) do
+        local id, title = row.id, row.title or _("Untitled chat")
+        items[#items + 1] = {
+            text = T("%1 · %2", title, Chats.relativeTime(row.ts_updated)),
+            callback = function()
+                self:resumeChat(id)
+            end,
+            hold_callback = function(touchmenu_instance)
+                UIManager:show(ConfirmBox:new({
+                    text = T(_("Delete this chat?\n\n%1"), title),
+                    ok_text = _("Delete"),
+                    ok_callback = function()
+                        Chats.delete(self.ui, id)
+                        refresh(touchmenu_instance)
+                    end,
+                }))
+            end,
+        }
+    end
+    if #items == 0 then
+        items[1] = { text = _("No saved chats yet"), enabled = false }
+        return items
+    end
+    items[#items].separator = true
+    items[#items + 1] = {
+        text = _("Clear all chats"),
+        keep_menu_open = true,
+        callback = function(touchmenu_instance)
+            UIManager:show(ConfirmBox:new({
+                text = _("Delete all saved chats for this book?"),
+                ok_text = _("Delete"),
+                ok_callback = function()
+                    Chats.clear(self.ui)
+                    refresh(touchmenu_instance)
+                end,
+            }))
+        end,
+    }
+    return items
+end
+
+-- Reopen a stored chat: rebuild a live Conversation from its payload and show
+-- it in Reply mode. A follow-up then resends the restored wire history through
+-- the ordinary ask() path — identical to an in-session reply.
+function BookBuddy:resumeChat(id)
+    local state = Chats.load(self.ui, id)
+    if not state then
+        UIManager:show(InfoMessage:new({ text = _("BookBuddy: could not load this chat.") }))
+        return
+    end
+    local conversation = Conversation:new({
+        ui = self.ui,
+        settings = self.settings,
+        resume_state = state,
+    })
+    conversation:reopen()
 end
 
 -- Open an input dialog seeded with the highlighted passage (and the reader's note
