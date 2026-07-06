@@ -1289,6 +1289,67 @@ describe("conversation", function()
         end)
     end)
 
+    describe("prose/machinery rules (via _transcriptText)", function()
+        local RULE = string.rep("─", 24)
+        local function rendered(transcript)
+            local conv = Conversation:new({ ui = {}, settings = stubSettings, selected_text = "x" })
+            conv.transcript = transcript
+            return conv:_transcriptText()
+        end
+
+        it("fences the answer off from visible thinking and tool lines", function()
+            local text = rendered({
+                { role = "user", text = "Q" },
+                { role = "thinking", done = true, text = "hmm" },
+                { role = "tool", text = '  → Searched book for "whales"' },
+                { role = "assistant", text = "A" },
+            })
+            -- Exact join: one rule at the machinery->answer boundary, none between
+            -- thinking and tool (both machinery) or after the user question.
+            assert.are.equal(
+                table.concat({
+                    "You: Q",
+                    "Thinking: hmm",
+                    '  → Searched book for "whales"',
+                    RULE,
+                    "BookBuddy: A",
+                }, "\n\n"),
+                text
+            )
+        end)
+
+        it("fences a lead-in from the tool calls that follow it", function()
+            local text = rendered({
+                { role = "user", text = "Q" },
+                { role = "assistant", text = "Let me check." },
+                { role = "tool", text = "  → Fetched the table of contents" },
+                { role = "assistant", text = "A" },
+            })
+            assert.are.equal(
+                table.concat({
+                    "You: Q",
+                    "BookBuddy: Let me check.",
+                    RULE,
+                    "  → Fetched the table of contents",
+                    RULE,
+                    "BookBuddy: A",
+                }, "\n\n"),
+                text
+            )
+        end)
+
+        it("draws no rules for a plain exchange, even with hidden thinking", function()
+            local text = rendered({
+                { role = "user", text = "Q" },
+                -- Indicator-only thinking (streaming display off) renders nothing
+                -- and must not conjure a fence around the answer.
+                { role = "thinking", done = true },
+                { role = "assistant", text = "A" },
+            })
+            assert.are.equal("You: Q\n\nBookBuddy: A", text)
+        end)
+    end)
+
     describe("stripMarkdown (via _transcriptText)", function()
         local function rendered(text)
             local conv = Conversation:new({ ui = {}, settings = stubSettings, selected_text = "x" })

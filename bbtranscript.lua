@@ -170,27 +170,45 @@ function Transcript.renderAssistantTurn(transcript, content, turn_start, show_th
     end
 end
 
+-- Rule drawn wherever BookBuddy's prose borders the thinking/tool machinery, so
+-- with streamed thinking on the reader can see at a glance where the actual
+-- answer starts and ends. Rendered per call, never stored in transcript entries.
+local RULE = string.rep("─", 24)
+
 -- The full plain-text rendering the viewer shows. Transient status (activity,
 -- elapsed, context occupancy) lives on the live status bar (bbstatusbar), NOT
 -- here: this is the durable transcript, so it carries no token/context footer and
 -- no "Thinking..." placeholder -- those would only double what the bar already shows.
 function Transcript.text(transcript)
     local out = {}
+    -- Fence answers off from machinery: emit RULE at every prose<->machinery
+    -- boundary (assistant vs. visible thinking/tool). A plain You:/BookBuddy:
+    -- exchange has no such boundary and renders without any rules. Tracked over
+    -- *rendered* entries only, so hidden thinking (indicator-only, empty text)
+    -- never conjures a fence.
+    local prev_kind
+    local function push(kind, text)
+        if prev_kind and kind ~= prev_kind and kind ~= "user" and prev_kind ~= "user" then
+            out[#out + 1] = RULE
+        end
+        prev_kind = kind
+        out[#out + 1] = text
+    end
     for i = 1, #transcript do
         local turn = transcript[i]
         if turn.role == "user" then
-            out[#out + 1] = T(_("You: %1"), turn.text)
+            push("user", T(_("You: %1"), turn.text))
         elseif turn.role == "assistant" then
-            out[#out + 1] = T(_("BookBuddy: %1"), strippedEntry(turn))
+            push("prose", T(_("BookBuddy: %1"), strippedEntry(turn)))
         elseif turn.role == "thinking" then
             -- Only surface reasoning the reader opted into streaming (show_streaming_thinking):
             -- the text itself is the content. An indicator-only entry (empty text) renders
             -- nothing -- the status bar's "thinking" activity is the sole progress signal.
             if turn.text and turn.text ~= "" then
-                out[#out + 1] = T(_("Thinking: %1"), turn.text)
+                push("machinery", T(_("Thinking: %1"), turn.text))
             end
         else
-            out[#out + 1] = turn.text
+            push("machinery", turn.text)
         end
     end
     return table.concat(out, "\n\n")
