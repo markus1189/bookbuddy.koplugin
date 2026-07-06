@@ -5,17 +5,13 @@
 // edit_highlight_note on index 2 — NOT create_highlight (a new highlight would be
 // the classic wrong move).
 //
-// Grades the TRACE. Returns a promptfoo GradingResult {pass, score, reason}.
+// Grades the TRACE via context.providerResponse.metadata (see
+// created_highlight_verona.js for the provider contract).
+// Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+/** @param {string} _output @param {object} context */
+module.exports = (_output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }

@@ -13,21 +13,14 @@
 // Spoiler discipline still applies: the answer must rest on text BEHIND the reader, so
 // no read-ahead (spoiler=true, or a retrieval resolving past current_page).
 //
-// IMPORTANT: promptfoo's `exec:` provider hands `output` as the raw envelope STRING
-//   {"output": "<prose>", "metadata": {"trace": [...], "current_page": N, ...}}
-// so we JSON.parse it ourselves (see created_highlight_verona.js for the contract).
+// CONTRACT: `output` is the agent's PROSE; the tool trace and current_page ride on
+// context.providerResponse.metadata (see created_highlight_verona.js).
 //
 // Grades the TRACE. Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+/** @param {string} _output @param {object} context */
+module.exports = (_output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }

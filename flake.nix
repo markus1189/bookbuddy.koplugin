@@ -189,23 +189,27 @@
               exec ./luajit "$PLUGIN_DIR/tests/eval/seed_fixture.lua" "$@"
             '';
           };
-          # `bb-tier3-exec` — the promptfoo `exec:` provider entrypoint (Tier 3,
-          # .plans/tier3-promptfoo.md Step 2/3). promptfoo invokes it via execFile
-          # (NO shell, PATH-resolved) with argv (prompt, optionsJSON, contextJSON);
-          # we use only $1 = the task. This wrapper OWNS the full koreader runtime
-          # env (mirrors test-real) PLUS the TLS libs for the driver's HTTPS
-          # subprocess — kept HERE, not in the `.#eval` app, so the Node/promptfoo
-          # process runs with a clean env (no koreader libstdc++/openssl shadowing
-          # Node's). It emits ONLY the driver's JSON envelope on stdout (clean for
-          # promptfoo); the driver's own stdout/stderr are redirected to our stderr.
+          # `bb-tier3-exec` — the Tier-3 driver entrypoint (Tier 3,
+          # .plans/tier3-promptfoo.md Step 2/3), spawned by the custom promptfoo
+          # provider tests/eval/tier3_provider.js via execFile (NO shell,
+          # PATH-resolved) with argv (prompt, optionsJSON, contextJSON) — the same
+          # contract promptfoo's `exec:` provider used before the migration. This
+          # wrapper OWNS the full koreader runtime env (mirrors test-real) PLUS the
+          # TLS libs for the driver's HTTPS subprocess — kept HERE, not in the
+          # `.#eval` app, so the Node/promptfoo process runs with a clean env (no
+          # koreader libstdc++/openssl shadowing Node's). It emits ONLY the driver's
+          # JSON envelope on stdout, which tier3_provider.js parses into a structured
+          # ProviderResponse (prose output + metadata.trace + tokenUsage); the
+          # driver's own stdout/stderr are redirected to our stderr.
           # A fresh per-call KO_HOME gives each run (incl. `repeat`) an empty .sdr.
           evalExec = pkgs.writeShellApplication {
             name = "bb-tier3-exec";
             runtimeInputs = [ pkgs.coreutils ];
             text = ''
-              # promptfoo passes argv (prompt, optionsJSON, contextJSON); forward
-              # ALL of them so the driver can read arg[1]=task AND arg[3]=context
-              # (→ vars.start_page). Forwarding only $1 silently drops per-test vars.
+              # tier3_provider.js passes argv (prompt, optionsJSON, contextJSON);
+              # forward ALL of them so the driver can read arg[1]=task AND
+              # arg[3]=context (→ vars.start_page). Forwarding only $1 silently
+              # drops per-test vars.
               PLUGIN_DIR="''${BB_PLUGIN_DIR:-${self}}"
               KO_HOME="$(mktemp -d -t bb-ko.XXXXXX)"; export KO_HOME
               export TESSDATA_PREFIX="${ko}/data"
@@ -235,9 +239,10 @@
           };
           # `nix run .#eval` — Tier 3 promptfoo runner (the credentialed, billed
           # opt-in; NOT in `.#check`). Runs promptfoo (Node) with a CLEAN env from a
-          # writable scratch cwd; the `exec:` wrapper (above) supplies the koreader
-          # runtime per provider call. `file://asserts/*` resolve relative to the
-          # config dir, not cwd. Requires BB_API_KEY in the host env (never
+          # writable scratch cwd; the config's tier3_provider.js spawns the
+          # `bb-tier3-exec` wrapper (above), which supplies the koreader runtime per
+          # provider call. `file://` paths (provider + asserts) resolve relative to
+          # the config dir, not cwd. Requires BB_API_KEY in the host env (never
           # embedded in the store); BB_EVAL_MODEL / BB_MAX_TURNS pass through.
           evalRun = pkgs.writeShellApplication {
             name = "bookbuddy-eval";

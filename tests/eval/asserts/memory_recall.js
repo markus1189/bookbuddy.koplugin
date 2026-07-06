@@ -5,17 +5,13 @@
 // the `memory` tool; a "what do you remember about me?" turn must READ memory (a
 // memory view) and reflect the stored facts — it cannot know them otherwise.
 //
-// Grades the TRACE + prose. Returns a promptfoo GradingResult {pass, score, reason}.
+// Grades the TRACE (via context.providerResponse.metadata; see
+// created_highlight_verona.js for the provider contract) + the PROSE (`output`).
+// Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+/** @param {string} output @param {object} context */
+module.exports = (output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }
@@ -30,7 +26,7 @@ module.exports = (output, _context) => {
   }
   // The seeded facts: light/dark imagery and the Prologue/Chorus framing. Require the
   // prose to surface at least one — proves it actually used what it read.
-  const prose = String(env.output || '');
+  const prose = String(output || '');
   const recalled = /light|dark|Prologue|Chorus|framing|first time/i.test(prose);
   if (!recalled) {
     return {

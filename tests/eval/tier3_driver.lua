@@ -1,17 +1,19 @@
 -- Tier 3 headless eval driver (.plans/tier3-promptfoo.md): runs the GENUINE
 -- bbconversation loop against a real model over a real crengine ReaderUI
 -- (juliet.epub). This is the walking skeleton's core risk — the headless pump —
--- settled in one place so promptfoo can drive the real agent via an `exec:`
--- provider.
+-- settled in one place so promptfoo can drive the real agent via the custom JS
+-- provider (tests/eval/tier3_provider.js, spawning the bb-tier3-exec wrapper).
 --
 -- Run ONLY inside the koreader runtime assembled by `nix run .#eval-driver` (the
 -- same env block as `.#test-real`: cwd=${ko}, LUA_PATH/CPATH, KO_HOME, SDL dummy)
 -- plus the credentialed real-model call. It is NOT part of `.#check`.
 --
 -- Contract: read the task from arg[1], drive one bbconversation:_loop() to a
--- terminal branch, then emit ONE ProviderResponse JSON:
+-- terminal branch, then emit ONE envelope JSON:
 --   {"output": "<final text>", "metadata": {"trace":[...], "usage":{...}, "error":<opt>}}
--- Always include `output` (even "") so promptfoo never chokes.
+-- Always include `output` (even "") so the provider never chokes.
+-- tier3_provider.js parses this envelope into promptfoo's ProviderResponse
+-- (prose output, metadata, tokenUsage) — keep the two in sync.
 
 -- 1. Bootstrap the koreader runtime exactly as the busted helper does, BEFORE
 --    commonrequire (run inside open_book) writes into KO_HOME / loads FFI libs.
@@ -137,9 +139,9 @@ local UIManager = require("ui/uimanager")
 local Trapper = require("ui/trapper")
 local T = require("ffi/util").template
 
--- Emit exactly ONE ProviderResponse JSON: a clean copy to BB_EVAL_OUT (if set) and
--- the same to stdout for promptfoo's exec provider. Flush so a following os.exit
--- can't drop the buffered stdout.
+-- Emit exactly ONE envelope JSON: a clean copy to BB_EVAL_OUT (if set) and the
+-- same to stdout; bb-tier3-exec forwards the BB_EVAL_OUT copy to tier3_provider.js.
+-- Flush so a following os.exit can't drop the buffered stdout.
 local function emit(payload)
     local json = rapidjson.encode(payload)
     local out_path = os.getenv("BB_EVAL_OUT")

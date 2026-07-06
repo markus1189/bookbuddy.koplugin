@@ -4,18 +4,13 @@
 // "ancient grudge". A "what have I highlighted?" turn must call get_highlights and
 // surface those real, pre-existing annotations (proving the seed loaded on open).
 //
-// Grades the TRACE (see created_highlight_verona.js for the envelope contract).
+// Grades the TRACE (see created_highlight_verona.js for the provider contract:
+// prose in `output`, trace on context.providerResponse.metadata).
 // Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+/** @param {string} output @param {object} context */
+module.exports = (output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }
@@ -40,7 +35,7 @@ module.exports = (output, _context) => {
     };
   }
   // The prose should actually report them back to the reader (not just call the tool).
-  const prose = String(env.output || '');
+  const prose = String(output || '');
   const proseReflects = /Verona|grudge|Prologue/i.test(prose);
   return {
     pass: true,

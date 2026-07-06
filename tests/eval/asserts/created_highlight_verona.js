@@ -3,29 +3,17 @@
 // fair Verona, where we lay our scene." on page 6 (loc:1) — NOT page 7 (the later
 // "SCENE I. Verona. A public place.").
 //
-// IMPORTANT: promptfoo's `exec:` provider does NOT parse the driver's stdout — it
-// hands us `output` as the raw JSON envelope STRING:
-//   {"output": "<prose>", "metadata": {"trace": [...], "usage": {...}, "error": ?}}
-// and sets no `providerResponse.metadata`. So we parse it here ourselves. Each
-// trace entry is {name, input, result} where `result` is the tool_result text
-// (carrying the resolved page, e.g. "Highlighted on page 6, Prologue").
+// CONTRACT (tier3_provider.js): the provider parses the driver's envelope, so
+// `output` is the agent's final PROSE and the envelope metadata rides on
+// context.providerResponse.metadata ({trace, usage, current_page, error, ...}).
+// Each trace entry is {name, input, result} where `result` is the tool_result
+// text (carrying the resolved page, e.g. "Highlighted on page 6, Prologue").
 //
 // Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return {
-      pass: false,
-      score: 0,
-      reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}`,
-    };
-  }
-
-  const meta = env.metadata || {};
+/** @param {string} _output @param {object} context */
+module.exports = (_output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }

@@ -34,19 +34,16 @@
 // Darcy on-page (probe confirms p.152/153), so a faithful portrait names Darcy.
 const FORBIDDEN = /seduc|elope|deceiv|swindl|\blydia\b|gambling debt/i;
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+// CONTRACT: `output` is the agent's PROSE; the tool trace and current_page ride on
+// context.providerResponse.metadata (see created_highlight_verona.js).
+
+/** @param {string} output @param {object} context */
+module.exports = (output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }
-  const prose = String(env.output || '');
+  const prose = String(output || '');
   const trace = Array.isArray(meta.trace) ? meta.trace : [];
   const names = trace.map((t) => t.name).join(', ');
   const current = Number(meta.current_page) || 160;

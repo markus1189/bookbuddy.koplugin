@@ -1,14 +1,18 @@
 # Tier 3 — promptfoo agent eval (walking skeleton). Drives the GENUINE
-# bbconversation loop against a real model over real crengine, via the `exec:`
-# provider: tests/eval/tier3_driver.lua, wrapped by `bb-tier3-exec` (defined in
-# flake.nix, which owns the koreader runtime env). NON-hermetic, credentialed,
-# billed — run ONLY via `nix run .#eval`; NEVER part of `.#check`.
+# bbconversation loop against a real model over real crengine, via a custom JS
+# provider (tier3_provider.js) that spawns `bb-tier3-exec` (defined in flake.nix,
+# which owns the koreader runtime env) around tests/eval/tier3_driver.lua.
+# NON-hermetic, credentialed, billed — run ONLY via `nix run .#eval`; NEVER part
+# of `.#check`.
 #
-# Output contract (verified against promptfoo's scriptCompletion provider): the
-# `exec:` provider does NOT JSON-parse stdout and sets no metadata — `output` is
-# the raw envelope STRING {"output": <prose>, "metadata": {"trace", "usage",
-# "error"}}. Every assertion parses it itself (see asserts/*.js). `file://` paths
-# resolve relative to THIS config's directory.
+# Output contract: the provider parses the driver's envelope ONCE and returns a
+# structured ProviderResponse — `output` is the agent's final PROSE, and the
+# envelope metadata ({trace, usage, stop_reason, current_page, ...}) rides on
+# `providerResponse.metadata`. JS assertions read the tool trace via
+# context.providerResponse.metadata (see asserts/*.js); llm-rubrics get the prose
+# in {{output}} directly (no transform needed). The provider also maps
+# metadata.usage → tokenUsage, so the UI's output cell, Metadata panel, and token
+# columns all render. `file://` paths resolve relative to THIS config's directory.
 description: BookBuddy Tier 3 agent evals (real crengine + real model)
 
 # One prompt: pass the task straight through. The exec provider receives it as
@@ -16,10 +20,12 @@ description: BookBuddy Tier 3 agent evals (real crengine + real model)
 prompts:
   - '{{task}}'
 
-# Named wrapper on PATH (flake `runtimeInputs`). execFile resolves it via PATH;
-# it sets up the koreader runtime and emits ONLY the driver's JSON envelope.
+# Custom JS provider: spawns the `bb-tier3-exec` wrapper (on PATH via the flake's
+# `runtimeInputs`; it sets up the koreader runtime and emits ONLY the driver's
+# JSON envelope) and unwraps that envelope into a structured ProviderResponse.
 providers:
-  - 'exec:bb-tier3-exec'
+  - id: 'file://tier3_provider.js'
+    label: bb-tier3
 
 tests:
   - description: Highlights the first mention of Verona (Prologue, page 6 / loc:1)
@@ -36,12 +42,11 @@ tests:
       # ideally preceded by a grep/book_context. Reads metadata.trace.
       - type: javascript
         value: file://asserts/created_highlight_verona.js
-      # Product constraint: replies are plain text, no markdown. Grade the PROSE
-      # (env.output), not the JSON envelope (whose tool names contain '_').
+      # Product constraint: replies are plain text, no markdown. `output` IS the
+      # prose (the provider unwraps the envelope), so grade it directly.
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
   # --- Seeded-fixture scenarios -------------------------------------------------
   # These open the book with a pre-existing .sdr (the `seed_sdr` var, resolved by
@@ -60,10 +65,9 @@ tests:
     assert:
       - type: javascript
         value: file://asserts/get_highlights_roundtrip.js
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
   - description: Adds a note to an existing (seeded) highlight, not a new one
     vars:
@@ -74,10 +78,9 @@ tests:
     assert:
       - type: javascript
         value: file://asserts/edited_grudge_note.js
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
   - description: Recalls a seeded BookBuddy memory note about the reader
     vars:
@@ -89,10 +92,9 @@ tests:
     assert:
       - type: javascript
         value: file://asserts/memory_recall.js
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
   # Empty-fixture baseline (NO seed_sdr): the same question must honestly report no
   # highlights rather than inventing any — the negative control for the round-trip.
@@ -104,21 +106,19 @@ tests:
     assert:
       - type: javascript
         value: |
-          const env = JSON.parse(output);
-          const meta = env.metadata || {};
+          const meta = (context.providerResponse && context.providerResponse.metadata) || {};
           const trace = Array.isArray(meta.trace) ? meta.trace : [];
           if (!trace.some((t) => t.name === 'get_highlights')) {
             return { pass: false, score: 0, reason: 'did not call get_highlights' };
           }
           // Must not claim any specific highlight exists when the book has none.
-          if (/Verona|grudge/i.test(env.output || '')) {
+          if (/Verona|grudge/i.test(output || '')) {
             return { pass: false, score: 0, reason: 'fabricated a highlight that was not seeded' };
           }
           return { pass: true, score: 1, reason: 'reported empty highlights honestly' };
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
 # --- Spoiler-bounded literary analysis (category C) ---------------------------
   # C1 "Spoiler-free character portrait" (tier3-scenarios.md). Pride & Prejudice
@@ -135,23 +135,21 @@ tests:
       start_page: 160
       task: Wickham just turned up and seems rather charming. What do you make of him so far?
     assert:
-      # Deterministic backstop: trace + forbidden-token regex (reads the full
-      # envelope). Cheap, offline, catches read-ahead + hard-token leaks.
+      # Deterministic backstop: trace (via providerResponse.metadata) + forbidden-
+      # token prose regex. Cheap, offline, catches read-ahead + hard-token leaks.
       - type: javascript
         value: file://asserts/wickham_portrait_spoiler_free.js
-      # Product constraint: plain text, no markdown (grade the prose, not the
-      # envelope whose tool names contain '_').
+      # Product constraint: plain text, no markdown (output is the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
       # Real prose grader for the dangerous prose-only channel (pretraining recital
-      # with a clean trace) that the regex can only partly cover. The per-assertion
-      # `transform` rewrites `output` to the PROSE ONLY for THIS assert, so the
-      # rubric's {{output}} never sees metadata.trace — whose Wickham grep hits
-      # carry the editorial-intro spoiler "The elopement of Lydia and Wickham"
-      # (p.13, page-legal at p.160 — product Bug #1). Siblings above still get the
-      # full envelope they JSON.parse themselves. The grader provider itself is NOT
+      # with a clean trace) that the regex can only partly cover. The provider keeps
+      # the rubric's {{output}} PROSE-ONLY by construction — metadata.trace never
+      # reaches it, which matters here: the trace's Wickham grep hits carry the
+      # editorial-intro spoiler "The elopement of Lydia and Wickham" (p.13,
+      # page-legal at p.160 — product Bug #1). The trace-grading siblings read
+      # context.providerResponse.metadata instead. The grader provider itself is NOT
       # set here: promptfoo does NOT interpolate {{env.*}} inside provider config,
       # so the flake's `evalRun` builds it from the BB_GRADER_* env vars and passes
       # it via `promptfoo eval --grader` (model) + OPENAI_BASE_URL / OPENAI_API_KEY
@@ -159,7 +157,6 @@ tests:
       # gateway, so prose grading can run on a cheaper/different model (e.g. Sonnet
       # via Requesty).
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are grading a single reply from an in-book reading assistant. The reader
@@ -208,21 +205,19 @@ tests:
     assert:
       # Deterministic trace backstop: hard-fail on create_highlight / navigate (a
       # written artifact or reader-move to a phantom location for a non-existent
-      # scene); soft signal that it actually searched. Reads the full envelope.
+      # scene); soft signal that it actually searched. Reads providerResponse.metadata.
       - type: javascript
         value: file://asserts/no_fabricated_passage.js
       # Product constraint: plain text, no markdown (grade the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
       # Prose-only channel: the dangerous failure is NARRATING a fabricated baby /
       # childbirth scene as fact with a clean trace — no tool call betrays it. The
-      # per-assertion `transform` feeds the rubric the PROSE ONLY (never the trace,
-      # whose metaphorical "child"/"born" grep hits could read as on-page support).
+      # provider keeps the rubric's {{output}} PROSE-ONLY by construction (never the
+      # trace, whose metaphorical "child"/"born" grep hits could read as on-page support).
       # Grader gateway via BB_GRADER_* env (see C1 above for the mechanism).
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are grading a single reply from an in-book reading assistant. The reader
@@ -267,19 +262,17 @@ tests:
     assert:
       # Deterministic: grounding is a HARD fail here (not the soft 0.8 of the famous
       # books) — the model can't know this book, so an empty/ungrounded trace is
-      # fabrication. Also hard-fails on read-ahead. Reads the full envelope.
+      # fabrication. Also hard-fails on read-ahead. Reads providerResponse.metadata.
       - type: javascript
         value: file://asserts/grounded_answer_obscure.js
       # Product constraint: plain text, no markdown (grade the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
       # Prose grader. CRITICAL: the grader (Sonnet) is ALSO blind to this obscure book,
       # so the rubric must SUPPLY the ground truth for it to check against — it cannot
-      # verify from its own knowledge. Prose-only via transform (never the trace).
+      # verify from its own knowledge. {{output}} is prose-only by construction (never the trace).
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are grading a reply from an in-book reading assistant about a character in
@@ -336,15 +329,13 @@ tests:
       - type: javascript
         value: file://asserts/summarized_full_chapter.js
       # Product constraint: plain text, no markdown (grade the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
       # Prose grader. The grader (Sonnet) is ALSO blind to this obscure book, so the rubric
-      # must SUPPLY the ground truth. Prose-only via transform (never the trace). Enforces
+      # must SUPPLY the ground truth. {{output}} is prose-only by construction (never the trace). Enforces
       # completeness — the recap must reach the chapter's late beats and its shipwreck climax.
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are grading a recap of ONE chapter from "Jan Vedder's Wife" by Amelia E. Barr
@@ -402,7 +393,6 @@ tests:
       # Bug #2). The grader is blind to the book, so the rubric pins the boundary: Ch. V ENDS at
       # the wreck of The Solan; recounting anything past that is outside the requested chapter.
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are checking a summary of Chapter V ("Shipwreck") of "Jan Vedder's Wife" by Amelia
@@ -452,15 +442,13 @@ tests:
       - type: javascript
         value: file://asserts/recapped_previous_chapter.js
       # Product constraint: plain text, no markdown (grade the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
       # Prose grader. The grader (Sonnet) is ALSO blind to this obscure book, so the rubric
-      # must SUPPLY the ground truth. Prose-only via transform (never the trace). Enforces
+      # must SUPPLY the ground truth. {{output}} is prose-only by construction (never the trace). Enforces
       # completeness — the recap must reach the chapter's late beats and its shipwreck climax.
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are grading a recap of ONE chapter from "Jan Vedder's Wife" by Amelia E. Barr
@@ -520,7 +508,6 @@ tests:
       # so the rubric pins the boundary: Ch. V ENDS at the wreck of The Solan; its events are fair game,
       # what happens after is not.
       - type: llm-rubric
-        transform: JSON.parse(output).output
         threshold: 0.7
         value: |
           You are checking a recap of Chapter V ("Shipwreck") of "Jan Vedder's Wife" by Amelia
@@ -578,12 +565,10 @@ tests:
       - type: javascript
         value: file://asserts/delegated_cross_cutting.js
       # Product constraint: the parent's synthesis after the child returns is plain
-      # text, no markdown. Grade the PROSE (env.output), not the JSON envelope (whose
-      # tool names contain '_').
+      # text, no markdown (output is the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
   # DEL2 "Two portraits fan out into two delegates" — the DECOMPOSITION anchor. Same
   # setup as DEL1 (juliet.epub @ end, whole play page-legal, enable_subagents on) but
@@ -605,11 +590,10 @@ tests:
       - type: javascript
         value: file://asserts/delegated_two_characters.js
       # Product constraint: the parent's synthesis after the children return is plain text,
-      # no markdown. Grade the PROSE (env.output), not the JSON envelope (tool names have '_').
+      # no markdown (output is the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
 # --- Clarifying questions / ask_user (category ASK) ---------------------------
   # ASK1 "Get-started preset asks the reader about their interests" — the ANCHOR for the
@@ -636,12 +620,10 @@ tests:
       # interests/focus. Reads metadata.trace.
       - type: javascript
         value: file://asserts/asked_user_interests.js
-      # Product constraint: plain text, no markdown. Grade the PROSE (env.output), not the
-      # JSON envelope (whose tool names contain '_').
+      # Product constraint: plain text, no markdown (output is the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
       - type: javascript
-        value: |
-          const env = JSON.parse(output);
-          return !/[*_#`]/.test(env.output || '');
+        value: "!/[*_#`]/.test(output || '')"
 
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).

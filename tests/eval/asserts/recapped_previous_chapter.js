@@ -29,20 +29,13 @@
 // this stays robust to chunk-size / tool-choice variance (a model may read in few large
 // chunks, or answer partly from get_toc). pass stays true whenever grounded + no read-ahead.
 //
-// Envelope contract (see grounded_answer_obscure.js / created_highlight_verona.js): promptfoo's
-// `exec:` provider hands `output` as the raw STRING
-//   {"output": "<prose>", "metadata": {"trace": [{name,input,result}], "current_page": N, ...}}
-// so we JSON.parse it ourselves. Returns a promptfoo GradingResult {pass, score, reason}.
+// Provider contract (see created_highlight_verona.js): `output` is the agent's prose;
+// the trace ({name,input,result}) and current_page ride on
+// context.providerResponse.metadata. Returns a promptfoo GradingResult {pass, score, reason}.
 
-/** @param {string} output @param {object} _context */
-module.exports = (output, _context) => {
-  let env;
-  try {
-    env = JSON.parse(output);
-  } catch (e) {
-    return { pass: false, score: 0, reason: `driver output was not JSON (${e.message}): ${String(output).slice(0, 300)}` };
-  }
-  const meta = env.metadata || {};
+/** @param {string} _output @param {object} context */
+module.exports = (_output, context) => {
+  const meta = (context && context.providerResponse && context.providerResponse.metadata) || {};
   if (meta.error) {
     return { pass: false, score: 0, reason: `driver reported error: ${meta.error}` };
   }
