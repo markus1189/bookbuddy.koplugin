@@ -86,6 +86,21 @@ local function resolveEnableMemory()
 end
 local enable_memory = resolveEnableMemory()
 
+-- 1g. Subagent delegation is feature-gated (default off, like memory): the `delegate`
+--     tool is stripped from the parent's specs AND the DELEGATE_NOTE from the system
+--     prompt unless enable_subagents is on (see Conversation:new + Anthropic.buildBody,
+--     both keyed on cfg.enable_subagents). A per-test `enable_subagents` var wins;
+--     BB_ENABLE_SUBAGENTS is the env fallback for the isolation harness. Off by default
+--     keeps the non-delegation scenarios cheap and the tool out of their trace.
+local function resolveEnableSubagents()
+    local s = ctx_vars.enable_subagents
+    if s == nil then
+        return os.getenv("BB_ENABLE_SUBAGENTS") == "1"
+    end
+    return s == true
+end
+local enable_subagents = resolveEnableSubagents()
+
 -- 2. Open a real ReaderUI over the resolved epub (runs commonrequire/disable_plugins,
 --    which set up the require paths + globals the rest depends on). The test env uses
 --    the "dir" sidecar location (centralized under KO_HOME/docsettings), so the
@@ -134,7 +149,13 @@ local config = {
     max_turns = tonumber(os.getenv("BB_MAX_TURNS")) or 20,
     additional_system_prompt = "",
     enable_memory = enable_memory,
+    enable_subagents = enable_subagents,
     enable_thinking = false,
+    -- confirm_spoilers stays at the PRODUCTION default (on). The headless deadlock it
+    -- would otherwise cause is fixed at the UI seam in section 5 (auto-approve), not by
+    -- disabling the feature here -- so the eval runs the model against the same config a
+    -- real reader ships with, and the spoiler-safety asserts still grade the model's own
+    -- judgement (wickham_portrait_spoiler_free.js, no_fabricated_passage.js).
 }
 local settings = {
     getConfig = function()
@@ -152,6 +173,26 @@ conv._scheduleFlush = noop
 conv._flushNow = noop
 conv._render = noop
 conv._closeViewer = noop
+-- Reader-input dialogs: both _confirmSpoiler and _askUser PARK the turn's coroutine on
+-- a ButtonDialog and only resume from a button callback (or the onCloseWidget net). No
+-- reader exists here to tap one, so the resume never fires, _loop never returns, and the
+-- forever-mode pump busy-spins UIManager:run() at 100% CPU indefinitely. Same seam as the
+-- render/viewer no-ops above: neutralize the METHODS so the loop proceeds without a widget,
+-- rather than disabling the features in config (which would run the model against a
+-- non-production setup). _confirmSpoiler auto-APPROVES -- a cooperative reader who taps
+-- "Allow" -- because several scenarios are designed for the model to read ahead (e.g. the
+-- Verona hit sits past the reader); the spoiler-safety asserts still grade whether the
+-- model LEAKS, which is the property under test. _askUser returns a SKIP-shaped answer so
+-- the tool_use stays answered (an unanswered one would 400 on the next resend) and the
+-- model proceeds on its own judgement; a scenario that means to test ask_user would need a
+-- scripted reply here instead.
+conv._confirmSpoiler = function()
+    return true
+end
+conv._askUser = function()
+    return "[No reader is available to answer in this environment; proceed using your best judgement and the text itself.]",
+        "skipped"
+end
 local captured_error
 conv._showError = function(_self, res)
     captured_error = res
@@ -215,6 +256,7 @@ if os.getenv("BB_DRY_RUN") then
             epub = resolved_epub,
             seed_sdr = seed_sdr,
             enable_memory = enable_memory,
+            enable_subagents = enable_subagents,
             start_page = start_page,
             current_page = current_page,
             probe_grep = probe_grep,
@@ -315,6 +357,7 @@ emit({
         epub = resolved_epub,
         seed_sdr = seed_sdr,
         enable_memory = enable_memory,
+        enable_subagents = enable_subagents,
         start_page = start_page,
         current_page = current_page,
     },

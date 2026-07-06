@@ -551,6 +551,66 @@ tests:
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
+# --- Delegation / subagents (category DEL) ------------------------------------
+  # DEL1 "Cross-cutting analysis launches a delegate" — the ANCHOR for the delegation
+  # category. Subagents are feature-gated OFF by default, so this is the one scenario
+  # (so far) that flips `enable_subagents: true` — the driver wires that var into cfg,
+  # which is what makes Conversation:new keep the `delegate` tool AND buildBody append
+  # the DELEGATE_NOTE. juliet.epub @ start_page 250 clamps to the last page (~241), so
+  # the WHOLE play is page-legal: a genuine whole-book motif sweep with no spoiler wall,
+  # matching how a reader who's finished the book would ask. The task is deliberately
+  # WIDE and multi-step (trace an image across the entire play, gathering every
+  # occurrence) — exactly the "tracing a motif ... across the whole book" case the
+  # delegation guidance steers to a helper, as opposed to a single-passage lookup the
+  # model should answer itself. Expected trace: a `delegate` tool_use carrying that
+  # sweep as its task. Graded on the trace (delegated_cross_cutting.js) plus the usual
+  # plain-text product constraint. A prose rubric is intentionally omitted: the claim
+  # under test is the tool CHOICE, not the literary quality of the synthesis.
+  - description: DEL1 — delegates a whole-book motif sweep to a helper (Romeo & Juliet @ end)
+    vars:
+      epub: juliet.epub
+      start_page: 250
+      enable_subagents: true
+      task: Trace the imagery of light and darkness all the way through the play — find every place it turns up and how it's used.
+    assert:
+      # Deterministic trace grade: a `delegate` tool_use with a non-empty task, and no
+      # unprompted allow_spoiler. Reads metadata.trace.
+      - type: javascript
+        value: file://asserts/delegated_cross_cutting.js
+      # Product constraint: the parent's synthesis after the child returns is plain
+      # text, no markdown. Grade the PROSE (env.output), not the JSON envelope (whose
+      # tool names contain '_').
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
+  # DEL2 "Two portraits fan out into two delegates" — the DECOMPOSITION anchor. Same
+  # setup as DEL1 (juliet.epub @ end, whole play page-legal, enable_subagents on) but
+  # the task names TWO characters, each its own whole-book study. The intended shape is
+  # to fan OUT into two delegates — one for Romeo, one for Juliet — rather than one
+  # delegate carrying both or grinding inline. Where DEL1 checks that a wide task is
+  # delegated at all, DEL2 checks the model splits an obviously two-part request into two
+  # parallel hand-offs. Graded on the trace (delegated_two_characters.js: two DISTINCT
+  # delegates, one naming Juliet and one naming Romeo) plus the plain-text constraint.
+  - description: DEL2 — fans a two-character portrait into two delegates, one per character (Romeo & Juliet @ end)
+    vars:
+      epub: juliet.epub
+      start_page: 250
+      enable_subagents: true
+      task: Give me a character portrait of both Romeo and Juliet — who each of them really is across the whole play.
+    assert:
+      # Deterministic trace grade: one Juliet-focused delegate AND a distinct Romeo-focused
+      # delegate, each with a non-empty task, and no unprompted allow_spoiler.
+      - type: javascript
+        value: file://asserts/delegated_two_characters.js
+      # Product constraint: the parent's synthesis after the children return is plain text,
+      # no markdown. Grade the PROSE (env.output), not the JSON envelope (tool names have '_').
+      - type: javascript
+        value: |
+          const env = JSON.parse(output);
+          return !/[*_#`]/.test(env.output || '');
+
 # Re-run the scenario to expose tool-choice variance (the model is non-deterministic;
 # we grade the trace, so a single fluke shouldn't read as a stable pass/fail).
 evaluateOptions:
