@@ -1226,7 +1226,10 @@ function Tools.getSpecs()
                 .. "of their question to answer. The reader picks an option or types their own reply, and you "
                 .. "get it back as the tool result and continue in the same turn. Offer 2-4 short options when "
                 .. "you can; the reader can always type instead or skip. Do NOT use this for anything you can "
-                .. "settle by reading the book -- read it. Ask at most one question, then act. The question and "
+                .. "settle by reading the book -- read it. Whenever you do need the reader's input, ask through "
+                .. "this tool rather than posing the question in plain prose and stopping. Normally ask one "
+                .. "question and then act; when the reader has asked to be interviewed or for a back-and-forth, "
+                .. "ask each further question with another ask_user call rather than in prose. The question and "
                 .. "options are shown to the reader verbatim, so they are bound by the same spoiler rule as your "
                 .. "answer: never phrase one so it reveals something past the reader's current position.",
             input_schema = {
