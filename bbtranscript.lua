@@ -116,7 +116,10 @@ function Transcript.toolActionPhrase(tu)
     elseif tu.name == "delegate" then
         phrase = T(_("Researching: %1…"), input.task or "")
     elseif tu.name == "ask_user" then
-        phrase = T(_("Asked: %1"), input.question or "")
+        local qs = input.questions
+        local first = (type(qs) == "table" and qs[1] and qs[1].question) or input.question or ""
+        local more = (type(qs) == "table" and #qs > 1) and T(_(" (+%1 more)"), tostring(#qs - 1)) or ""
+        phrase = T(_("Asked: %1%2"), first, more)
     else
         phrase = T(_("Used %1"), tu.name)
     end

@@ -757,168 +757,277 @@ function Conversation:_runDelegate(tu, cfg, tool_entry)
     return T(_("The delegated task did not complete: %1"), tostring(err or _("unknown error"))), _("failed")
 end
 
--- Show the reader a clarifying question (ask_user) and PARK the turn loop until they
--- answer, then return their reply as the tool result plus a short transcript summary.
+-- A skip/dismiss is recoverable, not an answer: this note (returned when the reader
+-- closes the WHOLE batch without answering a single question) hands the model a plain
+-- recoverable string -- like a failed delegate -- so it proceeds on its own judgement or
+-- asks differently, rather than treating an empty reply as the reader's choice.
+local ASK_SKIP =
+    _("[The reader closed the question without answering. Proceed with your best judgement, or ask differently.]")
+
+-- Normalize the model's `options` array (schema: {label, description} objects) into a
+-- clean list of {label = string, description = string?}. Plain strings are tolerated
+-- (defensive: an older/looser model may still send them). Returns nil when there is
+-- nothing usable, which routes the step straight to the free-text dialog.
+local function normalizeOptions(options)
+    if type(options) ~= "table" then
+        return nil
+    end
+    local out = {}
+    for _, o in ipairs(options) do
+        if type(o) == "table" and o.label then
+            out[#out + 1] = { label = tostring(o.label), description = o.description and tostring(o.description) }
+        elseif type(o) == "string" and o ~= "" then
+            out[#out + 1] = { label = o }
+        end
+    end
+    return (#out > 0) and out or nil
+end
+
+-- Normalize the tool input into a 1..N list of clean question descriptors. An empty or
+-- malformed `questions` array falls back to a single generic clarifying question so the
+-- tool_use is still answered (a bad shape must not park the loop with nothing to show).
+local function normalizeQuestions(input)
+    local fallback = { { question = _("Could you clarify what you mean?") } }
+    local qs = input.questions
+    if type(qs) ~= "table" or #qs == 0 then
+        return fallback
+    end
+    local out = {}
+    for _, q in ipairs(qs) do
+        if type(q) == "table" and q.question then
+            out[#out + 1] = {
+                question = tostring(q.question),
+                header = q.header and tostring(q.header) or nil,
+                multiSelect = q.multiSelect == true,
+                options = normalizeOptions(q.options),
+            }
+        end
+    end
+    return (#out > 0) and out or fallback
+end
+
+-- The button label for one option: "label — description" (native 2-line wrap) when a
+-- gloss is present, else the bare label. The ANSWER recorded is always opt.label, never
+-- this decorated text.
+local function optionButtonText(opt)
+    return opt.description and T(_("%1 — %2"), opt.label, opt.description) or opt.label
+end
+
+-- The progress chip shown while stepping through a batch: "N of M · header" (or "N of M"
+-- with no header). Returns nil for a lone question, so a single ask reads as just its
+-- text with no needless "1 of 1".
+local function questionProgress(i, n, header)
+    if n <= 1 then
+        return nil
+    end
+    if header then
+        return T(_("%1 of %2 · %3"), tostring(i), tostring(n), header)
+    end
+    return T(_("%1 of %2"), tostring(i), tostring(n))
+end
+
+-- Collapse the gathered answers into the single tool_result string. Each answered or
+-- per-question-skipped step becomes a "Q<i>. …\nA<i>. …" pair; never-reached steps (a
+-- mid-batch dismissal bailed before them) are omitted. Returns (block, real) where `real`
+-- counts genuine answers -- 0 means the whole batch was skipped, which the caller renders
+-- as the single recoverable ASK_SKIP note instead.
+local function serializeAnswers(questions, answers)
+    local parts, real = {}, 0
+    for i, q in ipairs(questions) do
+        local a = answers[i]
+        if a ~= nil then
+            local shown
+            if a == false then
+                shown = _("[skipped]")
+            else
+                shown, real = a, real + 1
+            end
+            parts[#parts + 1] = T(_("Q%1. %2"), tostring(i), q.question)
+            parts[#parts + 1] = T(_("A%1. %2"), tostring(i), shown)
+        end
+    end
+    return table.concat(parts, "\n"), real
+end
+
+-- Render ONE free-text step: an InputDialog mirroring _promptFollowup's construction.
+-- Send resolves with the typed text (an empty Send resolves to `false` -- a per-question
+-- skip), Skip resolves false, and a bare dismissal calls dismiss() to bail the batch.
+-- The `closing` guard keeps our own intentional close from tripping the dismiss fallback.
+function Conversation:_promptFreeTextStep(progress, question, resolve, dismiss)
+    local input_dialog
+    local closing = false
+    local function finishText(reply)
+        closing = true
+        UIManager:close(input_dialog)
+        resolve((reply and reply ~= "") and reply or false)
+    end
+    local buttons = {
+        {
+            {
+                text = _("Skip"),
+                callback = function()
+                    finishText(nil)
+                end,
+            },
+            {
+                text = _("Send"),
+                is_enter_default = true,
+                callback = function()
+                    finishText(input_dialog and input_dialog:getInputText())
+                end,
+            },
+        },
+    }
+    input_dialog = InputDialog:new({
+        title = progress or _("Your answer"),
+        description = question,
+        input = "",
+        input_hint = _("Type your answer"),
+        text_height = Presets.inputLines(2),
+        buttons = buttons,
+    })
+    -- NO-HANG net: a dismissal frees the widget through onCloseWidget without a button
+    -- callback; route it to dismiss() so the batch still resolves. Guarded, so a real
+    -- Send/Skip (which set `closing` first) makes this a no-op.
+    local orig = input_dialog.onCloseWidget
+    input_dialog.onCloseWidget = function(d)
+        if orig then
+            orig(d)
+        end
+        if not closing then
+            dismiss()
+        end
+    end
+    UIManager:show(input_dialog)
+    input_dialog:onShowKeyboard()
+end
+
+-- Render ONE question step as a ButtonDialog: an option row per choice (single-select --
+-- a tap resolves with that option's label), then a "Type my own…" hand-off and a per-step
+-- "Skip". No options at all routes straight to the free-text dialog. resolve(answer) feeds
+-- the step's result to the driver (a string, or false for a skip); dismiss() bails the
+-- whole batch. `closing` guards our intentional closes (advance / free-text hand-off) so
+-- only a real tap-outside / Back dismissal reaches dismiss().
+function Conversation:_renderQuestionStep(i, n, q, resolve, dismiss)
+    local progress = questionProgress(i, n, q.header)
+    if not (q.options and #q.options > 0) then
+        return self:_promptFreeTextStep(progress, q.question, resolve, dismiss)
+    end
+    local dialog, closing = nil, false
+    local function resolveWith(answer)
+        closing = true
+        UIManager:close(dialog)
+        resolve(answer)
+    end
+    local rows = {}
+    for _, opt in ipairs(q.options) do
+        rows[#rows + 1] = {
+            {
+                text = optionButtonText(opt),
+                callback = function()
+                    resolveWith(opt.label)
+                end,
+            },
+        }
+    end
+    rows[#rows + 1] = {
+        {
+            text = _("Type my own…"),
+            callback = function()
+                closing = true -- hand off WITHOUT resolving: the free-text dialog owns it
+                UIManager:close(dialog)
+                self:_promptFreeTextStep(progress, q.question, resolve, dismiss)
+            end,
+        },
+        {
+            text = _("Skip"),
+            callback = function()
+                resolveWith(false)
+            end,
+        },
+    }
+    dialog = ButtonDialog:new({
+        title = progress and (progress .. "\n" .. q.question) or q.question,
+        title_align = "center",
+        buttons = rows,
+    })
+    -- NO-HANG net, as in _promptFreeTextStep: a tap-outside / Back dismissal must still
+    -- resolve the batch. Our own closes (advancing to the next step, or the free-text
+    -- hand-off) set `closing`, so the fallback fires only on a genuine dismissal.
+    local orig = dialog.onCloseWidget
+    dialog.onCloseWidget = function(d)
+        if orig then
+            orig(d)
+        end
+        if not closing then
+            dismiss()
+        end
+    end
+    UIManager:show(dialog)
+end
+
+-- Show the reader a clarifying batch (ask_user) and PARK the turn loop until they finish,
+-- then return their combined reply as the tool result plus a short transcript summary.
 --
--- Mechanism: the same yield/resume shape as bbretry's backoff -- capture this coroutine, build a
--- dialog whose callbacks resume it, then coroutine.yield(). The dialog callbacks run on
--- the UIManager event loop (a real reader tap) and feed the answer back through the
--- resume.
+-- Mechanism: the same yield/resume shape as bbretry's backoff -- capture this coroutine,
+-- build the first dialog, then coroutine.yield(). The whole batch is driven forward on the
+-- UIManager event loop (real reader taps): each step's resolve() records that answer and
+-- either shows the next step (still on the UI loop, no resume) or, on the last step, fires
+-- the single terminal finish(). Because the sequence advances through callbacks, the
+-- coroutine yields exactly once and is resumed exactly once.
 --
--- NO-HANG INVARIANT (load-bearing): EVERY way the dialog can close -- each option button,
--- the typed-answer Send/Skip, the Skip button, AND a plain dismissal (tap-outside / Back,
--- which closes the widget through onCloseWidget without running any button callback) --
--- routes through resume(). A close path that forgets to resume parks the loop forever with
--- no Stop target. The one-shot `resumed` guard makes a double-close (a button answer that
--- then triggers onCloseWidget) safe: the first resume wins, later ones are no-ops. We
--- resume on the NEXT tick (not inline) so the dialog is fully closed before the loop runs
--- on, and so a real button answer set before onCloseWidget's fallback fires takes priority.
--- _askUser always returns a NON-EMPTY string, so the ask_user tool_use is always answered.
+-- NO-HANG INVARIANT (load-bearing): EVERY way a step can close routes to exactly one of
+-- two driver moves. An option tap / multi-select confirm / free-text Send / per-step Skip
+-- resolves that step and advances (mid-batch: no resume; last step: finish). A bare
+-- dismissal (tap-outside / Back, closing the widget through onCloseWidget with no button
+-- callback) calls finish() directly to bail the batch with the answers gathered so far.
+-- The one-shot `resumed` guard makes finish() idempotent, so a double-close (a resolve
+-- that then triggers onCloseWidget) is safe: the first call wins. We resume on the NEXT
+-- tick so the dialog is fully closed before the loop runs on. _askUser always returns a
+-- NON-EMPTY string, so the ask_user tool_use is always answered.
 function Conversation:_askUser(input)
     input = input or {}
     -- The turn is parked on the reader's dialog, not on the model or a tool;
     -- say so (the ticker keeps running -- this path yields, unlike client tools).
     self:_setStatus("asking")
-    local question = tostring(input.question or _("Could you clarify what you mean?"))
-    local options = input.options
-
-    -- A skip/dismiss is recoverable, not an answer: hand the model a plain note (like a
-    -- failed delegate) so it proceeds on its own judgement or asks again differently,
-    -- rather than treating an empty reply as the reader's choice.
-    local SKIP =
-        _("[The reader closed the question without answering. Proceed with your best judgement, or ask differently.]")
+    local questions = normalizeQuestions(input or {})
+    local n = #questions
 
     local co = coroutine.running()
     local resumed = false
-    local answer
-    local function resume(reply)
+    local answers = {}
+    local function finish()
         if resumed then
             return
         end
         resumed = true
-        answer = reply
         UIManager:nextTick(function()
             coroutine.resume(co)
         end)
     end
 
-    local dialog, input_dialog
-    -- Set while the options dialog hands off to the free-text dialog: its onCloseWidget
-    -- fallback must NOT fire a premature SKIP during that handoff (the free-text dialog
-    -- then owns the resume).
-    local handing_off = false
-
-    -- Free-text path: an InputDialog mirroring _promptFollowup's construction. An empty
-    -- Send counts as a skip (the model gets the recoverable note, never a blank result).
-    local function promptFreeText()
-        local buttons = {
-            {
-                {
-                    text = _("Skip"),
-                    callback = function()
-                        resume(SKIP)
-                        UIManager:close(input_dialog)
-                    end,
-                },
-                {
-                    text = _("Send"),
-                    is_enter_default = true,
-                    callback = function()
-                        local a = input_dialog and input_dialog:getInputText()
-                        resume((a and a ~= "") and a or SKIP)
-                        UIManager:close(input_dialog)
-                    end,
-                },
-            },
-        }
-        input_dialog = InputDialog:new({
-            title = _("Your answer"),
-            description = question,
-            input = "",
-            input_hint = _("Type your answer"),
-            text_height = Presets.inputLines(2),
-            buttons = buttons,
-        })
-        -- NO-HANG net: a dismissal frees the widget through onCloseWidget without any
-        -- button callback; chain a resume(SKIP) so the loop still wakes. Guarded, so a
-        -- real answer (which resumed first) makes this a no-op.
-        local orig = input_dialog.onCloseWidget
-        input_dialog.onCloseWidget = function(d)
-            if orig then
-                orig(d)
+    local showQuestion
+    showQuestion = function(i)
+        self:_renderQuestionStep(i, n, questions[i], function(answer)
+            answers[i] = answer
+            if i >= n then
+                finish()
+            else
+                showQuestion(i + 1)
             end
-            resume(SKIP)
-        end
-        UIManager:show(input_dialog)
-        input_dialog:onShowKeyboard()
+        end, finish)
     end
-
-    if type(options) == "table" and #options > 0 then
-        local rows = {}
-        for _, opt in ipairs(options) do
-            local label = tostring(opt)
-            rows[#rows + 1] = {
-                {
-                    text = label,
-                    callback = function()
-                        resume(label)
-                        UIManager:close(dialog)
-                    end,
-                },
-            }
-        end
-        rows[#rows + 1] = {
-            {
-                text = _("Type my own…"),
-                callback = function()
-                    handing_off = true
-                    UIManager:close(dialog)
-                    dialog = nil
-                    promptFreeText()
-                end,
-            },
-            {
-                text = _("Skip"),
-                callback = function()
-                    resume(SKIP)
-                    UIManager:close(dialog)
-                end,
-            },
-        }
-        dialog = ButtonDialog:new({
-            title = question,
-            title_align = "center",
-            buttons = rows,
-        })
-        -- NO-HANG net, as in promptFreeText: a tap-outside / Back dismissal must still
-        -- resume. The "Type my own…" path deliberately closes this dialog WITHOUT
-        -- resuming -- it hands off to the free-text dialog, which owns the resume -- so
-        -- the fallback skips the SKIP while `handing_off` is set.
-        local orig = dialog.onCloseWidget
-        dialog.onCloseWidget = function(d)
-            if orig then
-                orig(d)
-            end
-            if not handing_off then
-                resume(SKIP)
-            end
-        end
-        UIManager:show(dialog)
-    else
-        promptFreeText()
-    end
+    showQuestion(1)
 
     coroutine.yield()
 
-    -- Fold a short, single-line summary into the "Asked: …" transcript entry.
-    if answer == SKIP then
-        return SKIP, _("skipped")
+    -- Fold a short summary into the "Asked: …" transcript entry. A wholly-skipped batch
+    -- collapses to the single recoverable note (as a lone skipped question always did).
+    local block, real = serializeAnswers(questions, answers)
+    if real == 0 then
+        return ASK_SKIP, _("skipped")
     end
-    local shown = tostring(answer)
-    if #shown > 40 then
-        shown = shown:sub(1, 39) .. "…"
-    end
-    return answer, T(_("“%1”"), shown)
+    return block, T(_("answered %1 of %2"), tostring(real), tostring(n))
 end
 
 -- Ask the reader to approve a tool call that wants to look past their current

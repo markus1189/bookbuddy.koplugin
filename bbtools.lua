@@ -1355,32 +1355,76 @@ function Tools.getSpecs()
         -- removes it when enable_clarifying_questions is explicitly off (default on).
         {
             name = "ask_user",
-            description = "Ask the reader one short clarifying question when it is genuinely unclear what THEY "
-                .. "want -- which of several characters they mean, how far back to look, which of two readings "
-                .. "of their question to answer. The reader picks an option or types their own reply, and you "
-                .. "get it back as the tool result and continue in the same turn. Offer 2-4 short options when "
-                .. "you can; the reader can always type instead or skip. Do NOT use this for anything you can "
-                .. "settle by reading the book -- read it. Whenever you do need the reader's input, ask through "
-                .. "this tool rather than posing the question in plain prose and stopping. Normally ask one "
-                .. "question and then act; when the reader has asked to be interviewed or for a back-and-forth, "
-                .. "ask each further question with another ask_user call rather than in prose. The question and "
-                .. "options are shown to the reader verbatim, so they are bound by the same spoiler rule as your "
-                .. "answer: never phrase one so it reveals something past the reader's current position.",
+            description = "Ask the reader one or more short clarifying questions when it is genuinely unclear what "
+                .. "THEY want -- which of several characters they mean, how far back to look, which of two "
+                .. "readings of their question to answer. Batch up to 4 RELATED questions into a SINGLE ask_user "
+                .. "call (the reader steps through them one screen at a time, in order); make another call only "
+                .. "for a genuine follow-up whose wording depends on an earlier answer. Give each question 2-4 "
+                .. "short options as {label, description} choices; set multiSelect true when several options can "
+                .. "apply together. A 'Type my own…' free-text entry and a 'Skip' are ALWAYS added for the reader "
+                .. "automatically, so never add an 'Other', 'None', 'Skip', or 'Type my own' option yourself. You "
+                .. "get every answer back as one combined tool result and continue in the same turn. Do NOT use "
+                .. "this for anything you can settle by reading the book -- read it. Whenever you do need the "
+                .. "reader's input, ask through this tool rather than posing the question in plain prose and "
+                .. "stopping. The questions and options are shown to the reader verbatim, so they are bound by "
+                .. "the same spoiler rule as your answer: never phrase one so it reveals something past the "
+                .. "reader's current position.",
             input_schema = {
                 type = "object",
                 properties = {
-                    question = {
-                        type = "string",
-                        description = "The clarifying question to show the reader, in plain prose.",
-                    },
-                    options = {
+                    questions = {
                         type = "array",
-                        items = { type = "string" },
-                        description = "Optional 2-4 short answer choices to offer as buttons. The reader can "
-                            .. "always type their own answer or skip regardless.",
+                        minItems = 1,
+                        maxItems = 4,
+                        description = "1-4 clarifying questions to put to the reader in one batch; they are "
+                            .. "shown one at a time, in order.",
+                        items = {
+                            type = "object",
+                            properties = {
+                                question = {
+                                    type = "string",
+                                    description = "The clarifying question to show the reader, in plain prose.",
+                                },
+                                header = {
+                                    type = "string",
+                                    description = "A very short label (<= 12 chars) shown as a progress chip "
+                                        .. "while the reader steps through the batch, e.g. \"Character\" or "
+                                        .. "\"How far\".",
+                                },
+                                multiSelect = {
+                                    type = "boolean",
+                                    description = "Set true when the reader may pick several of the options "
+                                        .. "together (default false: a single choice).",
+                                },
+                                options = {
+                                    type = "array",
+                                    minItems = 2,
+                                    maxItems = 4,
+                                    description = "2-4 answer choices offered as buttons. Do NOT add an 'Other' "
+                                        .. "or 'Skip' choice -- free-text entry and skip are always available.",
+                                    items = {
+                                        type = "object",
+                                        properties = {
+                                            label = {
+                                                type = "string",
+                                                description = "The short button label, returned verbatim as "
+                                                    .. "the answer.",
+                                            },
+                                            description = {
+                                                type = "string",
+                                                description = "An optional one-line gloss shown beside the "
+                                                    .. "label.",
+                                            },
+                                        },
+                                        required = { "label" },
+                                    },
+                                },
+                            },
+                            required = { "question" },
+                        },
                     },
                 },
-                required = { "question" },
+                required = { "questions" },
             },
         },
     }

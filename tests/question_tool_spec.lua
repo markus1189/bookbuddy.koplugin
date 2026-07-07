@@ -7,7 +7,7 @@ local stubs = require("support.stubs")
 local sse = require("support.sse")
 
 describe("ask_user tool spec", function()
-    it("getSpecs advertises ask_user with question required and options optional", function()
+    it("getSpecs advertises ask_user with questions[] required and {label,description} options", function()
         local Tools = stubs.load_tools()
         local spec
         for _, t in ipairs(Tools.getSpecs()) do
@@ -20,14 +20,22 @@ describe("ask_user tool spec", function()
         for _, k in ipairs(spec.input_schema.required) do
             required[k] = true
         end
-        assert.is_true(required.question)
-        assert.is_nil(required.options) -- options are optional
-        assert.is_not_nil(spec.input_schema.properties.options)
+        assert.is_true(required.questions)
+        local qitems = spec.input_schema.properties.questions.items
+        assert.is_not_nil(qitems.properties.question)
+        assert.is_not_nil(qitems.properties.multiSelect)
+        assert.is_not_nil(qitems.properties.options)
+        -- Options are {label, description} objects now, not bare strings; label required.
+        local oitems = qitems.properties.options.items
+        assert.are.equal("object", oitems.type)
+        assert.is_not_nil(oitems.properties.label)
+        assert.is_not_nil(oitems.properties.description)
+        assert.are.equal("label", oitems.required[1])
     end)
 
     it("has no executor: ask_user is special-cased in bbconversation, not dispatched by bbtools", function()
         local Tools = stubs.load_tools()
-        local r = Tools.execute("ask_user", { question = "x" }, {})
+        local r = Tools.execute("ask_user", { questions = { { question = "x" } } }, {})
         assert.is_not_nil(tostring(r):find("unknown tool", 1, true))
     end)
 
@@ -146,6 +154,19 @@ describe("ask_user dispatch + pause/resume", function()
         end
     end
 
+    -- Build a one-question ask_user input from a question string and a list of option
+    -- LABELS (the new schema wants {label, description} objects; description is optional).
+    local function one(question, labels)
+        local q = { question = question }
+        if labels then
+            q.options = {}
+            for _, l in ipairs(labels) do
+                q.options[#q.options + 1] = { label = l }
+            end
+        end
+        return { questions = { q } }
+    end
+
     -- Run one scenario: a first round whose assistant emits an ask_user tool_use, then a
     -- final text round. Returns the live Conversation. Asserts the universal invariants
     -- (every request validates; the loop never over-requests) like conversation_spec.
@@ -196,36 +217,42 @@ describe("ask_user dispatch + pause/resume", function()
         end
     end
 
+    local function has(s, sub)
+        return tostring(s):find(sub, 1, true) ~= nil
+    end
+
     -- Reaching the second request proves the loop RESUMED past the paused question (a
     -- hang would leave the coroutine parked with only the first request sent).
     local function resumed()
         return fake.idx == 2
     end
 
-    it("returns the chosen option as the tool_result and continues the turn", function()
-        local conv = run({ question = "Which character?", options = { "Tom", "Sid" } }, function(o, is_input)
+    it("returns the chosen option in a serialized Q/A block and continues the turn", function()
+        local conv = run(one("Which character?", { "Tom", "Sid" }), function(o, is_input)
             assert.is_false(is_input)
             o.buttons[1][1].callback() -- tap the first option, "Tom"
         end)
         assert.is_true(resumed())
-        assert.are.equal("Tom", answerOf(conv))
-        -- The question and the answer are folded into one transcript line.
-        assert.is_not_nil((chatviewer.last_text or ""):find("Asked: Which character?", 1, true))
-        assert.is_not_nil((chatviewer.last_text or ""):find("Tom", 1, true))
+        local ans = answerOf(conv)
+        assert.is_true(has(ans, "Q1. Which character?"))
+        assert.is_true(has(ans, "A1. Tom"))
+        -- The question is folded into the "Asked: …" transcript line, with the outcome.
+        assert.is_true(has(chatviewer.last_text, "Asked: Which character?"))
+        assert.is_true(has(chatviewer.last_text, "answered 1 of 1"))
         assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
     it("returns free-text the reader typed when no options are offered", function()
-        local conv = run({ question = "What did you mean?" }, function(o, is_input)
+        local conv = run(one("What did you mean?"), function(o, is_input)
             assert.is_true(is_input) -- no options -> straight to the free-text dialog
             o.buttons[1][2].callback() -- Send
         end, "the second chapter")
         assert.is_true(resumed())
-        assert.are.equal("the second chapter", answerOf(conv))
+        assert.is_true(has(answerOf(conv), "A1. the second chapter"))
     end)
 
     it("routes 'Type my own…' to the free-text dialog and returns the typed answer", function()
-        local conv = run({ question = "Which one?", options = { "A", "B" } }, function(o, is_input)
+        local conv = run(one("Which one?", { "A", "B" }), function(o, is_input)
             if not is_input then
                 o.buttons[#o.buttons][1].callback() -- "Type my own…" (last row, first col)
             else
@@ -233,34 +260,34 @@ describe("ask_user dispatch + pause/resume", function()
             end
         end, "neither, I meant C")
         assert.is_true(resumed())
-        assert.are.equal("neither, I meant C", answerOf(conv))
+        assert.is_true(has(answerOf(conv), "A1. neither, I meant C"))
     end)
 
     it("returns a recoverable note when the reader skips, and still answers the tool_use", function()
-        local conv = run({ question = "Which character?", options = { "Tom", "Sid" } }, function(o)
+        local conv = run(one("Which character?", { "Tom", "Sid" }), function(o)
             o.buttons[#o.buttons][2].callback() -- "Skip" (last row, second col)
         end)
         assert.is_true(resumed())
         local note = answerOf(conv)
         assert.is_not_nil(note)
-        assert.is_not_nil(tostring(note):find("without answering", 1, true))
-        assert.is_not_nil((chatviewer.last_text or ""):find("skipped", 1, true))
+        assert.is_true(has(note, "without answering"))
+        assert.is_true(has(chatviewer.last_text, "skipped"))
         assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
     it("does NOT hang when the dialog is dismissed without a button (no-hang invariant)", function()
-        local conv = run({ question = "Which character?", options = { "Tom", "Sid" } }, function(o)
+        local conv = run(one("Which character?", { "Tom", "Sid" }), function(o)
             o.onCloseWidget(o) -- a tap-outside / Back dismissal, no button callback
         end)
         assert.is_true(resumed(), "the loop must resume after a bare dismissal, not park forever")
-        assert.is_not_nil(tostring(answerOf(conv)):find("without answering", 1, true))
+        assert.is_true(has(answerOf(conv), "without answering"))
     end)
 
     it("treats an empty free-text Send as a skip", function()
-        local conv = run({ question = "What did you mean?" }, function(o)
+        local conv = run(one("What did you mean?"), function(o)
             o.buttons[1][2].callback() -- Send with empty input
         end, "")
         assert.is_true(resumed())
-        assert.is_not_nil(tostring(answerOf(conv)):find("without answering", 1, true))
+        assert.is_true(has(answerOf(conv), "without answering"))
     end)
 end)
