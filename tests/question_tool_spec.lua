@@ -134,7 +134,22 @@ describe("ask_user dispatch + pause/resume", function()
                 o.getInputText = function()
                     return inputText
                 end
+                -- Multi-select hosts its CheckButtons on the InputDialog via addWidget;
+                -- record them on o so a test's autofire can flip o._added[i].checked.
+                o._added = {}
+                o.addWidget = function(self_o, w)
+                    self_o._added[#self_o._added + 1] = w
+                end
                 scheduleAuto(o, true)
+                return o
+            end,
+        }
+        -- CheckButton double: real init needs the widget stack, so stub it to a bare
+        -- selection cell. A real tap toggles .checked; here the test sets it directly.
+        package.loaded["ui/widget/checkbutton"] = {
+            new = function(_, o)
+                o = o or {}
+                o.checked = o.checked or false
                 return o
             end,
         }
@@ -165,6 +180,15 @@ describe("ask_user dispatch + pause/resume", function()
             end
         end
         return { questions = { q } }
+    end
+
+    -- A one-question multi-select input from a question string and option LABELS.
+    local function multi(question, labels)
+        local opts = {}
+        for _, l in ipairs(labels) do
+            opts[#opts + 1] = { label = l }
+        end
+        return { questions = { { question = question, multiSelect = true, options = opts } } }
     end
 
     -- Run one scenario: a first round whose assistant emits an ask_user tool_use, then a
@@ -288,6 +312,43 @@ describe("ask_user dispatch + pause/resume", function()
             o.buttons[1][2].callback() -- Send with empty input
         end, "")
         assert.is_true(resumed())
+        assert.is_true(has(answerOf(conv), "without answering"))
+    end)
+
+    it("multi-select: returns the checked options comma-joined on Next", function()
+        local conv = run(multi("Which themes?", { "Loyalty", "Fate", "Honour" }), function(o, is_input)
+            assert.is_true(is_input) -- multi-select is hosted on the InputDialog
+            o._added[1].checked = true -- Loyalty
+            o._added[3].checked = true -- Honour
+            o.buttons[1][2].callback() -- "Next →" (row 1, col 2)
+        end)
+        assert.is_true(resumed())
+        assert.is_true(has(answerOf(conv), "A1. Loyalty, Honour"))
+        assert.is_true(has(chatviewer.last_text, "answered 1 of 1"))
+    end)
+
+    it("multi-select: folds a typed answer in alongside the checked options", function()
+        local conv = run(multi("Which themes?", { "Loyalty", "Fate" }), function(o)
+            o._added[2].checked = true -- Fate
+            o.buttons[1][2].callback() -- Next, with typed text below
+        end, "and grief")
+        assert.is_true(resumed())
+        assert.is_true(has(answerOf(conv), "A1. Fate, and grief"))
+    end)
+
+    it("multi-select: nothing checked and nothing typed is a skip", function()
+        local conv = run(multi("Which themes?", { "Loyalty", "Fate" }), function(o)
+            o.buttons[1][2].callback() -- Next with no selection
+        end)
+        assert.is_true(resumed())
+        assert.is_true(has(answerOf(conv), "without answering"))
+    end)
+
+    it("multi-select: does NOT hang when dismissed without a button (no-hang invariant)", function()
+        local conv = run(multi("Which themes?", { "Loyalty", "Fate" }), function(o)
+            o.onCloseWidget(o) -- tap-outside / Back
+        end)
+        assert.is_true(resumed(), "the loop must resume after a bare multi-select dismissal")
         assert.is_true(has(answerOf(conv), "without answering"))
     end)
 end)

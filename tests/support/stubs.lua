@@ -334,6 +334,15 @@ function M.install()
             return o or {}
         end,
     }
+    -- CheckButton backs the ask_user multi-select step (one box per option, hosted on an
+    -- InputDialog). The default double is a bare selection cell echoing .checked.
+    package.loaded["ui/widget/checkbutton"] = {
+        new = function(_, o)
+            o = o or {}
+            o.checked = o.checked or false
+            return o
+        end,
+    }
     -- bbpresets.inputLines() reads Font:getFace(name).size to size the input box.
     package.loaded["ui/font"] = {
         getFace = function(_, _name)

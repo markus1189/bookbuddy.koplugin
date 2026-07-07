@@ -13,6 +13,7 @@
 -- plain-text rendering of `transcript`. What remains here is the orchestration:
 -- the turn loop, tool dispatch, the reader-facing dialogs, and the viewer.
 local ButtonDialog = require("ui/widget/buttondialog")
+local CheckButton = require("ui/widget/checkbutton")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local NetworkMgr = require("ui/network/manager")
@@ -902,16 +903,93 @@ function Conversation:_promptFreeTextStep(progress, question, resolve, dismiss)
     input_dialog:onShowKeyboard()
 end
 
+-- Render ONE multi-select step as an InputDialog hosting a CheckButton per option (the
+-- documented CheckButton parent -- it supplies getAddedWidgetAvailableWidth). The dialog's
+-- text field doubles as the always-available "type your own" channel, so no separate
+-- hand-off is needed here. "Next →" resolves with the checked labels (plus any typed text)
+-- comma-joined -- nothing checked and nothing typed counts as a per-step skip (false);
+-- "Skip" resolves false; a bare dismissal bails the batch. `closing` guards our own closes.
+function Conversation:_renderMultiSelectStep(progress, q, resolve, dismiss)
+    local input_dialog, closing = nil, false
+    local checks = {}
+    local function confirm()
+        local sel = {}
+        for _, c in ipairs(checks) do
+            if c.cb.checked then
+                sel[#sel + 1] = c.label
+            end
+        end
+        local typed = input_dialog and input_dialog:getInputText()
+        if typed and typed ~= "" then
+            sel[#sel + 1] = typed
+        end
+        closing = true
+        UIManager:close(input_dialog)
+        resolve((#sel > 0) and table.concat(sel, ", ") or false)
+    end
+    local buttons = {
+        {
+            {
+                text = _("Skip"),
+                callback = function()
+                    closing = true
+                    UIManager:close(input_dialog)
+                    resolve(false)
+                end,
+            },
+            {
+                text = _("Next →"),
+                is_enter_default = true,
+                callback = confirm,
+            },
+        },
+    }
+    input_dialog = InputDialog:new({
+        title = progress or _("Choose all that apply"),
+        description = q.question,
+        input = "",
+        input_hint = _("…or type your own"),
+        text_height = Presets.inputLines(1),
+        buttons = buttons,
+    })
+    -- CheckButton needs its parent set to the dialog (for getAddedWidgetAvailableWidth);
+    -- selection state lives on cb.checked, read at confirm -- the callback is a no-op.
+    for _, opt in ipairs(q.options) do
+        local cb = CheckButton:new({
+            text = optionButtonText(opt),
+            parent = input_dialog,
+            callback = function() end,
+        })
+        input_dialog:addWidget(cb)
+        checks[#checks + 1] = { cb = cb, label = opt.label }
+    end
+    -- NO-HANG net: a bare dismissal must still bail the batch. Our Skip/Next set `closing`.
+    local orig = input_dialog.onCloseWidget
+    input_dialog.onCloseWidget = function(d)
+        if orig then
+            orig(d)
+        end
+        if not closing then
+            dismiss()
+        end
+    end
+    UIManager:show(input_dialog)
+end
+
 -- Render ONE question step as a ButtonDialog: an option row per choice (single-select --
 -- a tap resolves with that option's label), then a "Type my own…" hand-off and a per-step
--- "Skip". No options at all routes straight to the free-text dialog. resolve(answer) feeds
--- the step's result to the driver (a string, or false for a skip); dismiss() bails the
--- whole batch. `closing` guards our intentional closes (advance / free-text hand-off) so
--- only a real tap-outside / Back dismissal reaches dismiss().
+-- "Skip". No options at all routes straight to the free-text dialog; a multiSelect question
+-- routes to _renderMultiSelectStep. resolve(answer) feeds the step's result to the driver
+-- (a string, or false for a skip); dismiss() bails the whole batch. `closing` guards our
+-- intentional closes (advance / free-text hand-off) so only a real tap-outside / Back
+-- dismissal reaches dismiss().
 function Conversation:_renderQuestionStep(i, n, q, resolve, dismiss)
     local progress = questionProgress(i, n, q.header)
     if not (q.options and #q.options > 0) then
         return self:_promptFreeTextStep(progress, q.question, resolve, dismiss)
+    end
+    if q.multiSelect then
+        return self:_renderMultiSelectStep(progress, q, resolve, dismiss)
     end
     local dialog, closing = nil, false
     local function resolveWith(answer)
