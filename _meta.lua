@@ -4,5 +4,5 @@ return {
     description = _(
         [[Chat with Claude about a highlighted passage. Claude can search the book, read passages, and use the table of contents to answer your questions.]]
     ),
-    version = "1.23.0",
+    version = "1.24.0",
 }
