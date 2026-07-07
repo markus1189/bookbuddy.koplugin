@@ -131,6 +131,8 @@ end
 -- we surface it here, with the result count from the matching result block when it
 -- is in this turn (after a pause_turn the result can be absent, so we show the
 -- query alone).
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 26 (grandfathered; see .luacheckrc)
 function Transcript.renderAssistantTurn(transcript, content, turn_start, show_thinking)
     for i = #transcript, turn_start + 1, -1 do
         transcript[i] = nil
@@ -169,6 +171,7 @@ function Transcript.renderAssistantTurn(transcript, content, turn_start, show_th
         end
     end
 end
+-- luacheck: pop
 
 -- Rule drawn wherever BookBuddy's prose borders the thinking/tool machinery, so
 -- with streamed thinking on the reader can see at a glance where the actual

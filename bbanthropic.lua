@@ -243,6 +243,8 @@ function Parser:_mergeUsage(u)
     end
 end
 
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 37 (grandfathered; see .luacheckrc)
 function Parser:_event(event)
     local t = event.type
     if t == "message_start" then
@@ -317,6 +319,7 @@ function Parser:_event(event)
         self.done = true
     end
 end
+-- luacheck: pop
 
 function Parser:feed(line)
     if self.done then

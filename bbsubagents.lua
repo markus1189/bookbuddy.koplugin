@@ -72,6 +72,8 @@ end
 --                         turn ceiling); fires at the START of each round so the
 --                         parent can surface a live "step N/max" line. The child
 --                         itself renders nothing.
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 27 (grandfathered; see .luacheckrc)
 function Subagents.runSubagent(o)
     o = o or {}
     local ui = o.ui
@@ -199,5 +201,6 @@ function Subagents.runSubagent(o)
     end
     return nil, err or "The helper produced no result."
 end
+-- luacheck: pop
 
 return Subagents

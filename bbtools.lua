@@ -179,6 +179,8 @@ end
 -- revealed (no page, no text). spoiler=true reveals all; max_page only tightens the
 -- cap to an earlier page. Each visible hit mints a sentence-anchored span locator
 -- the model can pass to read or create_highlight.
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 34 (grandfathered; see .luacheckrc)
 local function tool_grep(ui, input)
     local query = input.query
     if not query or query == "" then
@@ -326,6 +328,7 @@ local function tool_grep(ui, input)
     end
     return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
+-- luacheck: pop
 
 local function tool_get_toc(ui, _input)
     local toc = ui.document:getToc()
@@ -366,6 +369,8 @@ local MAX_READ_LIMIT = 4000
 -- (the reader's current page). A page-level spoiler gate refuses a start past the
 -- reader's current page and clamps a forward chunk that would cross into the next
 -- page, unless spoiler=true.
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 44 (grandfathered; see .luacheckrc)
 local function tool_read(ui, input)
     input = input or {}
     local doc = ui.document
@@ -530,6 +535,7 @@ local function tool_read(ui, input)
 
     return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
 end
+-- luacheck: pop
 
 local function tool_book_context(ui, _input)
     local props = ui.document:getProps() or {}
@@ -834,6 +840,8 @@ end
 -- re-search here, disambiguating repeated hits by occurrence/page. All paths converge
 -- on saveHighlightFromXPointers. Reflowable (EPUB) only for now: paging documents
 -- need pos tables + pboxes rather than xpointers.
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 40 (grandfathered; see .luacheckrc)
 local function tool_create_highlight(ui, input)
     local err, summary = rollingOnly(ui, "create_highlight")
     if err then
@@ -950,6 +958,7 @@ local function tool_create_highlight(ui, input)
     return string.format('Highlighted on %s:\n"%s"%s', highlightLocation(item), snippet, note_part),
         _("highlight added")
 end
+-- luacheck: pop
 
 local DISPATCH = {
     grep = tool_grep,

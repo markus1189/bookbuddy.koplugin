@@ -60,6 +60,8 @@ end
 local Conversation = {}
 Conversation.__index = Conversation
 
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 34 (grandfathered; see .luacheckrc)
 function Conversation:new(o)
     o = o or {}
     setmetatable(o, self)
@@ -180,6 +182,7 @@ function Conversation:new(o)
     end
     return o
 end
+-- luacheck: pop
 
 -- Show a reopened chat's finished transcript in Reply mode. Just the terminal
 -- render: the follow-up path is the ordinary one from there.
@@ -235,6 +238,8 @@ function Conversation:run()
     end)
 end
 
+-- luacheck: push
+-- luacheck: max cyclomatic complexity 48 (grandfathered; see .luacheckrc)
 function Conversation:_loop()
     local cfg = self.settings:getConfig()
     local max_turns = cfg.max_turns
@@ -596,6 +601,7 @@ function Conversation:_loop()
     -- in the transcript; render it.
     self:_render()
 end
+-- luacheck: pop
 
 -- Record an assistant reply in the wire history (History.storeAssistant holds the
 -- pause_turn merge rule and its role-alternation rationale).
