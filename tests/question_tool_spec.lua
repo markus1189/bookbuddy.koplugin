@@ -191,6 +191,25 @@ describe("ask_user dispatch + pause/resume", function()
         return { questions = { { question = question, multiSelect = true, options = opts } } }
     end
 
+    -- One question descriptor (labels/isMulti optional) and a batch wrapper, for the
+    -- multi-question sequencing scenarios below.
+    local function qspec(question, labels, isMulti)
+        local q = { question = question }
+        if isMulti then
+            q.multiSelect = true
+        end
+        if labels then
+            q.options = {}
+            for _, l in ipairs(labels) do
+                q.options[#q.options + 1] = { label = l }
+            end
+        end
+        return q
+    end
+    local function batch(...)
+        return { questions = { ... } }
+    end
+
     -- Run one scenario: a first round whose assistant emits an ask_user tool_use, then a
     -- final text round. Returns the live Conversation. Asserts the universal invariants
     -- (every request validates; the loop never over-requests) like conversation_spec.
@@ -350,5 +369,103 @@ describe("ask_user dispatch + pause/resume", function()
         end)
         assert.is_true(resumed(), "the loop must resume after a bare multi-select dismissal")
         assert.is_true(has(answerOf(conv), "without answering"))
+    end)
+
+    it("steps through a multi-question batch and serializes every answer in order", function()
+        local step = 0
+        local conv = run(
+            batch(qspec("Which character?", { "Tom", "Sid" }), qspec("How far back?", { "This chapter", "The book" })),
+            function(o)
+                step = step + 1
+                if step == 1 then
+                    o.buttons[1][1].callback() -- Tom
+                else
+                    o.buttons[2][1].callback() -- "The book" (second option row)
+                end
+            end
+        )
+        assert.is_true(resumed())
+        local ans = answerOf(conv)
+        assert.is_true(has(ans, "Q1. Which character?"))
+        assert.is_true(has(ans, "A1. Tom"))
+        assert.is_true(has(ans, "Q2. How far back?"))
+        assert.is_true(has(ans, "A2. The book"))
+        -- Transcript folds the batch into one line with the count and a "+N more" marker.
+        assert.is_true(has(chatviewer.last_text, "Asked: Which character? (+1 more)"))
+        assert.is_true(has(chatviewer.last_text, "answered 2 of 2"))
+    end)
+
+    it("mixes a single-select and a multi-select question in one batch", function()
+        local step = 0
+        local conv = run(
+            batch(qspec("Which character?", { "Tom", "Sid" }), qspec("Which themes?", { "Fate", "Honour" }, true)),
+            function(o, is_input)
+                step = step + 1
+                if step == 1 then
+                    assert.is_false(is_input) -- single-select ButtonDialog
+                    o.buttons[1][1].callback() -- Tom
+                else
+                    assert.is_true(is_input) -- multi-select InputDialog
+                    o._added[1].checked = true -- Fate
+                    o._added[2].checked = true -- Honour
+                    o.buttons[1][2].callback() -- Next →
+                end
+            end
+        )
+        assert.is_true(resumed())
+        local ans = answerOf(conv)
+        assert.is_true(has(ans, "A1. Tom"))
+        assert.is_true(has(ans, "A2. Fate, Honour"))
+        assert.is_true(has(chatviewer.last_text, "answered 2 of 2"))
+    end)
+
+    it("marks a per-step skip [skipped] but still serializes the answered questions", function()
+        local step = 0
+        local conv = run(
+            batch(qspec("Which character?", { "Tom", "Sid" }), qspec("How far back?", { "A", "B" })),
+            function(o)
+                step = step + 1
+                if step == 1 then
+                    o.buttons[1][1].callback() -- Tom
+                else
+                    o.buttons[#o.buttons][2].callback() -- Skip on Q2
+                end
+            end
+        )
+        assert.is_true(resumed())
+        local ans = answerOf(conv)
+        assert.is_true(has(ans, "A1. Tom"))
+        assert.is_true(has(ans, "Q2. How far back?"))
+        assert.is_true(has(ans, "A2. [skipped]"))
+        assert.is_true(has(chatviewer.last_text, "answered 1 of 2"))
+    end)
+
+    it("collapses to answers-so-far when the reader dismisses mid-batch", function()
+        local step = 0
+        local conv = run(
+            batch(qspec("Which character?", { "Tom", "Sid" }), qspec("How far back?", { "A", "B" })),
+            function(o)
+                step = step + 1
+                if step == 1 then
+                    o.buttons[1][1].callback() -- Tom
+                else
+                    o.onCloseWidget(o) -- dismiss Q2 outright
+                end
+            end
+        )
+        assert.is_true(resumed(), "a mid-batch dismissal must resume, not park forever")
+        local ans = answerOf(conv)
+        assert.is_true(has(ans, "A1. Tom"))
+        assert.is_false(has(ans, "Q2.")) -- never reached an answer -> omitted (collapse-so-far)
+        assert.is_true(has(chatviewer.last_text, "answered 1 of 2"))
+    end)
+
+    it("returns the single recoverable note when every question in a batch is skipped", function()
+        local conv = run(batch(qspec("Q1?", { "a", "b" }), qspec("Q2?", { "c", "d" })), function(o)
+            o.buttons[#o.buttons][2].callback() -- Skip on each step
+        end)
+        assert.is_true(resumed())
+        assert.is_true(has(answerOf(conv), "without answering"))
+        assert.is_true(has(chatviewer.last_text, "skipped"))
     end)
 end)
