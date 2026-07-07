@@ -59,6 +59,78 @@ local function sanitizeInput(name, input, ui, allow_spoiler)
     return input
 end
 
+-- Fold the option bag into the values the driver loop needs, applying every
+-- default in one place so the loop below reads plain locals. Returns a table
+-- carrying the normalized bag (n.o) so o.set_cancel stays reachable downstream.
+local function normalizeArgs(o)
+    o = o or {}
+    local cfg = o.cfg
+    return {
+        o = o,
+        ui = o.ui,
+        cfg = cfg,
+        task = o.task or "",
+        allow_spoiler = o.allow_spoiler == true,
+        depth = o.depth or 1,
+        stop = o.stop or function()
+            return false
+        end,
+        on_status = o.on_status or function() end,
+        max_turns = math.max(1, tonumber(cfg and cfg.subagent_max_turns) or DEFAULT_CHILD_MAX_TURNS),
+    }
+end
+
+-- Fetch one assistant turn for the child: build the body, run the shared
+-- retry/backoff stream, and validate the reply. Returns the raw response table,
+-- or (nil, message) preserving the distinct stopped/unreachable/empty errors.
+local function fetchAssistantTurn(messages, tools, cfg, o, stop)
+    local body = Anthropic.buildBody(messages, tools, cfg)
+
+    -- Headless: a bare parser (no on_text/on_thinking), no flush, no viewer (D9).
+    -- set_cancel routes the child stream's cancel closure into the parent's single
+    -- _cancel slot so a Stop aborts the live child stream; stop() catches a Stop
+    -- that lands during a backoff. Retry.streamWithRetries is shared with the
+    -- parent loop (bbretry is the single source of the retry policy).
+    local r, res, verdict = Retry.streamWithRetries({
+        body = body,
+        cfg = cfg,
+        make_parser = function()
+            return Anthropic.newStreamParser({})
+        end,
+        register_cancel = o.set_cancel,
+        stopped = stop,
+    })
+
+    if verdict == "stopped" or r.cancelled then
+        return nil, "The helper was stopped before finishing."
+    end
+    if verdict ~= "ok" then
+        return nil, "The helper could not reach the model to finish the task."
+    end
+    if type(res.content) ~= "table" or #res.content == 0 then
+        return nil, "The helper got an empty reply."
+    end
+
+    return res
+end
+
+-- Run the child's requested tool calls and assemble the tool_result blocks for
+-- the next user turn.
+local function executeToolUses(tool_uses, ui, allow_spoiler)
+    local tool_results = {}
+    for i = 1, #tool_uses do
+        local tu = tool_uses[i]
+        local sanitized = sanitizeInput(tu.name, tu.input, ui, allow_spoiler)
+        local result = Tools.execute(tu.name, sanitized, ui)
+        tool_results[#tool_results + 1] = {
+            type = "tool_result",
+            tool_use_id = tu.id,
+            content = result,
+        }
+    end
+    return tool_results
+end
+
 -- Run one delegated sub-task to completion and return (text, err): the child's final
 -- condensed answer, or (nil, message) when it could not produce one. o:
 --   ui, cfg               shared live context + resolved config
@@ -72,19 +144,14 @@ end
 --                         turn ceiling); fires at the START of each round so the
 --                         parent can surface a live "step N/max" line. The child
 --                         itself renders nothing.
--- luacheck: push
--- luacheck: max cyclomatic complexity 27 (grandfathered; see .luacheckrc)
 function Subagents.runSubagent(o)
-    o = o or {}
-    local ui = o.ui
-    local cfg = o.cfg
-    local task = o.task or ""
-    local allow_spoiler = o.allow_spoiler == true
-    local depth = o.depth or 1
-    local stop = o.stop or function()
-        return false
-    end
-    local on_status = o.on_status or function() end
+    local n = normalizeArgs(o)
+    local ui, cfg = n.ui, n.cfg
+    local allow_spoiler = n.allow_spoiler
+    local depth = n.depth
+    local stop = n.stop
+    local on_status = n.on_status
+    local max_turns = n.max_turns
 
     -- D6 backstop: refuse beyond the first level. Returns before any stream is forked.
     if depth > MAX_SUBAGENT_DEPTH then
@@ -96,12 +163,11 @@ function Subagents.runSubagent(o)
     -- but the gateway may not enforce it; a blank task would otherwise seed an empty
     -- <task></task> and burn a full round-trip on nothing. Like the depth guard above,
     -- this returns before any stream is forked.
-    task = task:match("^%s*(.-)%s*$") or ""
+    local task = n.task:match("^%s*(.-)%s*$") or ""
     if task == "" then
         return nil, "The delegated task was empty."
     end
 
-    local max_turns = math.max(1, tonumber(cfg and cfg.subagent_max_turns) or DEFAULT_CHILD_MAX_TURNS)
     local specs = Tools.childSpecs()
 
     -- D8: snapshot the parent's last-search so a child grep cannot re-point a later
@@ -131,33 +197,10 @@ function Subagents.runSubagent(o)
         -- than asking for another tool call we'd have to refuse (mirrors _loop).
         local last_round = rounds >= max_turns
         local tools = (not last_round) and specs or nil
-        local body = Anthropic.buildBody(messages, tools, cfg)
 
-        -- Headless: a bare parser (no on_text/on_thinking), no flush, no viewer (D9).
-        -- set_cancel routes the child stream's cancel closure into the parent's single
-        -- _cancel slot so a Stop aborts the live child stream; stop() catches a Stop
-        -- that lands during a backoff. Retry.streamWithRetries is shared with the
-        -- parent loop (bbretry is the single source of the retry policy).
-        local r, res, verdict = Retry.streamWithRetries({
-            body = body,
-            cfg = cfg,
-            make_parser = function()
-                return Anthropic.newStreamParser({})
-            end,
-            register_cancel = o.set_cancel,
-            stopped = stop,
-        })
-
-        if verdict == "stopped" or r.cancelled then
-            err = "The helper was stopped before finishing."
-            break
-        end
-        if verdict ~= "ok" then
-            err = "The helper could not reach the model to finish the task."
-            break
-        end
-        if type(res.content) ~= "table" or #res.content == 0 then
-            err = "The helper got an empty reply."
+        local res, ferr = fetchAssistantTurn(messages, tools, cfg, n.o, stop)
+        if ferr then
+            err = ferr
             break
         end
 
@@ -170,17 +213,7 @@ function Subagents.runSubagent(o)
         end
 
         if res.stop_reason == "tool_use" and #tool_uses > 0 then
-            local tool_results = {}
-            for i = 1, #tool_uses do
-                local tu = tool_uses[i]
-                local sanitized = sanitizeInput(tu.name, tu.input, ui, allow_spoiler)
-                local result = Tools.execute(tu.name, sanitized, ui)
-                tool_results[#tool_results + 1] = {
-                    type = "tool_result",
-                    tool_use_id = tu.id,
-                    content = result,
-                }
-            end
+            local tool_results = executeToolUses(tool_uses, ui, allow_spoiler)
             messages[#messages + 1] = { role = "user", content = tool_results }
         else
             break -- end_turn (or a turn with no tool calls): the child is done
@@ -201,6 +234,5 @@ function Subagents.runSubagent(o)
     end
     return nil, err or "The helper produced no result."
 end
--- luacheck: pop
 
 return Subagents

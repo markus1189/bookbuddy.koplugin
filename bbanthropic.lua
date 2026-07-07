@@ -243,83 +243,108 @@ function Parser:_mergeUsage(u)
     end
 end
 
--- luacheck: push
--- luacheck: max cyclomatic complexity 37 (grandfathered; see .luacheckrc)
-function Parser:_event(event)
-    local t = event.type
-    if t == "message_start" then
-        self:_mergeUsage(event.message and event.message.usage)
-    elseif t == "content_block_start" then
-        local idx = event.index
-        self.blocks[idx] = event.content_block
-        if idx > self.max_index then
-            self.max_index = idx
-        end
-        local bt = event.content_block and event.content_block.type
-        if bt == "tool_use" or bt == "server_tool_use" then
-            self.json_accum[idx] = ""
-        end
-    elseif t == "content_block_delta" then
-        local idx = event.index
-        local d = event.delta
-        if d then
-            if d.type == "text_delta" and d.text then
-                local b = self.blocks[idx]
-                if b then
-                    b.text = (b.text or "") .. d.text
-                end
-                if self.on_text then
-                    self.on_text(d.text)
-                end
-            elseif d.type == "thinking_delta" and d.thinking then
-                local b = self.blocks[idx]
-                if b then
-                    b.thinking = (b.thinking or "") .. d.thinking
-                end
-                if self.on_thinking then
-                    self.on_thinking(d.thinking)
-                end
-            elseif d.type == "signature_delta" and d.signature then
-                -- Accumulate onto the thinking block; the API requires the
-                -- signature back verbatim when the turn's thinking is resent
-                -- alongside tool_use, so it must survive in self.blocks[idx].
-                local b = self.blocks[idx]
-                if b then
-                    b.signature = (b.signature or "") .. d.signature
-                end
-            elseif d.type == "input_json_delta" and d.partial_json then
-                self.json_accum[idx] = (self.json_accum[idx] or "") .. d.partial_json
-            end
-        end
-    elseif t == "content_block_stop" then
-        local idx = event.index
-        local accum = self.json_accum[idx]
-        if accum and #accum > 0 then
-            local decoded = Anthropic.decode(accum)
-            if decoded and self.blocks[idx] then
-                self.blocks[idx].input = decoded
-            else
-                -- A tool_use / server_tool_use whose input JSON we accumulated but
-                -- could not decode is truncated or corrupt: storing the block with
-                -- no .input would resend a malformed tool call (the API 400s, and a
-                -- client tool here would execute with nil args). Flag the whole
-                -- result incomplete so result() reports a retryable failure instead
-                -- of handing back a half-formed block as if the turn succeeded.
-                self.incomplete = true
-            end
-        end
-    elseif t == "message_delta" then
-        if event.delta and event.delta.stop_reason then
-            self.stop_reason = event.delta.stop_reason
-        end
-        self:_mergeUsage(event.usage)
-    elseif t == "error" then
-        self.error = event.error
-    elseif t == "message_stop" then
-        self.done = true
+function Parser:_onMessageStart(event)
+    self:_mergeUsage(event.message and event.message.usage)
+end
+
+function Parser:_onContentBlockStart(event)
+    local idx = event.index
+    self.blocks[idx] = event.content_block
+    if idx > self.max_index then
+        self.max_index = idx
+    end
+    local bt = event.content_block and event.content_block.type
+    if bt == "tool_use" or bt == "server_tool_use" then
+        self.json_accum[idx] = ""
     end
 end
--- luacheck: pop
+
+function Parser:_onContentBlockDelta(event)
+    local idx = event.index
+    local d = event.delta
+    if d then
+        if d.type == "text_delta" and d.text then
+            local b = self.blocks[idx]
+            if b then
+                b.text = (b.text or "") .. d.text
+            end
+            if self.on_text then
+                self.on_text(d.text)
+            end
+        elseif d.type == "thinking_delta" and d.thinking then
+            local b = self.blocks[idx]
+            if b then
+                b.thinking = (b.thinking or "") .. d.thinking
+            end
+            if self.on_thinking then
+                self.on_thinking(d.thinking)
+            end
+        elseif d.type == "signature_delta" and d.signature then
+            -- Accumulate onto the thinking block; the API requires the
+            -- signature back verbatim when the turn's thinking is resent
+            -- alongside tool_use, so it must survive in self.blocks[idx].
+            local b = self.blocks[idx]
+            if b then
+                b.signature = (b.signature or "") .. d.signature
+            end
+        elseif d.type == "input_json_delta" and d.partial_json then
+            self.json_accum[idx] = (self.json_accum[idx] or "") .. d.partial_json
+        end
+    end
+end
+
+function Parser:_onContentBlockStop(event)
+    local idx = event.index
+    local accum = self.json_accum[idx]
+    if accum and #accum > 0 then
+        local decoded = Anthropic.decode(accum)
+        if decoded and self.blocks[idx] then
+            self.blocks[idx].input = decoded
+        else
+            -- A tool_use / server_tool_use whose input JSON we accumulated but
+            -- could not decode is truncated or corrupt: storing the block with
+            -- no .input would resend a malformed tool call (the API 400s, and a
+            -- client tool here would execute with nil args). Flag the whole
+            -- result incomplete so result() reports a retryable failure instead
+            -- of handing back a half-formed block as if the turn succeeded.
+            self.incomplete = true
+        end
+    end
+end
+
+function Parser:_onMessageDelta(event)
+    if event.delta and event.delta.stop_reason then
+        self.stop_reason = event.delta.stop_reason
+    end
+    self:_mergeUsage(event.usage)
+end
+
+function Parser:_onError(event)
+    self.error = event.error
+end
+
+function Parser:_onMessageStop()
+    self.done = true
+end
+
+-- event.type -> Parser handler. An unrecognised type has no entry and is
+-- skipped, mirroring the original if/elseif chain's implicit no-else arm.
+local EVENT_HANDLERS = {
+    message_start = Parser._onMessageStart,
+    content_block_start = Parser._onContentBlockStart,
+    content_block_delta = Parser._onContentBlockDelta,
+    content_block_stop = Parser._onContentBlockStop,
+    message_delta = Parser._onMessageDelta,
+    error = Parser._onError,
+    message_stop = Parser._onMessageStop,
+}
+
+function Parser:_event(event)
+    local handler = EVENT_HANDLERS[event.type]
+    if handler then
+        handler(self, event)
+    end
+end
 
 function Parser:feed(line)
     if self.done then

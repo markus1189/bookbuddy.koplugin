@@ -8,12 +8,14 @@ exclude_files = { ".direnv" }
 -- ignore implicit self
 self = false
 
--- Cyclomatic-complexity ceiling (W561). New/edited functions must stay at or
--- below 25. The 8 functions that already exceed this are grandfathered with
--- per-function `-- luacheck: max cyclomatic complexity N` inline exemptions set
--- to their current value, so each is individually ratcheted: touch one and push
--- it higher and the gate trips. Drive those numbers down (or split the function)
--- to retire the exemption. Nothing new is allowed to join the list.
+-- Cyclomatic-complexity ceiling (W561). Every function must stay at or below 25.
+-- No shipped function is grandfathered: the 8 that once exceeded this (in
+-- bbanthropic, bbsubagents, bbtranscript, bbconversation x2, bbtools x3) were
+-- refactored under the ceiling and their inline exemptions retired. If a new
+-- function genuinely can't be split, an escape hatch remains — a per-function
+-- `-- luacheck: max cyclomatic complexity N` fence pinned to its current value,
+-- so it's individually ratcheted: touch it and push it higher and the gate
+-- trips. Prefer splitting; treat a fence as debt to drive back down.
 max_cyclomatic_complexity = 25
 
 globals = {

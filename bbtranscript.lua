@@ -123,23 +123,10 @@ function Transcript.toolActionPhrase(tu)
     return "  → " .. phrase
 end
 
--- Re-render a turn's assistant content into the transcript in block order,
--- replacing the live streamed entries (everything past turn_start). This keeps a
--- server-side web search between the model's lead-in and its answer instead of
--- hoisting it above them, and renders interleaved thinking/text in reading order.
--- Web search runs server-side, so its query never reaches the client tool loop;
--- we surface it here, with the result count from the matching result block when it
--- is in this turn (after a pause_turn the result can be absent, so we show the
--- query alone).
--- luacheck: push
--- luacheck: max cyclomatic complexity 26 (grandfathered; see .luacheckrc)
-function Transcript.renderAssistantTurn(transcript, content, turn_start, show_thinking)
-    for i = #transcript, turn_start + 1, -1 do
-        transcript[i] = nil
-    end
-    if type(content) ~= "table" then
-        return
-    end
+-- Scan the turn's blocks once for web_search_tool_result blocks, keyed by
+-- tool_use_id, so the render pass can look up each search's outcome (result count
+-- or error) beside the query.
+local function collectWebSearchOutcomes(content)
     local outcome = {}
     for i = 1, #content do
         local b = content[i]
@@ -152,26 +139,50 @@ function Transcript.renderAssistantTurn(transcript, content, turn_start, show_th
             end
         end
     end
-    for i = 1, #content do
-        local b = content[i]
-        if b.type == "thinking" and b.thinking and b.thinking ~= "" then
-            transcript[#transcript + 1] = { role = "thinking", done = true, text = show_thinking and b.thinking or nil }
-        elseif b.type == "text" and b.text and b.text ~= "" then
-            transcript[#transcript + 1] = { role = "assistant", text = b.text }
-        elseif b.type == "server_tool_use" and b.name == "web_search" then
-            local query = (b.input and b.input.query) or ""
-            local text = "  → " .. T(_("Searched the web for %1"), string.format("%q", query))
-            local r = outcome[b.id]
-            if r and r.error then
-                text = text .. " — " .. T(_("error: %1"), tostring(r.error))
-            elseif r and r.count then
-                text = text .. " — " .. T(_("%1 result(s)"), r.count)
-            end
-            transcript[#transcript + 1] = { role = "tool", text = text }
+    return outcome
+end
+
+-- Render one assistant content block into a fresh transcript entry: interleaved
+-- thinking/text in reading order, plus the server-side web search surfaced from
+-- its server_tool_use block.
+local function renderBlock(transcript, b, outcome, show_thinking)
+    if b.type == "thinking" and b.thinking and b.thinking ~= "" then
+        transcript[#transcript + 1] = { role = "thinking", done = true, text = show_thinking and b.thinking or nil }
+    elseif b.type == "text" and b.text and b.text ~= "" then
+        transcript[#transcript + 1] = { role = "assistant", text = b.text }
+    elseif b.type == "server_tool_use" and b.name == "web_search" then
+        local query = (b.input and b.input.query) or ""
+        local text = "  → " .. T(_("Searched the web for %1"), string.format("%q", query))
+        -- Web search runs server-side, so its query never reaches the client tool loop;
+        -- we surface it here, with the result count from the matching result block when it
+        -- is in this turn (after a pause_turn the result can be absent, so we show the
+        -- query alone).
+        local r = outcome[b.id]
+        if r and r.error then
+            text = text .. " — " .. T(_("error: %1"), tostring(r.error))
+        elseif r and r.count then
+            text = text .. " — " .. T(_("%1 result(s)"), r.count)
         end
+        transcript[#transcript + 1] = { role = "tool", text = text }
     end
 end
--- luacheck: pop
+
+-- Re-render a turn's assistant content into the transcript in block order,
+-- replacing the live streamed entries (everything past turn_start). This keeps a
+-- server-side web search between the model's lead-in and its answer instead of
+-- hoisting it above them, and renders interleaved thinking/text in reading order.
+function Transcript.renderAssistantTurn(transcript, content, turn_start, show_thinking)
+    for i = #transcript, turn_start + 1, -1 do
+        transcript[i] = nil
+    end
+    if type(content) ~= "table" then
+        return
+    end
+    local outcome = collectWebSearchOutcomes(content)
+    for i = 1, #content do
+        renderBlock(transcript, content[i], outcome, show_thinking)
+    end
+end
 
 -- Rule drawn wherever BookBuddy's prose borders the thinking/tool machinery, so
 -- with streamed thinking on the reader can see at a glance where the actual

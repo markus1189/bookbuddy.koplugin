@@ -174,17 +174,13 @@ local function sentenceSpan(ui, item)
     return xp0, xp1, sent
 end
 
--- Search the current book (like Grep). By default only hits at or before the
--- reader's current page are shown (spoiler-safe); later hits are counted but never
--- revealed (no page, no text). spoiler=true reveals all; max_page only tightens the
--- cap to an earlier page. Each visible hit mints a sentence-anchored span locator
--- the model can pass to read or create_highlight.
--- luacheck: push
--- luacheck: max cyclomatic complexity 34 (grandfathered; see .luacheckrc)
-local function tool_grep(ui, input)
+-- Validate and normalize a grep call's inputs into an opts table, or return
+-- (nil, error_string) on a bad query/max_results. Derives the spoiler-safe page
+-- cap and the min_page display window so the main flow is a linear pipeline.
+local function parseGrepInput(ui, input)
     local query = input.query
     if not query or query == "" then
-        return "Error: 'query' is required."
+        return nil, "Error: 'query' is required."
     end
     local regex = input.regex == true
     local context = input.context == "sentence" and "sentence" or "words"
@@ -198,14 +194,9 @@ local function tool_grep(ui, input)
     if input.max_results ~= nil then
         local n = tonumber(input.max_results)
         if not n or n < 1 or n ~= math.floor(n) then
-            return string.format("Error: 'max_results' must be a whole number >= 1 (max %d).", MAX_SEARCH_RESULTS)
+            return nil, string.format("Error: 'max_results' must be a whole number >= 1 (max %d).", MAX_SEARCH_RESULTS)
         end
         max_results = math.min(n, MAX_SEARCH_RESULTS)
-    end
-
-    local results = findPassageMatches(ui, query, regex)
-    if not results or #results == 0 then
-        return string.format("No matches found for %q.", query), _("no matches")
     end
 
     -- Page cap: default to the reader's current page (spoiler-safe). max_page only
@@ -231,6 +222,19 @@ local function tool_grep(ui, input)
     -- than the spoiler-only `hidden` one.
     local min_page = tonumber(input.min_page)
 
+    return {
+        query = query,
+        regex = regex,
+        context = context,
+        spoiler = spoiler,
+        max_results = max_results,
+        cap = cap,
+        min_page = min_page,
+    }
+end
+
+-- Split hits into (visible, hidden, before) by page for the given cap/min_page.
+local function partitionByPage(ui, results, cap, min_page)
     -- Partition hits into visible / hidden (spoiler) / before (below the window) by
     -- page. A nil page is treated as visible in both checks (we can't prove it's out
     -- of range). Cap check first: a hit both past the spoiler cap AND below min_page
@@ -249,11 +253,16 @@ local function tool_grep(ui, input)
             visible[#visible + 1] = item
         end
     end
+    return visible, hidden, before
+end
 
+-- Render the first `limit` visible hits into (shown, out): shown is the lock-step
+-- item list stashed as last_search, out is the formatted lines. Mints one span
+-- locator per rendered hit.
+local function renderHits(ui, visible, limit, context)
     -- Build the shown lines. shown[i] stays lock-step with the printed index AND the
     -- minted loc token, so create_highlight{search_result=i} and the loc:N agree.
     local shown, out = {}, {}
-    local limit = math.min(#visible, max_results)
     -- Bound each snippet so all `limit` lines fit under MAX_RESULT_CHARS. Without this a
     -- few long sentence-context hits would blow the budget and the final truncate() would
     -- chop tail lines mid-string -- yet their loc tokens were already minted below, so the
@@ -283,36 +292,30 @@ local function tool_grep(ui, input)
         snippet = snippet:sub(1, snippet_budget)
         out[#out + 1] = string.format("%d. [page %s] (%s) …%s…", i, tostring(item._page), tok, snippet)
     end
-    ui._bookbuddy_last_search = { query = query, items = shown }
+    return shown, out
+end
 
-    if #shown == 0 then
-        if hidden > 0 and not spoiler then
-            return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden)),
-                _("all hidden")
-        end
-        if before > 0 then
-            return T(
-                _("%1 match(es) found, all before page %2; lower min_page to see them."),
-                tostring(before),
-                tostring(min_page)
-            ),
-                _("all earlier")
-        end
-        return string.format("No matches found for %q.", query), _("no matches")
+-- The tool_result when no hit survived the page window: distinguishes "all hidden
+-- past your page" (spoiler) from "all before min_page" (display window) from a plain
+-- no-match. Returns (message, summary).
+local function emptyGrepReport(query, hidden, before, min_page, spoiler)
+    if hidden > 0 and not spoiler then
+        return T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden)),
+            _("all hidden")
     end
+    if before > 0 then
+        return T(
+            _("%1 match(es) found, all before page %2; lower min_page to see them."),
+            tostring(before),
+            tostring(min_page)
+        ),
+            _("all earlier")
+    end
+    return string.format("No matches found for %q.", query), _("no matches")
+end
 
-    -- Report shown-of-available, not the bogus "up to max_results". When more visible hits
-    -- exist than we printed, say so and point at max_results -- those over-the-limit hits are
-    -- otherwise dropped with no trailer (the hidden-count below is a different, spoiler-only
-    -- population).
-    local header
-    if #visible > #shown then
-        header =
-            string.format("Showing %d of %d match(es) for %q (raise max_results for more):", #shown, #visible, query)
-    else
-        header = string.format("Found %d match(es) for %q:", #shown, query)
-    end
-    table.insert(out, 1, header)
+-- Append the hidden/before trailer lines to `out` when some hits were shown.
+local function appendGrepReports(out, hidden, before, min_page, spoiler)
     if hidden > 0 and not spoiler then
         out[#out + 1] =
             T(_("%1 match(es) hidden past your current page; pass spoiler=true to see them."), tostring(hidden))
@@ -326,9 +329,53 @@ local function tool_grep(ui, input)
             tostring(min_page)
         )
     end
+end
+
+-- Search the current book (like Grep). By default only hits at or before the
+-- reader's current page are shown (spoiler-safe); later hits are counted but never
+-- revealed (no page, no text). spoiler=true reveals all; max_page only tightens the
+-- cap to an earlier page. Each visible hit mints a sentence-anchored span locator
+-- the model can pass to read or create_highlight.
+local function tool_grep(ui, input)
+    local opts, err = parseGrepInput(ui, input)
+    if err then
+        return err
+    end
+
+    local results = findPassageMatches(ui, opts.query, opts.regex)
+    if not results or #results == 0 then
+        return string.format("No matches found for %q.", opts.query), _("no matches")
+    end
+
+    local visible, hidden, before = partitionByPage(ui, results, opts.cap, opts.min_page)
+
+    local limit = math.min(#visible, opts.max_results)
+    local shown, out = renderHits(ui, visible, limit, opts.context)
+    ui._bookbuddy_last_search = { query = opts.query, items = shown }
+
+    if #shown == 0 then
+        return emptyGrepReport(opts.query, hidden, before, opts.min_page, opts.spoiler)
+    end
+
+    -- Report shown-of-available, not the bogus "up to max_results". When more visible hits
+    -- exist than we printed, say so and point at max_results -- those over-the-limit hits are
+    -- otherwise dropped with no trailer (the hidden-count below is a different, spoiler-only
+    -- population).
+    local header
+    if #visible > #shown then
+        header = string.format(
+            "Showing %d of %d match(es) for %q (raise max_results for more):",
+            #shown,
+            #visible,
+            opts.query
+        )
+    else
+        header = string.format("Found %d match(es) for %q:", #shown, opts.query)
+    end
+    table.insert(out, 1, header)
+    appendGrepReports(out, hidden, before, opts.min_page, opts.spoiler)
     return truncate(table.concat(out, "\n")), T(_("%1 match(es)"), #shown)
 end
--- luacheck: pop
 
 local function tool_get_toc(ui, _input)
     local toc = ui.document:getToc()
@@ -362,21 +409,10 @@ end
 local DEFAULT_READ_LIMIT = 1500
 local MAX_READ_LIMIT = 4000
 
--- Read the book's prose forward from a position, bounded to ~limit chars and
--- snapped to a word boundary, returning the chunk plus a continuation locator.
--- Reflowable (EPUB) only: it steps word-by-word through crengine's xpointer API.
--- `from` is polymorphic: a "loc:<n>" token, a bare page number string, or omitted
--- (the reader's current page). A page-level spoiler gate refuses a start past the
--- reader's current page and clamps a forward chunk that would cross into the next
--- page, unless spoiler=true.
--- luacheck: push
--- luacheck: max cyclomatic complexity 44 (grandfathered; see .luacheckrc)
-local function tool_read(ui, input)
-    input = input or {}
-    local doc = ui.document
-    if not doc then
-        return _("No book is currently open.")
-    end
+-- Standard guard for read (kin to rollingOnly): read not only needs a rolling doc
+-- but also the cre xpointer stepping API, so it checks for those methods too. Returns
+-- an error string when the document can't be read forward, or nil to proceed.
+local function require_reflowable(doc)
     -- Reflowable-only guard: a paging doc (has_pages) or a doc missing the cre
     -- xpointer stepping API can't drive the forward advance loop.
     if
@@ -388,13 +424,13 @@ local function tool_read(ui, input)
     then
         return _("read works only on reflowable (EPUB) books.")
     end
+    return nil
+end
 
-    local from = input.from
-    if from == "" then
-        from = nil
-    end
-    local spoiler = input.spoiler == true
-
+-- Resolve read's polymorphic `from` (nil = current page, a loc: token, or a page
+-- number string) to (xp_start, start_page, prefix). prefix is a "your place shifted"
+-- note or nil. Returns (nil, err) when the locator is stale.
+local function resolve_start(ui, doc, from)
     -- Resolve the start xpointer and its page.
     local xp_start, start_page, prefix
     if from == nil then
@@ -405,7 +441,7 @@ local function tool_read(ui, input)
         if n ~= nil then
             local entry = ensureLocators(ui)[n]
             if not entry then
-                return _("That locator is stale; search again or give a page.")
+                return nil, _("That locator is stale; search again or give a page.")
             end
             local xp = entry.xp
             -- Re-validate against the live document: a font/DOM change can move an
@@ -419,7 +455,7 @@ local function tool_read(ui, input)
                     -- fall back to: nothing to degrade to. Report the locator stale rather
                     -- than minting "resuming from page nil" and a nil xp_start below (which
                     -- would surface as a bogus "Nothing further to read").
-                    return _("That locator is stale; search again or give a page.")
+                    return nil, _("That locator is stale; search again or give a page.")
                 end
                 xp_start = doc:getPageXPointer(pg)
                 start_page = pg
@@ -436,18 +472,25 @@ local function tool_read(ui, input)
             xp_start = doc:getPageXPointer(pg)
             start_page = pg
         else
-            return _("That locator is stale; search again or give a page.")
+            return nil, _("That locator is stale; search again or give a page.")
         end
     end
     start_page = start_page or doc:getPageFromXPointer(xp_start)
+    return xp_start, start_page, prefix
+end
 
-    -- Page-level spoiler gate (skipped when spoiler=true).
-    local cur = currentPage(ui)
-    local limit_xp
-    if not spoiler then
-        if start_page and cur and start_page > cur then
-            -- Start is ahead of the reader: refuse outright, no text, no next.
-            return T(
+-- Page-level spoiler gate (skipped when spoiler=true). Encodes its two outcomes as
+-- distinct return shapes: a refuse (start is ahead of the reader) returns (nil,
+-- refuse_msg); otherwise it returns the forward-clamp limit_xp (possibly nil), so the
+-- caller distinguishes them on the SECOND return value, not a flag.
+local function spoiler_limit(doc, start_page, cur, spoiler)
+    if spoiler then
+        return nil
+    end
+    if start_page and cur and start_page > cur then
+        -- Start is ahead of the reader: refuse outright, no text, no next.
+        return nil,
+            T(
                 _(
                     "That's past where you are in the book (page %1 of your current page %2). "
                         .. "I won't read ahead and risk spoiling it — call read again with spoiler=true "
@@ -456,16 +499,17 @@ local function tool_read(ui, input)
                 tostring(start_page),
                 tostring(cur)
             )
-        end
-        if cur then
-            -- Clamp the forward chunk at the start of the next page.
-            limit_xp = doc:getPageXPointer(cur + 1)
-        end
     end
+    if cur then
+        -- Clamp the forward chunk at the start of the next page.
+        return doc:getPageXPointer(cur + 1)
+    end
+    return nil
+end
 
-    local budget = tonumber(input.limit) or DEFAULT_READ_LIMIT
-    budget = math.max(1, math.min(budget, MAX_READ_LIMIT))
-
+-- Step forward from xp_start, snapping to word boundaries, until ~budget chars or the
+-- spoiler clamp (limit_xp) or end of book. Returns (xp_end, eob, clamped).
+local function advance_chunk(doc, xp_start, limit_xp, budget)
     -- Advance forward from xp_start until ~budget chars, snapping to a word
     -- boundary. compareXPointers is the oracle: 1 means the second arg is after
     -- the first. Track which stop condition fired so the trailer is exact.
@@ -515,6 +559,60 @@ local function tool_read(ui, input)
             end
         end
     end
+    return xp_end, eob, clamped
+end
+
+-- The read trailer telling the model what to do next: end-of-book, spoiler-clamp, or a
+-- freshly minted continuation locator when more text follows.
+local function build_trailer(ui, eob, clamped, xp_end)
+    if eob then
+        return _("(End of book reached.)")
+    elseif clamped then
+        return _("(Stopped at your current page to avoid spoilers. Pass spoiler=true to keep reading.)")
+    end
+    local nexttok = mintLocator(ui, { kind = "point", xp = xp_end })
+    return T(_("(Not the end — call read again with from: %1 to continue.)"), nexttok)
+end
+
+-- Read the book's prose forward from a position, bounded to ~limit chars and
+-- snapped to a word boundary, returning the chunk plus a continuation locator.
+-- Reflowable (EPUB) only: it steps word-by-word through crengine's xpointer API.
+-- `from` is polymorphic: a "loc:<n>" token, a bare page number string, or omitted
+-- (the reader's current page). A page-level spoiler gate refuses a start past the
+-- reader's current page and clamps a forward chunk that would cross into the next
+-- page, unless spoiler=true.
+local function tool_read(ui, input)
+    input = input or {}
+    local doc = ui.document
+    if not doc then
+        return _("No book is currently open.")
+    end
+    local guard = require_reflowable(doc)
+    if guard then
+        return guard
+    end
+
+    local from = input.from
+    if from == "" then
+        from = nil
+    end
+    local spoiler = input.spoiler == true
+
+    local xp_start, start_page, prefix = resolve_start(ui, doc, from)
+    if not xp_start then
+        return start_page -- resolve_start returned (nil, err); start_page holds the error string
+    end
+
+    local cur = currentPage(ui)
+    local limit_xp, refuse = spoiler_limit(doc, start_page, cur, spoiler)
+    if refuse then
+        return refuse
+    end
+
+    local budget = tonumber(input.limit) or DEFAULT_READ_LIMIT
+    budget = math.max(1, math.min(budget, MAX_READ_LIMIT))
+
+    local xp_end, eob, clamped = advance_chunk(doc, xp_start, limit_xp, budget)
 
     local text = doc:getTextFromXPointers(xp_start, xp_end) or ""
     if text == "" and eob then
@@ -522,20 +620,10 @@ local function tool_read(ui, input)
     end
 
     local header = T(_("[%1] reading forward:"), locationLabel(ui, start_page))
-
-    local trailer
-    if eob then
-        trailer = _("(End of book reached.)")
-    elseif clamped then
-        trailer = _("(Stopped at your current page to avoid spoilers. Pass spoiler=true to keep reading.)")
-    else
-        local nexttok = mintLocator(ui, { kind = "point", xp = xp_end })
-        trailer = T(_("(Not the end — call read again with from: %1 to continue.)"), nexttok)
-    end
+    local trailer = build_trailer(ui, eob, clamped, xp_end)
 
     return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
 end
--- luacheck: pop
 
 local function tool_book_context(ui, _input)
     local props = ui.document:getProps() or {}
@@ -832,6 +920,117 @@ local function saveHighlightFromXPointers(ui, pos0, pos1, opts)
     return item
 end
 
+-- Thin membership guard for an optional enum input (color/drawer): returns an error
+-- string naming the valid values when v is present but not in the set, or nil when v
+-- is absent or valid. NOT a config DSL -- just the two create_highlight guards folded.
+local function validateEnum(v, set, list, field)
+    if v ~= nil and not set[v] then
+        return "Error: '" .. field .. "' must be one of: " .. table.concat(list, ", ") .. "."
+    end
+    return nil
+end
+
+-- Resolve a create_highlight span from a loc: token. Returns (pos0, pos1) or (nil, err).
+local function resolveHighlightFromLocator(ui, input)
+    -- A span locator from a recent grep hit: its xpointers are reused verbatim.
+    local n = parseLocToken(input.locator)
+    local entry = n and ensureLocators(ui)[n]
+    if not entry then
+        return nil, "Error: that locator is stale; grep again, or give a search_result number or verbatim text."
+    end
+    if entry.kind ~= "span" or not entry.xp_end then
+        return nil,
+            "Error: that locator points at a single position, not a passage, so it cannot be highlighted. Use a grep hit's locator."
+    end
+    return entry.xp, entry.xp_end
+end
+
+-- Resolve a create_highlight span from a numbered match of the most recent grep call.
+-- Returns (pos0, pos1) or (nil, err).
+local function resolveHighlightFromSearchResult(ui, input)
+    local last = ui._bookbuddy_last_search
+    if not (last and last.items and #last.items > 0) then
+        return nil, "Error: there are no recent search results. Call grep first, then highlight a match by its number."
+    end
+    local n = tonumber(input.search_result)
+    if not isPositiveInteger(n) or n > #last.items then
+        return nil,
+            string.format(
+                "Error: 'search_result' must be a whole number between 1 and %d (from your most recent grep call).",
+                #last.items
+            )
+    end
+    local item = last.items[n]
+    return item.start, item["end"]
+end
+
+-- Resolve a create_highlight span from a verbatim passage, re-searching the book and
+-- disambiguating repeated hits by page/occurrence. Returns (pos0, pos1) on success or
+-- (nil, err[, summary]) on failure.
+local function resolveHighlightFromText(ui, input)
+    local results = findPassageMatches(ui, input.text, false)
+    if not results or #results == 0 then
+        return nil,
+            string.format(
+                "No passage matching %q was found to highlight. Use the exact wording from the book, or grep first.",
+                input.text
+            ),
+            _("no match")
+    end
+    local page = input.page ~= nil and tonumber(input.page) or nil
+    if page then
+        -- Floor like navigate/read: an unfloored fractional page can never equal an
+        -- integer page result (silently emptying the match set), and it would print
+        -- inconsistently ("page 5" via %d vs "page 5.5" via concat) across the two
+        -- error messages below.
+        page = math.floor(page)
+    end
+    local matches = {}
+    for i = 1, #results do
+        local it = results[i]
+        local p = pageOfResult(ui, it)
+        if not page or (tonumber(p) and tonumber(p) == page) then
+            it._page = p
+            matches[#matches + 1] = it
+        end
+    end
+    if #matches == 0 then
+        return nil, string.format("No passage matching %q was found on page %d.", input.text, page)
+    end
+    if input.occurrence ~= nil then
+        local occ = tonumber(input.occurrence)
+        if not isPositiveInteger(occ) then
+            return nil, "Error: 'occurrence' must be a whole number (1 for the first match)."
+        end
+        if occ > #matches then
+            return nil,
+                string.format(
+                    "Only %d match(es) for %q%s; cannot highlight occurrence %d.",
+                    #matches,
+                    input.text,
+                    page and (" on page " .. page) or "",
+                    occ
+                )
+        end
+        return matches[occ].start, matches[occ]["end"]
+    elseif #matches > 1 then
+        -- Ambiguous: name the pages and make the model choose rather than guess.
+        local pages = {}
+        for i = 1, math.min(#matches, 10) do
+            pages[i] = tostring(matches[i]._page)
+        end
+        return nil,
+            string.format(
+                "Found %d matches for %q (pages %s). Specify 'occurrence' (1-based, in reading order) or narrow with 'page'.",
+                #matches,
+                input.text,
+                table.concat(pages, ", ")
+            ),
+            _("ambiguous")
+    end
+    return matches[1].start, matches[1]["end"]
+end
+
 -- Create a new highlight in the book. Positions never come from the model (it only
 -- ever sees text); they come from KOReader's own search index. The model can hand a
 -- span locator from a recent grep hit (locator, a "loc:<n>" span -- reused verbatim),
@@ -840,8 +1039,6 @@ end
 -- re-search here, disambiguating repeated hits by occurrence/page. All paths converge
 -- on saveHighlightFromXPointers. Reflowable (EPUB) only for now: paging documents
 -- need pos tables + pboxes rather than xpointers.
--- luacheck: push
--- luacheck: max cyclomatic complexity 40 (grandfathered; see .luacheckrc)
 local function tool_create_highlight(ui, input)
     local err, summary = rollingOnly(ui, "create_highlight")
     if err then
@@ -850,101 +1047,30 @@ local function tool_create_highlight(ui, input)
     if not ui.annotation then
         return "Error: highlights are not available for this document."
     end
-    if input.color ~= nil and not COLORS[input.color] then
-        return "Error: 'color' must be one of: " .. table.concat(COLOR_LIST, ", ") .. "."
+    err = validateEnum(input.color, COLORS, COLOR_LIST, "color")
+    if err then
+        return err
     end
-    if input.drawer ~= nil and not DRAWERS[input.drawer] then
-        return "Error: 'drawer' must be one of: " .. table.concat(DRAWER_LIST, ", ") .. "."
+    err = validateEnum(input.drawer, DRAWERS, DRAWER_LIST, "drawer")
+    if err then
+        return err
     end
 
-    local pos0, pos1
+    -- Pick the one source the model supplied and resolve it to a pos0/pos1 span. Each
+    -- resolver returns (pos0, pos1) on success or (nil, err[, summary]) on failure, so a
+    -- nil pos0 means `sum` holds the optional transcript summary and pos1 holds the error.
+    local pos0, pos1, sum
     if input.locator ~= nil then
-        -- A span locator from a recent grep hit: its xpointers are reused verbatim.
-        local n = parseLocToken(input.locator)
-        local entry = n and ensureLocators(ui)[n]
-        if not entry then
-            return "Error: that locator is stale; grep again, or give a search_result number or verbatim text."
-        end
-        if entry.kind ~= "span" or not entry.xp_end then
-            return "Error: that locator points at a single position, not a passage, so it cannot be highlighted. Use a grep hit's locator."
-        end
-        pos0, pos1 = entry.xp, entry.xp_end
+        pos0, pos1, sum = resolveHighlightFromLocator(ui, input)
     elseif input.search_result ~= nil then
-        local last = ui._bookbuddy_last_search
-        if not (last and last.items and #last.items > 0) then
-            return "Error: there are no recent search results. Call grep first, then highlight a match by its number."
-        end
-        local n = tonumber(input.search_result)
-        if not isPositiveInteger(n) or n > #last.items then
-            return string.format(
-                "Error: 'search_result' must be a whole number between 1 and %d (from your most recent grep call).",
-                #last.items
-            )
-        end
-        local item = last.items[n]
-        pos0, pos1 = item.start, item["end"]
+        pos0, pos1, sum = resolveHighlightFromSearchResult(ui, input)
     elseif input.text ~= nil and input.text ~= "" then
-        local results = findPassageMatches(ui, input.text, false)
-        if not results or #results == 0 then
-            return string.format(
-                "No passage matching %q was found to highlight. Use the exact wording from the book, or grep first.",
-                input.text
-            ),
-                _("no match")
-        end
-        local page = input.page ~= nil and tonumber(input.page) or nil
-        if page then
-            -- Floor like navigate/read: an unfloored fractional page can never equal an
-            -- integer page result (silently emptying the match set), and it would print
-            -- inconsistently ("page 5" via %d vs "page 5.5" via concat) across the two
-            -- error messages below.
-            page = math.floor(page)
-        end
-        local matches = {}
-        for i = 1, #results do
-            local it = results[i]
-            local p = pageOfResult(ui, it)
-            if not page or (tonumber(p) and tonumber(p) == page) then
-                it._page = p
-                matches[#matches + 1] = it
-            end
-        end
-        if #matches == 0 then
-            return string.format("No passage matching %q was found on page %d.", input.text, page)
-        end
-        if input.occurrence ~= nil then
-            local occ = tonumber(input.occurrence)
-            if not isPositiveInteger(occ) then
-                return "Error: 'occurrence' must be a whole number (1 for the first match)."
-            end
-            if occ > #matches then
-                return string.format(
-                    "Only %d match(es) for %q%s; cannot highlight occurrence %d.",
-                    #matches,
-                    input.text,
-                    page and (" on page " .. page) or "",
-                    occ
-                )
-            end
-            pos0, pos1 = matches[occ].start, matches[occ]["end"]
-        elseif #matches > 1 then
-            -- Ambiguous: name the pages and make the model choose rather than guess.
-            local pages = {}
-            for i = 1, math.min(#matches, 10) do
-                pages[i] = tostring(matches[i]._page)
-            end
-            return string.format(
-                "Found %d matches for %q (pages %s). Specify 'occurrence' (1-based, in reading order) or narrow with 'page'.",
-                #matches,
-                input.text,
-                table.concat(pages, ", ")
-            ),
-                _("ambiguous")
-        else
-            pos0, pos1 = matches[1].start, matches[1]["end"]
-        end
+        pos0, pos1, sum = resolveHighlightFromText(ui, input)
     else
         return "Error: provide 'locator' (a loc: token from a grep hit), 'search_result' (a number from your most recent grep), or 'text' (a verbatim passage to highlight)."
+    end
+    if not pos0 then
+        return pos1, sum
     end
 
     local item
@@ -958,7 +1084,6 @@ local function tool_create_highlight(ui, input)
     return string.format('Highlighted on %s:\n"%s"%s', highlightLocation(item), snippet, note_part),
         _("highlight added")
 end
--- luacheck: pop
 
 local DISPATCH = {
     grep = tool_grep,

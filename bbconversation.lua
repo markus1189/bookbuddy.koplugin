@@ -57,11 +57,22 @@ local function wantsSpoiler(tu)
     return false
 end
 
+-- Remove every tool spec in `specs` for which `matcher(t)` is true, walking
+-- backwards so the in-place table.remove never skips an entry. Non-table entries
+-- (there are none today, but the old inline loops guarded for them) are skipped.
+-- Used by the three feature gates in Conversation:new to stop advertising a tool.
+local function dropToolSpecs(specs, matcher)
+    for i = #specs, 1, -1 do
+        local t = specs[i]
+        if type(t) == "table" and matcher(t) then
+            table.remove(specs, i)
+        end
+    end
+end
+
 local Conversation = {}
 Conversation.__index = Conversation
 
--- luacheck: push
--- luacheck: max cyclomatic complexity 34 (grandfathered; see .luacheckrc)
 function Conversation:new(o)
     o = o or {}
     setmetatable(o, self)
@@ -74,35 +85,26 @@ function Conversation:new(o)
     -- Code hides WebSearch on those platforms). Only an explicit false removes it,
     -- so callers that don't set the flag keep the default-on behaviour.
     if o.settings and o.settings:getConfig().enable_web_search == false then
-        for i = #o.tool_specs, 1, -1 do
-            local t = o.tool_specs[i]
-            if type(t) == "table" and t.type == "web_search_20250305" then
-                table.remove(o.tool_specs, i)
-            end
-        end
+        dropToolSpecs(o.tool_specs, function(t)
+            return t.type == "web_search_20250305"
+        end)
     end
     -- Subagent delegation is opt-in (default off, like show_streaming_thinking), the
     -- inverse polarity of web_search above: drop the delegate tool UNLESS the setting
     -- is explicitly on, so the model is never offered a tool the feature gate disables.
     if not (o.settings and o.settings:getConfig().enable_subagents == true) then
-        for i = #o.tool_specs, 1, -1 do
-            local t = o.tool_specs[i]
-            if type(t) == "table" and t.name == "delegate" then
-                table.remove(o.tool_specs, i)
-            end
-        end
+        dropToolSpecs(o.tool_specs, function(t)
+            return t.name == "delegate"
+        end)
     end
     -- The clarifying-question tool (ask_user) is on by default -- it costs no extra
     -- tokens and opens no new spoiler surface, so unlike subagents it ships enabled --
     -- but stays toggleable. Same polarity as web_search above: only an explicit false
     -- removes it, so an absent flag keeps the default-on behaviour.
     if o.settings and o.settings:getConfig().enable_clarifying_questions == false then
-        for i = #o.tool_specs, 1, -1 do
-            local t = o.tool_specs[i]
-            if type(t) == "table" and t.name == "ask_user" then
-                table.remove(o.tool_specs, i)
-            end
-        end
+        dropToolSpecs(o.tool_specs, function(t)
+            return t.name == "ask_user"
+        end)
     end
     -- Per-conversation read state lives on the shared ui, which outlives a single
     -- Conversation, so a new chat must clear it or it inherits stale locators and
@@ -147,42 +149,45 @@ function Conversation:new(o)
     -- whether a token was billed fresh or served from cache) plus its output, which
     -- is now appended to history and will ride along in the next request.
     o.context_size = 0
-    -- Reopen a stored chat (see bbchats): restore the persisted wire history and
-    -- display transcript instead of starting empty, so a follow-up runs the SAME
-    -- ask() -> _loop path as an in-session reply — messages is non-empty, so ask()
-    -- appends the plain question and resends the full history. The wire format IS
-    -- the resume format; there is no separate resume protocol. chat_id makes the
-    -- next save overwrite this chat's payload rather than mint a new one.
-    -- _last_saved_len records where the stored history already ends, so merely
-    -- reopening (which _renders) doesn't rewrite an unchanged payload.
     if o.resume_state then
         local s = o.resume_state
         o.resume_state = nil
-        o.messages = type(s.messages) == "table" and s.messages or {}
-        o.transcript = type(s.transcript) == "table" and s.transcript or {}
-        if type(s.usage) == "table" then
-            -- tonumber() both coerces decoded numbers and rejects rapidjson.null.
-            o.usage.input = tonumber(s.usage.input) or 0
-            o.usage.output = tonumber(s.usage.output) or 0
-            o.usage.cache_read = tonumber(s.usage.cache_read) or 0
-            o.usage.cache_write = tonumber(s.usage.cache_write) or 0
-        end
-        o.chat_id = s.id
-        o.chat_ts_created = tonumber(s.ts_created)
-        -- Cosmetic post-resume: these only shaped turn 1's seed, which already
-        -- happened. Restored for completeness (a decoded null must not stand in
-        -- for a string, hence the type guards).
-        if type(s.selected_text) == "string" then
-            o.selected_text = s.selected_text
-        end
-        if type(s.note) == "string" then
-            o.note = s.note
-        end
-        o._last_saved_len = #o.messages
+        o:_applyResumeState(s)
     end
     return o
 end
--- luacheck: pop
+
+-- Reopen a stored chat (see bbchats): restore the persisted wire history and
+-- display transcript instead of starting empty, so a follow-up runs the SAME
+-- ask() -> _loop path as an in-session reply — messages is non-empty, so ask()
+-- appends the plain question and resends the full history. The wire format IS
+-- the resume format; there is no separate resume protocol. chat_id makes the
+-- next save overwrite this chat's payload rather than mint a new one.
+-- _last_saved_len records where the stored history already ends, so merely
+-- reopening (which _renders) doesn't rewrite an unchanged payload.
+function Conversation:_applyResumeState(s)
+    self.messages = type(s.messages) == "table" and s.messages or {}
+    self.transcript = type(s.transcript) == "table" and s.transcript or {}
+    if type(s.usage) == "table" then
+        -- tonumber() both coerces decoded numbers and rejects rapidjson.null.
+        self.usage.input = tonumber(s.usage.input) or 0
+        self.usage.output = tonumber(s.usage.output) or 0
+        self.usage.cache_read = tonumber(s.usage.cache_read) or 0
+        self.usage.cache_write = tonumber(s.usage.cache_write) or 0
+    end
+    self.chat_id = s.id
+    self.chat_ts_created = tonumber(s.ts_created)
+    -- Cosmetic post-resume: these only shaped turn 1's seed, which already
+    -- happened. Restored for completeness (a decoded null must not stand in
+    -- for a string, hence the type guards).
+    if type(s.selected_text) == "string" then
+        self.selected_text = s.selected_text
+    end
+    if type(s.note) == "string" then
+        self.note = s.note
+    end
+    self._last_saved_len = #self.messages
+end
 
 -- Show a reopened chat's finished transcript in Reply mode. Just the terminal
 -- render: the follow-up path is the ordinary one from there.
@@ -238,8 +243,6 @@ function Conversation:run()
     end)
 end
 
--- luacheck: push
--- luacheck: max cyclomatic complexity 48 (grandfathered; see .luacheckrc)
 function Conversation:_loop()
     local cfg = self.settings:getConfig()
     local max_turns = cfg.max_turns
@@ -301,13 +304,7 @@ function Conversation:_loop()
             return
         end
 
-        -- On the final allowed substantive round, drop the tools so the model has to
-        -- answer in text rather than requesting another tool call we'd refuse to
-        -- run. (web_search rides in tool_specs too, so dropping tools also rules out
-        -- a pause on this round -- the round always yields a text answer.) A resume
-        -- always keeps the tools: its paused turn references a server tool.
-        local last_round = (not is_resume) and iterations >= max_turns
-        local tools = (not last_round) and self.tool_specs or nil
+        local tools = self:_toolsForRound(is_resume, iterations, max_turns)
 
         local body = Anthropic.buildBody(self.messages, tools, cfg)
         logger.dbg("BookBuddy: request", cfg.model, "messages:", #self.messages, "tools:", tools and #tools or 0)
@@ -321,26 +318,7 @@ function Conversation:_loop()
         -- entries are replaced by content-ordered ones once the turn finishes (see
         -- _renderAssistantTurn); mark where this turn's entries begin.
         local turn_transcript_start = #self.transcript
-        -- L1 transcript checkpoint: a mid-round failure (or a retry between attempts)
-        -- trims self.transcript back to the last clean/resendable state, dropping the
-        -- abandoned live-stream partials so a recovered conversation shows no orphaned
-        -- text. It must mirror _dropDanglingTail's wire-history rollback EXACTLY: that
-        -- rollback walks back over the WHOLE in-flight tool round (every dangling
-        -- user/assistant turn), which can span several rounds -- e.g. a committed
-        -- [assistant tool_use][user tool_result] pair from a PRIOR round is also
-        -- unwound, because an unanswered tool round is not resendable. So the
-        -- checkpoint must advance only at the START of a fresh chain -- a round whose
-        -- pending user turn is the reader's question (string content), not a
-        -- tool_result we appended (table content) and not a pause resume. On a
-        -- tool-continuation or resume round the checkpoint stays pinned at the chain's
-        -- start, exactly where _dropDanglingTail will roll the wire history back to. A
-        -- per-round reset (the old behaviour) left a prior round's committed-but-now-
-        -- dropped entries stranded in the human log after a multi-round rollback.
-        local pending = self.messages[#self.messages]
-        local chain_start = (not is_resume) and pending and pending.role == "user" and type(pending.content) ~= "table"
-        if chain_start or self._clean_transcript_len == nil then
-            self._clean_transcript_len = turn_transcript_start
-        end
+        self:_advanceCheckpoint(is_resume, turn_transcript_start)
 
         -- Bounded retry around the fork+parse, via the shared Retry.streamWithRetries
         -- policy (also driving the subagent loop). The make_parser hook rebuilds the
@@ -352,68 +330,7 @@ function Conversation:_loop()
         -- _storeAssistant past the helper, so the wire history is already the
         -- resendable state we re-fork FROM (a committed [assistant tool_use][user
         -- tool_result] pair must be RESENT, not dropped).
-        local r, res, verdict = Retry.streamWithRetries({
-            body = body,
-            cfg = cfg,
-            make_parser = function()
-                local entry, thinking_entry
-                return Anthropic.newStreamParser({
-                    on_thinking = function(delta)
-                        -- By default we don't surface the summarized thinking text, just a
-                        -- "Thinking..." status that flips to "Done" once the answer
-                        -- starts (or the turn finishes; see _renderAssistantTurn). The
-                        -- parser still accumulates the fragments onto the content block
-                        -- for resend -- this transcript entry is display-only. When the
-                        -- reader opts into show_streaming_thinking (off by default, it can
-                        -- spoil unread plot), we stream the text into the entry, and the
-                        -- render replaces the indicator with the live reasoning entirely.
-                        local first = not thinking_entry
-                        if first then
-                            thinking_entry = { role = "thinking", done = false }
-                            self.transcript[#self.transcript + 1] = thinking_entry
-                        end
-                        self:_setStatus("thinking")
-                        if cfg.show_streaming_thinking and delta and delta ~= "" then
-                            thinking_entry.text = (thinking_entry.text or "") .. delta
-                        end
-                        -- Paint the first fragment immediately so streamed reasoning shows up
-                        -- the instant it starts rather than a throttle window later; the rest
-                        -- coalesce at one repaint per window to spare the e-ink panel.
-                        if first then
-                            self:_flushNow()
-                        else
-                            self:_scheduleFlush()
-                        end
-                    end,
-                    on_text = function(t)
-                        if thinking_entry then
-                            thinking_entry.done = true
-                        end
-                        self:_setStatus("writing")
-                        if not entry then
-                            entry = { role = "assistant", text = "" }
-                            self.transcript[#self.transcript + 1] = entry
-                        end
-                        entry.text = entry.text .. t
-                        self:_scheduleFlush()
-                    end,
-                })
-            end,
-            register_cancel = function(fn)
-                self._cancel = fn
-            end,
-            on_attempt_done = function()
-                self:_cancelFlush()
-            end,
-            on_retry = function(next_attempt)
-                self:_trimTranscript()
-                self:_showRetryStatus(next_attempt)
-                self:_setStatus("retrying", tostring(next_attempt) .. "/" .. tostring(Retry.MAX_STREAM_ATTEMPTS))
-            end,
-            stopped = function()
-                return self.stop_requested
-            end,
-        })
+        local r, res, verdict = Retry.streamWithRetries(self:_streamOpts(body, cfg))
 
         -- A Stop tapped during a backoff aborted the retry loop. Same cleanup as the
         -- live-stream cancel below: roll the dangling tail back, close, and report.
@@ -457,17 +374,7 @@ function Conversation:_loop()
             return
         end
 
-        local u = res.usage
-        if u then
-            self.usage.input = self.usage.input + (u.input_tokens or 0)
-            self.usage.output = self.usage.output + (u.output_tokens or 0)
-            self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
-            self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
-            self.context_size = (u.input_tokens or 0)
-                + (u.cache_read_input_tokens or 0)
-                + (u.cache_creation_input_tokens or 0)
-                + (u.output_tokens or 0)
-        end
+        self:_accumulateUsage(res.usage)
 
         -- Record the terminal turn's stop_reason so a headless driver (and the warn
         -- below) can surface why a turn ended. Notably it tells an empty completion
@@ -485,14 +392,7 @@ function Conversation:_loop()
         -- classifier treats empty-200 as retryable, so a transient empty reply gets
         -- re-forked first; the placeholder is the last resort.
         if type(res.content) ~= "table" or #res.content == 0 then
-            logger.warn(
-                "BookBuddy: assistant reply had no content blocks; storing placeholder",
-                "stop_reason:",
-                tostring(res.stop_reason)
-            )
-            self:_storeAssistant({ { type = "text", text = "(no response)" } }, is_resume)
-            self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
-            self:_render()
+            self:_storeEmptyPlaceholder(res, is_resume)
             return
         end
 
@@ -530,66 +430,7 @@ function Conversation:_loop()
             resuming = true
             self:_flushNow()
         elseif res.stop_reason == "tool_use" and #tool_uses > 0 then
-            -- Tools run synchronously and are not interruptible mid-call: a Stop
-            -- pressed during a slow tool (a large read, a wide grep) is
-            -- buffered and honored at the next loop boundary above, after the tool
-            -- returns -- not instantly.
-            self:_flushNow()
-            local tool_results = {}
-            for i = 1, #tool_uses do
-                local tu = tool_uses[i]
-                -- Show the in-progress action immediately, then fold the outcome
-                -- summary into the same line once the executor returns.
-                local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
-                self.transcript[#self.transcript + 1] = tool_entry
-                -- Paint the status BEFORE the executor: tools run synchronously and
-                -- block the event loop, so the ticker can't fire mid-call -- this
-                -- line is the bar's last update until the tool returns, and it must
-                -- say what the turn is stuck on.
-                self:_setStatus("tool", tu.name)
-                self:_flushNow()
-                local result, summary
-                -- Spoiler gate: a tool call that asks to look past the reader's
-                -- current position must be approved by the READER, not the model --
-                -- the same shape as a sandbox-escalation approval. Checked before
-                -- dispatch so a denial never runs the tool at all; the denial is an
-                -- ordinary recoverable tool_result (like a skipped ask_user), so the
-                -- model answers spoiler-free instead of the turn failing. Same
-                -- park-and-resume legality as ask_user below: we are past the
-                -- stream, at an ordinary call site, so _confirmSpoiler may yield.
-                if wantsSpoiler(tu) and not self:_confirmSpoiler(cfg) then
-                    result = _(
-                        "[The reader declined to reveal anything past their current position. Answer spoiler-free using only the text up to their current page, and do not request spoiler access again unless the reader asks to look ahead.]"
-                    )
-                    summary = _("not allowed")
-                elseif tu.name == "memory" and self.memory then
-                    result = self.memory:execute(tu.input)
-                elseif tu.name == "delegate" then
-                    result, summary = self:_runDelegate(tu, cfg, tool_entry)
-                elseif tu.name == "ask_user" then
-                    -- REENTRANCY INVARIANT: this dispatch site is reached only AFTER the
-                    -- parent stream fully returned, so the loop's coroutine is parked at an
-                    -- ordinary call site, never mid-yield -- which is exactly what makes it
-                    -- legal for _askUser to yield AGAIN to await the reader's dialog (same
-                    -- reasoning the delegate nested-stream comment relies on). _askUser MUST
-                    -- resume the coroutine on every dialog close path (answer/skip/dismiss)
-                    -- or the turn parks forever; it always returns a non-empty string, so
-                    -- the tool_use below is always answered and the wire history stays
-                    -- balanced (an unanswered ask_user tool_use would 400 on the next resend).
-                    result, summary = self:_askUser(tu.input)
-                else
-                    result, summary = Tools.execute(tu.name, tu.input, self.ui)
-                end
-                if summary and summary ~= "" then
-                    tool_entry.text = tool_entry.text .. " — " .. summary
-                end
-                tool_results[#tool_results + 1] = {
-                    type = "tool_result",
-                    tool_use_id = tu.id,
-                    content = result,
-                }
-            end
-            self.messages[#self.messages + 1] = { role = "user", content = tool_results }
+            self:_runToolRound(tool_uses, cfg)
         else
             self:_render()
             return
@@ -601,7 +442,222 @@ function Conversation:_loop()
     -- in the transcript; render it.
     self:_render()
 end
--- luacheck: pop
+
+-- Pick this round's tool set.
+-- On the final allowed substantive round, drop the tools so the model has to
+-- answer in text rather than requesting another tool call we'd refuse to
+-- run. (web_search rides in tool_specs too, so dropping tools also rules out
+-- a pause on this round -- the round always yields a text answer.) A resume
+-- always keeps the tools: its paused turn references a server tool.
+function Conversation:_toolsForRound(is_resume, iterations, max_turns)
+    local last_round = (not is_resume) and iterations >= max_turns
+    return (not last_round) and self.tool_specs or nil
+end
+
+-- Advance the L1 transcript checkpoint at the start of a fresh chain.
+-- L1 transcript checkpoint: a mid-round failure (or a retry between attempts)
+-- trims self.transcript back to the last clean/resendable state, dropping the
+-- abandoned live-stream partials so a recovered conversation shows no orphaned
+-- text. It must mirror _dropDanglingTail's wire-history rollback EXACTLY: that
+-- rollback walks back over the WHOLE in-flight tool round (every dangling
+-- user/assistant turn), which can span several rounds -- e.g. a committed
+-- [assistant tool_use][user tool_result] pair from a PRIOR round is also
+-- unwound, because an unanswered tool round is not resendable. So the
+-- checkpoint must advance only at the START of a fresh chain -- a round whose
+-- pending user turn is the reader's question (string content), not a
+-- tool_result we appended (table content) and not a pause resume. On a
+-- tool-continuation or resume round the checkpoint stays pinned at the chain's
+-- start, exactly where _dropDanglingTail will roll the wire history back to. A
+-- per-round reset (the old behaviour) left a prior round's committed-but-now-
+-- dropped entries stranded in the human log after a multi-round rollback.
+function Conversation:_advanceCheckpoint(is_resume, turn_transcript_start)
+    local pending = self.messages[#self.messages]
+    local chain_start = (not is_resume) and pending and pending.role == "user" and type(pending.content) ~= "table"
+    if chain_start or self._clean_transcript_len == nil then
+        self._clean_transcript_len = turn_transcript_start
+    end
+end
+
+-- Build the option table for one turn's Retry.streamWithRetries call. Split out
+-- of _loop only to keep the loop's spine readable; the retry policy itself lives
+-- in bbretry. The make_parser hook (see _newTurnParser) is what rebuilds the live
+-- transcript entries fresh per attempt; the other hooks wire the stream's
+-- cancel/flush/retry-status back onto this Conversation.
+function Conversation:_streamOpts(body, cfg)
+    return {
+        body = body,
+        cfg = cfg,
+        make_parser = self:_newTurnParser(cfg),
+        register_cancel = function(fn)
+            self._cancel = fn
+        end,
+        on_attempt_done = function()
+            self:_cancelFlush()
+        end,
+        on_retry = function(next_attempt)
+            self:_trimTranscript()
+            self:_showRetryStatus(next_attempt)
+            self:_setStatus("retrying", tostring(next_attempt) .. "/" .. tostring(Retry.MAX_STREAM_ATTEMPTS))
+        end,
+        stopped = function()
+            return self.stop_requested
+        end,
+    }
+end
+
+-- Return a make_parser hook for Retry.streamWithRetries: each call rebuilds this
+-- turn's live transcript entries FRESH (a retried attempt must not append onto an
+-- aborted attempt's partials), which is why the entry/thinking_entry state is
+-- captured per make_parser invocation rather than per turn.
+function Conversation:_newTurnParser(cfg)
+    return function()
+        local entry, thinking_entry
+        return Anthropic.newStreamParser({
+            on_thinking = function(delta)
+                -- By default we don't surface the summarized thinking text, just a
+                -- "Thinking..." status that flips to "Done" once the answer
+                -- starts (or the turn finishes; see _renderAssistantTurn). The
+                -- parser still accumulates the fragments onto the content block
+                -- for resend -- this transcript entry is display-only. When the
+                -- reader opts into show_streaming_thinking (off by default, it can
+                -- spoil unread plot), we stream the text into the entry, and the
+                -- render replaces the indicator with the live reasoning entirely.
+                local first = not thinking_entry
+                if first then
+                    thinking_entry = { role = "thinking", done = false }
+                    self.transcript[#self.transcript + 1] = thinking_entry
+                end
+                self:_setStatus("thinking")
+                if cfg.show_streaming_thinking and delta and delta ~= "" then
+                    thinking_entry.text = (thinking_entry.text or "") .. delta
+                end
+                -- Paint the first fragment immediately so streamed reasoning shows up
+                -- the instant it starts rather than a throttle window later; the rest
+                -- coalesce at one repaint per window to spare the e-ink panel.
+                if first then
+                    self:_flushNow()
+                else
+                    self:_scheduleFlush()
+                end
+            end,
+            on_text = function(t)
+                if thinking_entry then
+                    thinking_entry.done = true
+                end
+                self:_setStatus("writing")
+                if not entry then
+                    entry = { role = "assistant", text = "" }
+                    self.transcript[#self.transcript + 1] = entry
+                end
+                entry.text = entry.text .. t
+                self:_scheduleFlush()
+            end,
+        })
+    end
+end
+
+-- Fold one API call's token usage into the running totals. usage.* accumulates
+-- across the conversation (each turn resends the full history); context_size is
+-- overwritten with just this call's footprint (see the field comments in :new).
+function Conversation:_accumulateUsage(u)
+    if not u then
+        return
+    end
+    self.usage.input = self.usage.input + (u.input_tokens or 0)
+    self.usage.output = self.usage.output + (u.output_tokens or 0)
+    self.usage.cache_read = self.usage.cache_read + (u.cache_read_input_tokens or 0)
+    self.usage.cache_write = self.usage.cache_write + (u.cache_creation_input_tokens or 0)
+    self.context_size = (u.input_tokens or 0)
+        + (u.cache_read_input_tokens or 0)
+        + (u.cache_creation_input_tokens or 0)
+        + (u.output_tokens or 0)
+end
+
+-- Store the resendable "(no response)" placeholder for an empty-200 reply (the
+-- guard and its full rationale live at the call site in _loop) and surface the
+-- gap in the transcript before the terminal render.
+function Conversation:_storeEmptyPlaceholder(res, is_resume)
+    logger.warn(
+        "BookBuddy: assistant reply had no content blocks; storing placeholder",
+        "stop_reason:",
+        tostring(res.stop_reason)
+    )
+    self:_storeAssistant({ { type = "text", text = "(no response)" } }, is_resume)
+    self.transcript[#self.transcript + 1] = { role = "assistant", text = _("(no response)") }
+    self:_render()
+end
+
+-- Run one synchronous client-tool round: execute every tool_use the turn
+-- requested and append the matching tool_results as a single user message (which
+-- keeps the wire history balanced for the next resend).
+--
+-- Tools run synchronously and are not interruptible mid-call: a Stop
+-- pressed during a slow tool (a large read, a wide grep) is
+-- buffered and honored at the next loop boundary above, after the tool
+-- returns -- not instantly.
+function Conversation:_runToolRound(tool_uses, cfg)
+    self:_flushNow()
+    local tool_results = {}
+    for i = 1, #tool_uses do
+        local tu = tool_uses[i]
+        -- Show the in-progress action immediately, then fold the outcome
+        -- summary into the same line once the executor returns.
+        local tool_entry = { role = "tool", text = self:_toolActionPhrase(tu) }
+        self.transcript[#self.transcript + 1] = tool_entry
+        -- Paint the status BEFORE the executor: tools run synchronously and
+        -- block the event loop, so the ticker can't fire mid-call -- this
+        -- line is the bar's last update until the tool returns, and it must
+        -- say what the turn is stuck on.
+        self:_setStatus("tool", tu.name)
+        self:_flushNow()
+        local result, summary = self:_dispatchToolCall(tu, cfg, tool_entry)
+        if summary and summary ~= "" then
+            tool_entry.text = tool_entry.text .. " — " .. summary
+        end
+        tool_results[#tool_results + 1] = {
+            type = "tool_result",
+            tool_use_id = tu.id,
+            content = result,
+        }
+    end
+    self.messages[#self.messages + 1] = { role = "user", content = tool_results }
+end
+
+-- Dispatch a single tool_use to its executor, returning (result_string, summary).
+-- The order matters: the spoiler gate is checked before any executor runs.
+function Conversation:_dispatchToolCall(tu, cfg, tool_entry)
+    -- Spoiler gate: a tool call that asks to look past the reader's
+    -- current position must be approved by the READER, not the model --
+    -- the same shape as a sandbox-escalation approval. Checked before
+    -- dispatch so a denial never runs the tool at all; the denial is an
+    -- ordinary recoverable tool_result (like a skipped ask_user), so the
+    -- model answers spoiler-free instead of the turn failing. Same
+    -- park-and-resume legality as ask_user below: we are past the
+    -- stream, at an ordinary call site, so _confirmSpoiler may yield.
+    if wantsSpoiler(tu) and not self:_confirmSpoiler(cfg) then
+        return _(
+            "[The reader declined to reveal anything past their current position. Answer spoiler-free using only the text up to their current page, and do not request spoiler access again unless the reader asks to look ahead.]"
+        ),
+            _("not allowed")
+    elseif tu.name == "memory" and self.memory then
+        return self.memory:execute(tu.input)
+    elseif tu.name == "delegate" then
+        return self:_runDelegate(tu, cfg, tool_entry)
+    elseif tu.name == "ask_user" then
+        -- REENTRANCY INVARIANT: this dispatch site is reached only AFTER the
+        -- parent stream fully returned, so the loop's coroutine is parked at an
+        -- ordinary call site, never mid-yield -- which is exactly what makes it
+        -- legal for _askUser to yield AGAIN to await the reader's dialog (same
+        -- reasoning the delegate nested-stream comment relies on). _askUser MUST
+        -- resume the coroutine on every dialog close path (answer/skip/dismiss)
+        -- or the turn parks forever; it always returns a non-empty string, so
+        -- the tool_use below is always answered and the wire history stays
+        -- balanced (an unanswered ask_user tool_use would 400 on the next resend).
+        return self:_askUser(tu.input)
+    else
+        return Tools.execute(tu.name, tu.input, self.ui)
+    end
+end
 
 -- Record an assistant reply in the wire history (History.storeAssistant holds the
 -- pause_turn merge rule and its role-alternation rationale).
