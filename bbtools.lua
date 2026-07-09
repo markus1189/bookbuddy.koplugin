@@ -1388,8 +1388,8 @@ function Tools.getSpecs()
                                 header = {
                                     type = "string",
                                     description = "A very short label (<= 12 chars) shown as a progress chip "
-                                        .. "while the reader steps through the batch, e.g. \"Character\" or "
-                                        .. "\"How far\".",
+                                        .. 'while the reader steps through the batch, e.g. "Character" or '
+                                        .. '"How far".',
                                 },
                                 multiSelect = {
                                     type = "boolean",
