@@ -30,18 +30,48 @@ Retry.MAX_STREAM_ATTEMPTS = MAX_STREAM_ATTEMPTS
 -- Exponential backoff base; attempt N waits BACKOFF_BASE_SEC * 2^(N-1) plus jitter.
 local BACKOFF_BASE_SEC = 1.0
 local BACKOFF_JITTER_SEC = 0.5
+-- Ceiling on the computed exponential/throttle delay. With 3 attempts the plain
+-- exponential never gets near it; the cap is a guard so raising the attempt cap
+-- or the throttle multiplier can never park the reader for minutes by accident.
+local BACKOFF_MAX_SEC = 30.0
+-- Throttle-shaped failures (HTTP 429/429-alike 529, mid-stream rate_limit /
+-- overloaded error events) start from a heavier base: resending a rate-limited
+-- request after 1s mostly buys another 429 and burns an attempt.
+local THROTTLE_MULTIPLIER = 4.0
+-- Ceiling on honoring a server Retry-After. A hint above this is capped, not
+-- obeyed: the wait is interruptible (Stop stays live during a backoff) but the
+-- viewer sits in "Retrying" the whole time, and past a minute surfacing the
+-- error beats squatting -- even if the early resend risks another throttle.
+local RETRY_AFTER_MAX_SEC = 60.0
 
 -- Classifier sets, named so the retry decision reads as policy, not magic numbers.
--- RETRYABLE HTTP: transient transport/throttle/5xx. TERMINAL HTTP: a request the
--- gateway will reject identically on every resend (bad request / auth / not found
--- / unprocessable), so retrying only burns quota.
-local RETRYABLE_HTTP =
-    { [408] = true, [425] = true, [429] = true, [500] = true, [502] = true, [503] = true, [504] = true }
-local TERMINAL_HTTP = { [400] = true, [401] = true, [403] = true, [404] = true, [422] = true }
+-- RETRYABLE HTTP: transient transport/throttle/5xx (529 is Anthropic's
+-- non-standard "overloaded", the HTTP twin of the overloaded_error stream event).
+-- TERMINAL HTTP: a request the gateway will reject identically on every resend
+-- (bad request / auth / not found / unprocessable). 501/505 are listed even
+-- though they are 5xx -- "not implemented" / "version not supported" describe the
+-- request, not a transient server fault, so they must dodge the 5xx catch-all
+-- retry in classifyAttempt.
+local RETRYABLE_HTTP = {
+    [408] = true,
+    [425] = true,
+    [429] = true,
+    [500] = true,
+    [502] = true,
+    [503] = true,
+    [504] = true,
+    [529] = true,
+}
+local TERMINAL_HTTP =
+    { [400] = true, [401] = true, [403] = true, [404] = true, [422] = true, [501] = true, [505] = true }
 -- A mid-stream "error" event carries an Anthropic error type. Only the transient
 -- classes retry; everything else (invalid_request_error, authentication_error, …)
 -- is terminal.
 local RETRYABLE_ERROR_TYPE = { overloaded_error = true, api_error = true, rate_limit_error = true }
+-- The failure classes whose backoff starts from the heavier throttle base: the
+-- HTTP and stream-event spellings of "you are sending too fast / we are full".
+local THROTTLE_HTTP = { [429] = true, [529] = true }
+local THROTTLE_ERROR_TYPE = { rate_limit_error = true, overloaded_error = true }
 
 -- Classify a finished stream attempt into "ok" / "retry" / "terminal". `r` is
 -- Stream.run's return ({cancelled, read_error, …}); `res` is parser:result(). A
@@ -80,8 +110,13 @@ local function classifyAttempt(r, res)
         if TERMINAL_HTTP[res.code] then
             return "terminal"
         end
-        -- An unlisted non-200 (e.g. a novel 5xx) is treated as terminal so an
-        -- unknown code can't cause an unbounded-feeling 3x retry on a hard failure.
+        -- An unlisted 5xx (Cloudflare's 52x family, a novel gateway code) is a
+        -- server-side fault and transient until proven otherwise, so retry -- the
+        -- attempt cap bounds the cost of guessing wrong. Any other unlisted code
+        -- (a novel 4xx) describes the request and resends identically: terminal.
+        if res.code >= 500 and res.code <= 599 then
+            return "retry"
+        end
         return "terminal"
     end
     if res.error_type and RETRYABLE_ERROR_TYPE[res.error_type] then
@@ -90,17 +125,45 @@ local function classifyAttempt(r, res)
     return "terminal" -- mid-stream non-retryable error type
 end
 
+-- The per-attempt delay policy, factored out of the loop (and exported for the
+-- spec; the caller sees the value via on_retry's second arg). Three inputs steer
+-- it, in order:
+--   * attempt number: the exponential base, BACKOFF_BASE_SEC * 2^(attempt-1).
+--   * failure class: throttle-shaped failures (THROTTLE_HTTP / THROTTLE_ERROR_TYPE)
+--     multiply that base by THROTTLE_MULTIPLIER, then everything is capped at
+--     BACKOFF_MAX_SEC.
+--   * a server Retry-After (parsed by bbanthropic from the non-200 response and
+--     carried on res.retry_after): a FLOOR on the computed delay -- the server's
+--     hint can lengthen the wait but never shorten our own backoff -- itself
+--     capped at RETRY_AFTER_MAX_SEC (see the constant for why we defect past it).
+-- Jitter lands last so even server-pinned delays decorrelate a thundering herd.
+function Retry.computeDelay(attempt, res)
+    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1))
+    if res and (THROTTLE_HTTP[res.code] or THROTTLE_ERROR_TYPE[res.error_type]) then
+        delay = delay * THROTTLE_MULTIPLIER
+    end
+    if delay > BACKOFF_MAX_SEC then
+        delay = BACKOFF_MAX_SEC
+    end
+    local hint = res and tonumber(res.retry_after)
+    if hint and hint > 0 then
+        if hint > RETRY_AFTER_MAX_SEC then
+            hint = RETRY_AFTER_MAX_SEC
+        end
+        if hint > delay then
+            delay = hint
+        end
+    end
+    return delay + math.random() * BACKOFF_JITTER_SEC
+end
+
 -- Coroutine-friendly backoff between retry attempts: schedule a delayed resume and
 -- yield, mirroring Stream.run's tick idiom so the UI stays live (and a Stop pressed
 -- during the wait is delivered, setting the caller's stop flag, which the retry loop
--- re-checks through the stopped() hook after we return). Exponential with jitter to
--- avoid a thundering-herd resend.
--- TODO: honor a server Retry-After header here once the child plumbs it through;
--- the child currently only writes a status marker, not response headers (out of
--- scope for this change).
-local function backoff(attempt)
+-- re-checks through the stopped() hook after we return). The delay itself comes
+-- from computeDelay above.
+local function backoff(delay)
     local UIManager = require("ui/uimanager") -- late-bound; see the module header
-    local delay = BACKOFF_BASE_SEC * (2 ^ (attempt - 1)) + math.random() * BACKOFF_JITTER_SEC
     local co = coroutine.running()
     -- One-shot resume: scheduleIn fires it after the real wall-clock delay in
     -- production. (Under the busted harness scheduleIn enqueues onto the nextTick
@@ -126,7 +189,9 @@ end
 --                        closes over its live transcript entries; the child's is bare)
 --   register_cancel(fn)  install/clear the cancel closure into the caller's _cancel slot
 --   on_attempt_done()    optional: after Stream.run returns (parent cancels its flush)
---   on_retry(next)       optional: before the backoff (parent trims + shows "Retrying")
+--   on_retry(next, delay_sec)  optional: before the backoff (parent trims + shows
+--                        "Retrying"); delay_sec is the computeDelay result about to
+--                        be waited, so the status can show the real pause
 --   stopped()            optional: predicate checked after a backoff; true => "stopped"
 -- This is safe to re-fork between attempts precisely because nothing durable is
 -- stored until the caller commits past the helper -- the wire history is already the
@@ -154,10 +219,13 @@ function Retry.streamWithRetries(opts)
         -- Retryable, and attempts remain. The caller's on_retry only trims its
         -- live-stream display partials; the wire history is untouched and resendable.
         if attempt < MAX_STREAM_ATTEMPTS then
+            -- res steers the wait: throttle codes back off harder, and a server
+            -- Retry-After (plumbed through res.retry_after) floors the delay.
+            local delay = Retry.computeDelay(attempt, res)
             if opts.on_retry then
-                opts.on_retry(attempt + 1)
+                opts.on_retry(attempt + 1, delay)
             end
-            backoff(attempt)
+            backoff(delay)
             -- A Stop tapped during the backoff must abort instantly, never silently
             -- consume a retry (it set the stopped() flag; there was no live stream to
             -- cancel during the wait). Signal it and let the caller unwind.

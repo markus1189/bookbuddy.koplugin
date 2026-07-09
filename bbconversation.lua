@@ -495,9 +495,9 @@ function Conversation:_streamOpts(body, cfg)
         on_attempt_done = function()
             self:_cancelFlush()
         end,
-        on_retry = function(next_attempt)
+        on_retry = function(next_attempt, delay_sec)
             self:_trimTranscript()
-            self:_showRetryStatus(next_attempt)
+            self:_showRetryStatus(next_attempt, delay_sec)
             self:_setStatus("retrying", tostring(next_attempt) .. "/" .. tostring(Retry.MAX_STREAM_ATTEMPTS))
         end,
         stopped = function()
@@ -1321,10 +1321,23 @@ end
 -- Surface a transient "Retrying… (n/3)" line in the streaming viewer so the reader
 -- sees the loop is recovering rather than hung. Appended to the live transcript
 -- text only (not stored as a transcript entry), so the next render/_dropDanglingTail
--- naturally drops it; the recovered turn's real content replaces it.
-function Conversation:_showRetryStatus(attempt)
+-- naturally drops it; the recovered turn's real content replaces it. A pause worth
+-- noticing (a throttle backoff or a server Retry-After of 2s+) shows its length so
+-- a long, deliberate wait doesn't read as a hang; sub-2s waits keep the terse form.
+function Conversation:_showRetryStatus(attempt, delay_sec)
     if self.viewer then
-        local status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(Retry.MAX_STREAM_ATTEMPTS))
+        local status
+        local wait = delay_sec and math.floor(delay_sec + 0.5) or 0
+        if wait >= 2 then
+            status = T(
+                _("Retrying in %1s… (%2/%3)"),
+                tostring(wait),
+                tostring(attempt),
+                tostring(Retry.MAX_STREAM_ATTEMPTS)
+            )
+        else
+            status = T(_("Retrying… (%1/%2)"), tostring(attempt), tostring(Retry.MAX_STREAM_ATTEMPTS))
+        end
         ChatViewer.updateText(self.viewer, self:_transcriptText() .. "\n\n" .. status, true)
     end
 end

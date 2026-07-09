@@ -339,5 +339,62 @@ describe("bbanthropic", function()
             assert.is_truthy(res.error_body)
             assert.is_truthy(res.error_body:find("Unknown server%-tool shorthand"))
         end)
+
+        it("carries a parsed Retry-After alongside a non-200 so the loop can pace its backoff", function()
+            -- The child appends X-BB-RETRY-AFTER after the non-200 status marker when
+            -- the gateway sent the header; result() must expose it as seconds so
+            -- bbretry's computeDelay can floor the backoff on the server's hint.
+            local p = Anthropic.newStreamParser()
+            p:feed(json.encode({ error = { type = "rate_limit_error", message = "slow down" } }))
+            p:feed("X-BB-NON-200: 429")
+            p:feed("X-BB-RETRY-AFTER: 7")
+            local res = p:result()
+            assert.is_false(res.ok)
+            assert.are.equal(429, res.code)
+            assert.are.equal(7, res.retry_after)
+        end)
+
+        it("leaves retry_after nil when the header is absent or unparseable", function()
+            local p = Anthropic.newStreamParser()
+            p:feed(json.encode({ error = { type = "overloaded_error", message = "full" } }))
+            p:feed("X-BB-NON-200: 529")
+            p:feed("X-BB-RETRY-AFTER: soonish")
+            local res = p:result()
+            assert.are.equal(529, res.code)
+            assert.is_nil(res.retry_after)
+        end)
+    end)
+
+    describe("parseRetryAfter", function()
+        it("parses the delta-seconds form", function()
+            assert.are.equal(17, Anthropic.parseRetryAfter("17"))
+            assert.are.equal(0.5, Anthropic.parseRetryAfter("0.5"))
+            assert.are.equal(30, Anthropic.parseRetryAfter("  30  ")) -- tolerate padding
+        end)
+
+        -- The reference epoch is built through the same local-time os.time the
+        -- parser uses on the date's fields, so the assertion holds under any host
+        -- timezone (in production the local skew cancels the same way, because
+        -- now_utc defaults to os.time(os.date("!*t"))).
+        local target_epoch = os.time({ year = 1994, month = 11, day = 6, hour = 8, min = 49, sec = 37, isdst = false })
+
+        it("parses the IMF-fixdate form relative to the injected now", function()
+            local target = "Sun, 06 Nov 1994 08:49:37 GMT"
+            assert.are.equal(10, Anthropic.parseRetryAfter(target, target_epoch - 10))
+        end)
+
+        it("clamps a date at or behind now to 0 rather than failing", function()
+            local target = "Sun, 06 Nov 1994 08:49:37 GMT"
+            assert.are.equal(0, Anthropic.parseRetryAfter(target, target_epoch + 60))
+        end)
+
+        it("returns nil for malformed or negative values", function()
+            assert.is_nil(Anthropic.parseRetryAfter(nil))
+            assert.is_nil(Anthropic.parseRetryAfter(""))
+            assert.is_nil(Anthropic.parseRetryAfter("-5"))
+            assert.is_nil(Anthropic.parseRetryAfter("soonish"))
+            assert.is_nil(Anthropic.parseRetryAfter("17 seconds"))
+            assert.is_nil(Anthropic.parseRetryAfter("Sunday, 06-Nov-94 08:49:37 GMT")) -- obsolete RFC 850 form
+        end)
     end)
 end)

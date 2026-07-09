@@ -15,6 +15,10 @@ local ANTHROPIC_VERSION = "2023-06-01"
 -- parent can tell a streamed 200 apart from a transport/HTTP failure.
 local NON_200_MARKER = "X-BB-NON-200:"
 local NETWORK_ERROR_MARKER = "X-BB-NETWORK-ERROR:"
+-- Companion to NON_200_MARKER: the raw Retry-After response header, when the
+-- gateway sent one alongside a non-200. Response headers otherwise die with the
+-- child process, and the parent's retry loop wants this one to pace its backoff.
+local RETRY_AFTER_MARKER = "X-BB-RETRY-AFTER:"
 
 local Anthropic = {}
 
@@ -167,9 +171,71 @@ function Anthropic.streamChildFn(body_json, cfg)
             ffiutil.writeToFD(child_write_fd, "\n" .. NETWORK_ERROR_MARKER .. "\n")
         elseif code ~= 200 then
             ffiutil.writeToFD(child_write_fd, string.format("\n%s %s\n", NON_200_MARKER, tostring(code)))
+            -- Relay the throttle pacing header raw (LuaSocket lowercases header
+            -- names); the parent parses it (parseRetryAfter) and its retry loop
+            -- uses it to pace the backoff. Header values never contain newlines,
+            -- so one marker line always carries the whole value -- including the
+            -- spaces of an HTTP-date form.
+            local retry_after = resp_headers["retry-after"]
+            if type(retry_after) == "string" and retry_after ~= "" then
+                ffiutil.writeToFD(child_write_fd, string.format("%s %s\n", RETRY_AFTER_MARKER, retry_after))
+            end
         end
         ffi.C.close(child_write_fd)
     end
+end
+
+local MONTH_NUM =
+    { Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6, Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12 }
+
+-- Parse an RFC 9110 Retry-After header value into non-negative seconds-to-wait,
+-- or nil when absent/unparseable (the retry loop then falls back to its own
+-- exponential backoff). Two forms exist on the wire: delta-seconds ("17") and
+-- IMF-fixdate ("Sun, 06 Nov 1994 08:49:37 GMT"); the obsolete RFC 850 / asctime
+-- date forms are deliberately not handled -- no current gateway emits them, and
+-- a nil here degrades gracefully. For the date form both sides of the
+-- comparison run through os.time on a broken-down UTC table, so the C runtime's
+-- local-timezone interpretation cancels out of the difference. `now_utc` is
+-- that reference point (os.time(os.date("!*t"))), injectable so the spec can
+-- pin "now".
+function Anthropic.parseRetryAfter(value, now_utc)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local v = value:match("^%s*(.-)%s*$")
+    local n = tonumber(v)
+    if n then
+        -- A negative delta is malformed; NaN (n ~= n) never compares true and
+        -- falls through to the nil return via the date parse failing.
+        if n ~= n or n < 0 then
+            return nil
+        end
+        return n
+    end
+    local day, mon, year, hour, min, sec = v:match("^%a+,%s*(%d+)%s+(%a+)%s+(%d%d%d%d)%s+(%d+):(%d+):(%d+)%s+GMT$")
+    local month = mon and MONTH_NUM[mon]
+    if not month then
+        return nil
+    end
+    local target = os.time({
+        year = tonumber(year),
+        month = month,
+        day = tonumber(day),
+        hour = tonumber(hour),
+        min = tonumber(min),
+        sec = tonumber(sec),
+        isdst = false,
+    })
+    if not target then
+        return nil
+    end
+    now_utc = now_utc or os.time(os.date("!*t"))
+    local delta = os.difftime(target, now_utc)
+    -- A date at/behind "now" means the pause already elapsed: wait 0, don't fail.
+    if delta < 0 then
+        return 0
+    end
+    return delta
 end
 
 local Parser = {}
@@ -197,6 +263,7 @@ function Anthropic.newStreamParser(o)
         non200 = false,
         network_error = false,
         code = nil,
+        retry_after = nil, -- parsed seconds from the X-BB-RETRY-AFTER marker
         error_body = {}, -- buffered raw JSON lines of a non-200 body
         -- Set when a tool_use/server_tool_use input JSON failed to decode in
         -- content_block_stop. Distinct from done==false (a stream that ended
@@ -374,6 +441,10 @@ function Parser:feed(line)
         self.network_error = true
         return
     end
+    if line:sub(1, #RETRY_AFTER_MARKER) == RETRY_AFTER_MARKER then
+        self.retry_after = Anthropic.parseRetryAfter(line:sub(#RETRY_AFTER_MARKER + 1))
+        return
+    end
     -- Anything else with content is part of a non-200 JSON error body.
     if line:gsub("%s", "") ~= "" then
         self.error_body[#self.error_body + 1] = line
@@ -382,7 +453,7 @@ end
 
 -- Returns the reassembled reply, shaped like a decoded non-streaming response:
 --   success: { ok=true, content=<blocks>, stop_reason, usage }
---   failure: { ok=false, network_error?, code?, error_message?, error_body? }
+--   failure: { ok=false, network_error?, code?, retry_after?, error_message?, error_body? }
 function Parser:result()
     if self.network_error then
         return { ok = false, network_error = true, code = self.code }
@@ -395,7 +466,15 @@ function Parser:result()
         -- field (e.g. OpenRouter's error.metadata.raw names the offending
         -- tools.N.type) while error.message stays generic ("Invalid Anthropic
         -- Messages API request"). Keep the whole raw body so the log can show it.
-        return { ok = false, code = self.code, error_message = msg, error_body = (raw ~= "" and raw) or nil }
+        -- retry_after rides along so the retry loop can pace its backoff off the
+        -- server's own throttle hint instead of a blind exponential.
+        return {
+            ok = false,
+            code = self.code,
+            retry_after = self.retry_after,
+            error_message = msg,
+            error_body = (raw ~= "" and raw) or nil,
+        }
     end
     if self.error then
         -- Keep the error type alongside the message: the conversation loop's retry
