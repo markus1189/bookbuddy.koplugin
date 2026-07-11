@@ -39,17 +39,17 @@ local Transcript = require("bbtranscript")
 local FLUSH_INTERVAL_SEC = 0.4
 
 -- Does this client tool call ask to look past the reader's current position?
--- grep/read expose it as spoiler=true (removing their current-page cap); delegate
--- as allow_spoiler=true (relaxing the child driver's hard clamp, see bbsubagents).
--- These are the only three spoiler surfaces in the tool set: navigate moves the
--- reader visibly (and reversibly), which is not a hidden reveal, and everything
--- else is position-bound by construction.
+-- grep/read/read_chapter expose it as spoiler=true (removing their current-page
+-- cap); delegate as allow_spoiler=true (relaxing the child driver's hard clamp, see
+-- bbsubagents). These are the only four spoiler surfaces in the tool set: navigate
+-- moves the reader visibly (and reversibly), which is not a hidden reveal, and
+-- everything else is position-bound by construction.
 local function wantsSpoiler(tu)
     local input = tu.input
     if type(input) ~= "table" then
         return false
     end
-    if tu.name == "grep" or tu.name == "read" then
+    if tu.name == "grep" or tu.name == "read" or tu.name == "read_chapter" then
         return input.spoiler == true
     end
     if tu.name == "delegate" then

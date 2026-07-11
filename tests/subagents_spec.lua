@@ -13,9 +13,10 @@ describe("subagent child tool subset", function()
         for _, t in ipairs(Tools.childSpecs()) do
             names[t.name or t.type] = true
         end
-        -- present: the five read-only book tools
+        -- present: the six read-only book tools
         assert.is_true(names.grep)
         assert.is_true(names.read)
+        assert.is_true(names.read_chapter)
         assert.is_true(names.get_toc)
         assert.is_true(names.book_context)
         assert.is_true(names.get_highlights)

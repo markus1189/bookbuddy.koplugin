@@ -244,6 +244,46 @@ describe("spoiler confirmation gate", function()
         assert.are.equal(1, #tools.state.calls)
     end)
 
+    it("gates read_chapter spoiler=true: denial never runs the tool", function()
+        local conv = run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        {
+                            type = "tool_use",
+                            id = "toolu_C1",
+                            name = "read_chapter",
+                            input = { chapter_index = 9, spoiler = true },
+                        },
+                    },
+                    stop_reason = "tool_use",
+                }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Staying spoiler-free then." } } }),
+            },
+            fire = tap(DENY),
+        })
+        assert.are.equal(1, dialog_count.n)
+        assert.are.equal(0, #tools.state.calls)
+        assert.is_not_nil(tostring(resultOf(conv, "toolu_C1")):find("declined", 1, true))
+    end)
+
+    it("a read_chapter WITHOUT spoiler never prompts", function()
+        run({
+            responses = {
+                sse.buildTurnSSE({
+                    blocks = {
+                        { type = "tool_use", id = "toolu_C1", name = "read_chapter", input = { chapter_index = 2 } },
+                    },
+                    stop_reason = "tool_use",
+                }),
+                sse.buildTurnSSE({ blocks = { { type = "text", text = "Done." } } }),
+            },
+            fire = tap(DENY), -- would deny if a dialog ever appeared
+        })
+        assert.are.equal(0, dialog_count.n)
+        assert.are.equal(1, #tools.state.calls)
+    end)
+
     it("gates delegate allow_spoiler: denial never starts the child", function()
         local conv = run({
             responses = {

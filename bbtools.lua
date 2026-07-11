@@ -482,8 +482,9 @@ end
 -- Page-level spoiler gate (skipped when spoiler=true). Encodes its two outcomes as
 -- distinct return shapes: a refuse (start is ahead of the reader) returns (nil,
 -- refuse_msg); otherwise it returns the forward-clamp limit_xp (possibly nil), so the
--- caller distinguishes them on the SECOND return value, not a flag.
-local function spoiler_limit(doc, start_page, cur, spoiler)
+-- caller distinguishes them on the SECOND return value, not a flag. tool_name only
+-- customizes the refuse wording ("call <tool> again"); it defaults to read.
+local function spoiler_limit(doc, start_page, cur, spoiler, tool_name)
     if spoiler then
         return nil
     end
@@ -493,11 +494,12 @@ local function spoiler_limit(doc, start_page, cur, spoiler)
             T(
                 _(
                     "That's past where you are in the book (page %1 of your current page %2). "
-                        .. "I won't read ahead and risk spoiling it — call read again with spoiler=true "
+                        .. "I won't read ahead and risk spoiling it — call %3 again with spoiler=true "
                         .. "if you really want to."
                 ),
                 tostring(start_page),
-                tostring(cur)
+                tostring(cur),
+                tool_name or "read"
             )
     end
     if cur then
@@ -623,6 +625,179 @@ local function tool_read(ui, input)
     local trailer = build_trailer(ui, eob, clamped, xp_end)
 
     return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
+end
+
+local DEFAULT_CHAPTER_LIMIT = 8000
+local MAX_CHAPTER_LIMIT = 24000
+
+-- The TOC entry that ends chapter `idx`: the next entry at the same or a shallower
+-- depth. Deeper entries are the chapter's own sub-sections, so they belong to the
+-- chapter and are skipped over. nil when the chapter runs to the end of the book.
+local function chapterEndEntry(toc, idx)
+    local depth = toc[idx].depth or 1
+    for j = idx + 1, #toc do
+        if (toc[j].depth or 1) <= depth then
+            return toc[j]
+        end
+    end
+    return nil
+end
+
+-- The xpointer where a TOC entry's text begins: the entry's own xpointer when it
+-- carries one, else the start of its page. The page fallback can only be EARLY (a
+-- chapter may begin mid-page), never late -- used as a start it prepends at most a
+-- shared page's text, and used as an end boundary it can only hide chapter tail
+-- text, never leak the next chapter.
+local function entryStartXPointer(doc, entry)
+    if entry.xpointer ~= nil and entry.xpointer ~= "" then
+        return entry.xpointer
+    end
+    if entry.page then
+        return doc:getPageXPointer(entry.page)
+    end
+    return nil
+end
+
+-- Resolve read_chapter's start position: a continuation locator/page string when
+-- `from` is given (read's resolve_start, same stale handling), else the chapter's
+-- own beginning. Returns (xp_start, start_page, prefix) or (nil, err).
+local function resolveChapterStart(ui, doc, entry, idx, from)
+    if from ~= nil then
+        return resolve_start(ui, doc, from)
+    end
+    local xp_start = entryStartXPointer(doc, entry)
+    if not xp_start then
+        return nil,
+            string.format("Error: chapter %d carries no location data; use read with a page number instead.", idx)
+    end
+    return xp_start, doc:getPageFromXPointer(xp_start) or entry.page
+end
+
+-- The read_chapter trailer, ranked by which stop condition fired: end of book,
+-- spoiler clamp, chapter end, or an over-budget cut that mints the continuation
+-- locator the model passes back as `from`.
+local function chapterTrailer(ui, eob, clamped, clamp_is_spoiler, xp_end)
+    if eob then
+        return _("(End of book reached — that is also the end of the chapter.)")
+    elseif clamped and clamp_is_spoiler then
+        return _("(Chapter truncated at your current page to avoid spoilers. Pass spoiler=true to read the rest.)")
+    elseif clamped then
+        return _("(End of chapter.)")
+    end
+    local nexttok = mintLocator(ui, { kind = "point", xp = xp_end })
+    return T(
+        _("(Chapter not finished — call read_chapter again with the same chapter_index and from: %1 to continue.)"),
+        nexttok
+    )
+end
+
+-- Where the read_chapter walk must stop: whichever comes first of the chapter's
+-- end (the next same-or-shallower TOC entry's start) and the spoiler clamp
+-- (limit_xp, nil when spoiler=true). compareXPointers(a, b) == 1 means b is after
+-- a, so the clamp wins only when it lies strictly before the chapter end; on a tie
+-- the stop reads as "end of chapter" -- which it is, and the friendlier trailer.
+-- Returns (stop_xp, clamp_is_spoiler); stop_xp is nil for an unclamped last chapter
+-- (the walk then runs to the end of the book).
+local function chapterStop(doc, toc, idx, limit_xp)
+    local end_entry = chapterEndEntry(toc, idx)
+    local end_xp = end_entry and entryStartXPointer(doc, end_entry) or nil
+    if limit_xp and (not end_xp or doc:compareXPointers(limit_xp, end_xp) == 1) then
+        return limit_xp, true
+    end
+    return end_xp, false
+end
+
+-- Extract the chapter chunk from xp_start up to stop_xp/budget. Fast path first:
+-- when the whole remaining span fits the budget, one extraction replaces the
+-- word-by-word walk (advance_chunk is a C call per word -- for the common case, an
+-- already-read chapter of ordinary length, this is far cheaper). Returns
+-- (text, xp_end, eob, clamped) with advance_chunk's meaning for the flags.
+local function extractChapterChunk(doc, xp_start, stop_xp, budget)
+    if stop_xp then
+        local whole = doc:getTextFromXPointers(xp_start, stop_xp) or ""
+        if #whole <= budget then
+            return whole, stop_xp, false, true
+        end
+    end
+    local xp_end, eob, clamped = advance_chunk(doc, xp_start, stop_xp, budget)
+    return doc:getTextFromXPointers(xp_start, xp_end) or "", xp_end, eob, clamped
+end
+
+-- Read one whole chapter -- a get_toc entry plus its sub-sections -- in a single
+-- call, from its start to the next same-or-shallower TOC entry (or the end of the
+-- book). Spoiler-TRUNCATED rather than all-or-nothing: a chapter that spans the
+-- reader's position is cut at their current page (read's clamp), and only a chapter
+-- starting past it is refused, unless spoiler=true. A chapter longer than `limit`
+-- ends with a continuation locator the model passes back as `from` to resume
+-- mid-chapter. Reflowable (EPUB) only, exactly like read, whose xpointer machinery
+-- (resolve_start / spoiler_limit / advance_chunk) this reuses.
+local function tool_read_chapter(ui, input)
+    input = input or {}
+    local doc = ui.document
+    if not doc then
+        return _("No book is currently open.")
+    end
+    local guard = require_reflowable(doc)
+    if guard then
+        return guard
+    end
+
+    local toc = doc:getToc()
+    if not toc or #toc == 0 then
+        return "This book has no table of contents; use read with a page number instead.", _("no TOC")
+    end
+    local idx = tonumber(input.chapter_index)
+    if not isPositiveInteger(idx) or idx > #toc then
+        return string.format("Error: 'chapter_index' must be a whole number between 1 and %d (see get_toc).", #toc)
+    end
+    local entry = toc[idx]
+
+    local from = input.from
+    if from == "" then
+        from = nil
+    end
+    local xp_start, start_page, prefix = resolveChapterStart(ui, doc, entry, idx, from)
+    if not xp_start then
+        return start_page -- resolveChapterStart returned (nil, err); start_page holds the error string
+    end
+
+    local cur = currentPage(ui)
+    local limit_xp, refuse = spoiler_limit(doc, start_page, cur, input.spoiler == true, "read_chapter")
+    if refuse then
+        return refuse
+    end
+
+    local stop_xp, clamp_is_spoiler = chapterStop(doc, toc, idx, limit_xp)
+
+    -- Start already at/past the stop: a continuation locator that resumed exactly on
+    -- the boundary. Answer without extracting (a reversed xpointer range is
+    -- undefined territory in crengine -- don't hand it one).
+    if stop_xp and doc:compareXPointers(xp_start, stop_xp) ~= 1 then
+        if clamp_is_spoiler then
+            return _(
+                "Nothing more of that chapter is at or before the reader's current page. Pass spoiler=true to read past it."
+            ),
+                _("all past current page")
+        end
+        return T(_("(End of chapter %1 — nothing further in it to read.)"), tostring(idx)), _("end of chapter")
+    end
+
+    local budget = tonumber(input.limit) or DEFAULT_CHAPTER_LIMIT
+    budget = math.max(1, math.min(budget, MAX_CHAPTER_LIMIT))
+
+    local text, xp_end, eob, clamped = extractChapterChunk(doc, xp_start, stop_xp, budget)
+    if text == "" and eob then
+        return _("Nothing further to read — you're at the end of the book.")
+    end
+
+    local trailer = chapterTrailer(ui, eob, clamped, clamp_is_spoiler, xp_end)
+    local title = (entry.title and entry.title ~= "") and entry.title or ("#" .. idx)
+    local header = T(_("[Chapter %1: %2] reading from page %3:"), tostring(idx), title, tostring(start_page or "?"))
+    -- Our own truncate ceiling: the body was already bounded to ~budget chars (which
+    -- may legitimately exceed the default MAX_RESULT_CHARS), so only backstop runaway
+    -- header/prefix arithmetic, with headroom for the frame text.
+    return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer, budget + 600),
+        T(_("~%1 words"), wordCount(text))
 end
 
 local function tool_book_context(ui, _input)
@@ -1088,6 +1263,7 @@ end
 local DISPATCH = {
     grep = tool_grep,
     read = tool_read,
+    read_chapter = tool_read_chapter,
     get_toc = tool_get_toc,
     book_context = tool_book_context,
     get_highlights = tool_get_highlights,
@@ -1146,7 +1322,7 @@ function Tools.getSpecs()
         },
         {
             name = "get_toc",
-            description = "Get the book's table of contents as a numbered list of chapters with page numbers and nesting depth. Each entry that has one also carries a loc: token you can pass to read (from=loc:N) to start reading at that chapter.",
+            description = "Get the book's table of contents as a numbered list of chapters with page numbers and nesting depth. An entry's number is what read_chapter takes to read that whole chapter; each entry that has one also carries a loc: token you can pass to read (from=loc:N) to start reading at that chapter.",
             input_schema = no_args(),
         },
         {
@@ -1183,6 +1359,48 @@ function Tools.getSpecs()
                 { from = "120" },
                 { from = "loc:12", limit = 800 },
                 { from = "300", spoiler = true },
+            },
+        },
+        {
+            name = "read_chapter",
+            description = "Read a whole chapter of the book in one call, picked by its number from get_toc "
+                .. "(call that first). Reads from the chapter's start to the next entry at the same or a "
+                .. "shallower TOC level, so the chapter's own sub-sections are included. The text ends in a "
+                .. 'trailer telling you what happened: "(End of chapter.)" or "(End of book reached …)" means '
+                .. 'you have the whole chapter; "(Chapter truncated at your current page …)" means the rest '
+                .. "is past the reader's position and stays hidden unless you pass spoiler=true; "
+                .. '"(Chapter not finished — …)" carries a from locator for a chapter longer than limit — '
+                .. "call read_chapter again with the same chapter_index and that locator to continue. "
+                .. "A chapter that starts past the reader's current page is refused without spoiler=true. "
+                .. "Prefer this over a chain of read calls when asked about a chapter as a whole. "
+                .. "Reflowable (EPUB) books only.",
+            input_schema = {
+                type = "object",
+                properties = {
+                    chapter_index = {
+                        type = "integer",
+                        description = "1-based chapter number as listed by get_toc.",
+                    },
+                    from = {
+                        type = "string",
+                        description = "Continuation locator (the loc:… from a previous read_chapter trailer) to resume a long chapter. Omit to start at the chapter's beginning.",
+                    },
+                    limit = {
+                        type = "integer",
+                        description = "Approximate characters to return per call (default 8000, max 24000). Smaller is cheaper.",
+                    },
+                    spoiler = {
+                        type = "boolean",
+                        description = "Allow reading past the reader's current page (default false). Left false, the chapter is truncated at the reader's current page, and a chapter starting beyond it is refused.",
+                    },
+                },
+                required = { "chapter_index" },
+            },
+            input_examples = {
+                { chapter_index = 3 },
+                { chapter_index = 3, from = "loc:9" },
+                { chapter_index = 5, limit = 4000 },
+                { chapter_index = 12, spoiler = true },
             },
         },
         {
@@ -1437,6 +1655,7 @@ end
 local CHILD_TOOL_NAMES = {
     grep = true,
     read = true,
+    read_chapter = true,
     get_toc = true,
     book_context = true,
     get_highlights = true,

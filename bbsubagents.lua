@@ -39,8 +39,9 @@ local MAX_SUBAGENT_DEPTH = 1
 -- Tools.execute, so the child is structurally unable to read ahead even if its
 -- prompt argues for it -- a net hardening over the parent, where spoiler=true is
 -- always reachable. currentPage is re-derived per call from the live ui, so the
--- boundary tracks the reader turning pages (D7). Only grep and read expose a
--- spoiler/page surface; clamping the others is a harmless no-op so we keep it simple.
+-- boundary tracks the reader turning pages (D7). Only grep, read, and read_chapter
+-- expose a spoiler/page surface; clamping the others is a harmless no-op so we keep
+-- it simple.
 local function sanitizeInput(name, input, ui, allow_spoiler)
     input = input or {}
     if allow_spoiler then
