@@ -5,6 +5,7 @@ local stubs = require("support.stubs")
 
 describe("bbsettings", function()
     local Settings
+    local dialogs
 
     setup(function()
         stubs.install()
@@ -49,6 +50,22 @@ describe("bbsettings", function()
         package.loaded["ui/widget/textviewer"] = {
             new = function(_, o)
                 return o or {}
+            end,
+        }
+        -- InputDialog double recording each dialog and answering the two methods
+        -- editText drives (getInputText at Save, onShowKeyboard after show), so the
+        -- numeric save-time clamp can be exercised end to end. Set dlg._typed to
+        -- simulate the user replacing the prefilled text.
+        dialogs = {}
+        package.loaded["ui/widget/inputdialog"] = {
+            new = function(_, o)
+                o = o or {}
+                o.getInputText = function(dlg)
+                    return dlg._typed or dlg.input
+                end
+                o.onShowKeyboard = stubs.noop
+                dialogs[#dialogs + 1] = o
+                return o
             end,
         }
         Settings = require("bbsettings")
@@ -138,6 +155,55 @@ describe("bbsettings", function()
             local s = fresh()
             s:set("subagent_max_turns", 10)
             assert.are.equal(10, s:getConfig().subagent_max_turns)
+        end)
+
+        it("effectiveSubagentMaxTurns (the menu label) agrees with getConfig for an over-ceiling store", function()
+            local s = fresh()
+            s:set("subagent_max_turns", 50)
+            assert.are.equal(20, s:effectiveSubagentMaxTurns())
+            assert.are.equal(s:getConfig().subagent_max_turns, s:effectiveSubagentMaxTurns())
+        end)
+    end)
+
+    describe("editText numeric bounds", function()
+        -- Drive the recorded dialog's Save button (the is_enter_default one) with
+        -- the given typed text, as if the user edited the field and hit Save.
+        local function saveTyped(dlg, typed)
+            dlg._typed = typed
+            for _, btn in ipairs(dlg.buttons[1]) do
+                if btn.is_enter_default then
+                    btn.callback()
+                end
+            end
+        end
+
+        it("clamps an over-max entry at save time so the stored value matches the runtime one", function()
+            local s = fresh()
+            s:editText(nil, { key = "subagent_max_turns", input_type = "number", min = 1, max = 20 })
+            saveTyped(dialogs[#dialogs], "50")
+            assert.are.equal(20, s:get("subagent_max_turns"))
+            assert.are.equal(20, s:getConfig().subagent_max_turns)
+        end)
+
+        it("clamps a below-min entry up at save time", function()
+            local s = fresh()
+            s:editText(nil, { key = "max_turns", input_type = "number", min = 1 })
+            saveTyped(dialogs[#dialogs], "0")
+            assert.are.equal(1, s:get("max_turns"))
+        end)
+
+        it("prefills with the clamped value for a pre-clamp out-of-range store", function()
+            local s = fresh()
+            s:set("subagent_max_turns", 50)
+            s:editText(nil, { key = "subagent_max_turns", input_type = "number", min = 1, max = 20 })
+            assert.are.equal("20", dialogs[#dialogs].input)
+        end)
+
+        it("leaves an in-range entry untouched", function()
+            local s = fresh()
+            s:editText(nil, { key = "subagent_max_turns", input_type = "number", min = 1, max = 20 })
+            saveTyped(dialogs[#dialogs], "15")
+            assert.are.equal(15, s:get("subagent_max_turns"))
         end)
     end)
 

@@ -148,10 +148,13 @@ local function deriveLabel(prompt)
     return trim(head)
 end
 
--- Upper bound on subagent_max_turns at resolve time. The setting is a free number
--- field (see the menu), so a mistyped large value would otherwise let one delegation
--- grind dozens of double-billed tool rounds; cap it the way max_tokens/max_turns are
--- floored. Generous enough that no realistic research task hits it.
+-- Upper bound on subagent_max_turns. A mistyped large value would otherwise let one
+-- delegation grind dozens of double-billed tool rounds; cap it the way
+-- max_tokens/max_turns are floored. Generous enough that no realistic research task
+-- hits it. Enforced both at save time (the menu's number field clamps on Save) and
+-- at resolve time (for values stored before the save-time clamp existed) -- and the
+-- menu label shows the clamped value, so the number displayed is always the number
+-- the delegation loop actually runs with.
 local SUBAGENT_MAX_TURNS_CEILING = 20
 
 local Settings = {}
@@ -241,14 +244,19 @@ function Settings:getConfig()
         enable_clarifying_questions = self:get("enable_clarifying_questions") ~= false,
         -- Default ON, same nil-coalescing shape as enable_clarifying_questions above.
         confirm_spoilers = self:get("confirm_spoilers") ~= false,
-        subagent_max_turns = math.max(
-            1,
-            math.min(
-                SUBAGENT_MAX_TURNS_CEILING,
-                tonumber(self:get("subagent_max_turns")) or DEFAULTS.subagent_max_turns
-            )
-        ),
+        subagent_max_turns = self:effectiveSubagentMaxTurns(),
     }
+end
+
+-- The subagent_max_turns value the delegation loop actually uses: floored at 1 and
+-- capped at SUBAGENT_MAX_TURNS_CEILING. Shared by getConfig() and the menu label so
+-- the displayed number can never drift from the runtime one (a stored 50 -- e.g.
+-- saved before the menu clamped on Save -- both runs and reads as 20).
+function Settings:effectiveSubagentMaxTurns()
+    return math.max(
+        1,
+        math.min(SUBAGENT_MAX_TURNS_CEILING, tonumber(self:get("subagent_max_turns")) or DEFAULTS.subagent_max_turns)
+    )
 end
 
 function Settings:isConfigured()
@@ -414,13 +422,26 @@ function Settings:editText(touchmenu_instance, opts)
             end,
         }
     end
+    -- Clamp a number to the field's opts.min/opts.max bounds. Applied at save time
+    -- (not only when the config is resolved for a request): storing the raw entry
+    -- would make the menu show a value the runtime silently overrides -- set
+    -- "Helper tool rounds" to 50, watch the delegation run x/20.
+    local function clamp(n)
+        if opts.min then
+            n = math.max(opts.min, n)
+        end
+        if opts.max then
+            n = math.min(opts.max, n)
+        end
+        return n
+    end
     row[#row + 1] = {
         text = _("Save"),
         is_enter_default = true,
         callback = function()
             local value = dialog:getInputText()
             if opts.input_type == "number" then
-                value = tonumber(value) or DEFAULTS[opts.key]
+                value = clamp(tonumber(value) or DEFAULTS[opts.key])
             end
             self:set(opts.key, value)
             UIManager:close(dialog)
@@ -429,10 +450,20 @@ function Settings:editText(touchmenu_instance, opts)
             end
         end,
     }
+    -- Prefill with the clamped value for numeric fields so a stored out-of-range
+    -- value (saved before the bounds existed) doesn't reopen showing a number the
+    -- runtime never uses.
+    local prefill = self:get(opts.key)
+    if opts.input_type == "number" then
+        local n = tonumber(prefill)
+        if n then
+            prefill = clamp(n)
+        end
+    end
     dialog = InputDialog:new({
         title = opts.title,
         description = opts.description,
-        input = tostring(self:get(opts.key) or ""),
+        input = tostring(prefill or ""),
         input_type = opts.input_type,
         buttons = { row },
     })
@@ -583,6 +614,7 @@ function Settings:getMenu(ui)
                     key = "max_tokens",
                     title = _("Max tokens per reply"),
                     input_type = "number",
+                    min = 1,
                 })
             end,
         },
@@ -597,6 +629,7 @@ function Settings:getMenu(ui)
                     title = _("Max tool rounds"),
                     description = _("How many tool-using exchanges before BookBuddy must give a final answer."),
                     input_type = "number",
+                    min = 1,
                 })
             end,
         },
@@ -674,7 +707,9 @@ function Settings:getMenu(ui)
         },
         {
             text_func = function()
-                return T(_("Helper tool rounds: %1"), tostring(self:get("subagent_max_turns")))
+                -- Effective (clamped) value, not the raw stored one: a pre-clamp
+                -- stored 50 must read as the 20 the delegation loop actually runs.
+                return T(_("Helper tool rounds: %1"), tostring(self:effectiveSubagentMaxTurns()))
             end,
             enabled_func = function()
                 return self:get("enable_subagents") and true or false
@@ -684,8 +719,15 @@ function Settings:getMenu(ui)
                 self:editText(touchmenu_instance, {
                     key = "subagent_max_turns",
                     title = _("Helper tool rounds"),
-                    description = _("How many tool-using rounds a delegated helper may take before it must answer."),
+                    description = T(
+                        _(
+                            "How many tool-using rounds a delegated helper may take before it must answer. At most %1: each round is billed on top of the main conversation, so the cap bounds what one delegation can spend."
+                        ),
+                        tostring(SUBAGENT_MAX_TURNS_CEILING)
+                    ),
                     input_type = "number",
+                    min = 1,
+                    max = SUBAGENT_MAX_TURNS_CEILING,
                 })
             end,
         },
