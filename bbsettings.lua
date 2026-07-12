@@ -148,14 +148,15 @@ local function deriveLabel(prompt)
     return trim(head)
 end
 
--- Upper bound on subagent_max_turns. A mistyped large value would otherwise let one
--- delegation grind dozens of double-billed tool rounds; cap it the way
--- max_tokens/max_turns are floored. Generous enough that no realistic research task
--- hits it. Enforced both at save time (the menu's number field clamps on Save) and
--- at resolve time (for values stored before the save-time clamp existed) -- and the
--- menu label shows the clamped value, so the number displayed is always the number
--- the delegation loop actually runs with.
-local SUBAGENT_MAX_TURNS_CEILING = 20
+-- Upper bound on subagent_max_turns. A mistyped large value (999) would otherwise
+-- let one delegation grind hundreds of double-billed tool rounds; cap it the way
+-- max_tokens/max_turns are floored. 50 is deliberately roomy -- it's a typo guard
+-- for users who knowingly want long delegations, not a cost ceiling. Enforced both
+-- at save time (the menu's number field clamps on Save) and at resolve time (for
+-- values stored before the save-time clamp existed) -- and the menu label shows the
+-- clamped value, so the number displayed is always the number the delegation loop
+-- actually runs with.
+local SUBAGENT_MAX_TURNS_CEILING = 50
 
 local Settings = {}
 Settings.__index = Settings
