@@ -53,7 +53,7 @@ describe("read_chapter (real)", function()
         repeat
             out = Tools.execute(
                 "read_chapter",
-                { chapter_index = e.idx, from = from, spoiler = true, limit = 24000 },
+                { chapter_index = e.idx, from = from, spoiler = true, limit = 48000 },
                 readerui
             )
             assert.is_nil(out:find("stale", 1, true))
@@ -100,7 +100,7 @@ describe("read_chapter (real)", function()
         -- so the spoiler clamp (start of the next page) fires strictly before the
         -- chapter end even at the max budget.
         Tools.execute("navigate", { page = e.page + 1 }, readerui)
-        local out = Tools.execute("read_chapter", { chapter_index = e.idx, limit = 24000 }, readerui)
+        local out = Tools.execute("read_chapter", { chapter_index = e.idx, limit = 48000 }, readerui)
         assert.truthy(out:find("Chapter truncated at your current page", 1, true))
         assert.is_nil(out:find("End of chapter", 1, true))
         assert.is_nil(out:match("from: loc:%d")) -- no read-ahead continuation
@@ -115,7 +115,7 @@ describe("read_chapter (real)", function()
         repeat
             out = Tools.execute(
                 "read_chapter",
-                { chapter_index = last.idx, from = from, spoiler = true, limit = 24000 },
+                { chapter_index = last.idx, from = from, spoiler = true, limit = 48000 },
                 readerui
             )
             from = out:match("from: (loc:%d+)")

@@ -134,6 +134,37 @@ describe("read_chapter", function()
             assert.are.equal(20, bodyLen(out))
             assert.truthy(out:find("(End of chapter.)", 1, true))
         end)
+
+        it("skips a boundary entry with no location and stops at the next resolvable one", function()
+            -- The entry that would end chapter 2 (the depth-1 sibling at index 3) carries
+            -- neither an xpointer nor a page, so it can't anchor a stop. The walk must skip
+            -- it to the next resolvable depth-1 entry (8000), NOT collapse into an
+            -- end-of-book read of the whole rest of the book.
+            local toc = {
+                { title = "One", page = 1, depth = 1, xpointer = 1000 },
+                { title = "Two", page = 5, depth = 1, xpointer = 5000 },
+                { title = "Ghost", depth = 1 }, -- no xpointer, no page: unresolvable
+                { title = "Four", page = 8, depth = 1, xpointer = 8000 },
+            }
+            local out = Tools.execute("read_chapter", { chapter_index = 2, spoiler = true }, steppingUI(50, toc))
+            assert.are.equal(30, bodyLen(out)) -- 5000..8000, not 5000..20000
+            assert.truthy(out:find("(End of chapter.)", 1, true))
+            assert.is_nil(out:find("End of book", 1, true))
+        end)
+
+        it("runs to end of book only when no later entry resolves a boundary", function()
+            -- Chapter 2's one following sibling is unresolvable AND last: there is no known
+            -- boundary at all, so running to the end of the book is correct here (a nil end
+            -- xpointer is genuine, not the collapse the previous test guards against).
+            local toc = {
+                { title = "One", page = 1, depth = 1, xpointer = 1000 },
+                { title = "Two", page = 5, depth = 1, xpointer = 5000 },
+                { title = "Ghost", depth = 1 }, -- unresolvable, and the last entry
+            }
+            local out = Tools.execute("read_chapter", { chapter_index = 2, spoiler = true }, steppingUI(50, toc))
+            assert.truthy(out:find("End of book reached", 1, true))
+            assert.are.equal(150, bodyLen(out)) -- 5000..20000
+        end)
     end)
 
     describe("spoiler truncation", function()
@@ -183,6 +214,18 @@ describe("read_chapter", function()
             local rest = Tools.execute("read_chapter", { chapter_index = 2, from = tok }, ui)
             assert.truthy(rest:find("(End of chapter.)", 1, true))
             assert.are.equal(30 - first_len, bodyLen(rest)) -- no overlap, no gap
+        end)
+
+        it("keeps the continuation locator when the chapter title is very long", function()
+            -- A pathological multi-hundred-char TOC title must not push the frame past the
+            -- truncate ceiling (budget + 600) and strip the trailer's `from: loc:N` token,
+            -- which would strand the chapter mid-read: the model re-calls without `from` and
+            -- restarts at the chapter's beginning.
+            local toc = defaultToc()
+            toc[2].title = string.rep("X", 500)
+            local first = Tools.execute("read_chapter", { chapter_index = 2, limit = 10 }, steppingUI(50, toc))
+            assert.truthy(first:find("Chapter not finished", 1, true))
+            assert.truthy(first:match("from: (loc:%d+)"), "the resume locator must survive the truncate ceiling")
         end)
 
         it("a continuation landing exactly on the chapter end answers cleanly", function()

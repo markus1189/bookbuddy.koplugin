@@ -627,21 +627,13 @@ local function tool_read(ui, input)
     return truncate((prefix or "") .. header .. "\n\n" .. text .. "\n\n" .. trailer), T(_("~%1 words"), wordCount(text))
 end
 
-local DEFAULT_CHAPTER_LIMIT = 8000
-local MAX_CHAPTER_LIMIT = 24000
-
--- The TOC entry that ends chapter `idx`: the next entry at the same or a shallower
--- depth. Deeper entries are the chapter's own sub-sections, so they belong to the
--- chapter and are skipped over. nil when the chapter runs to the end of the book.
-local function chapterEndEntry(toc, idx)
-    local depth = toc[idx].depth or 1
-    for j = idx + 1, #toc do
-        if (toc[j].depth or 1) <= depth then
-            return toc[j]
-        end
-    end
-    return nil
-end
+-- read_chapter returns the WHOLE chapter in one call: its default budget is chapter-scale
+-- (~5,300 words), NOT the chunk-scale of read, so all but the longest chapters come back
+-- complete in a single call. A chapter over the max still splits into `from` continuations.
+-- (Tool results reach the model verbatim -- no downstream cap, see bbconversation:_render --
+-- so a large chapter genuinely arrives whole.)
+local DEFAULT_CHAPTER_LIMIT = 32000
+local MAX_CHAPTER_LIMIT = 48000
 
 -- The xpointer where a TOC entry's text begins: the entry's own xpointer when it
 -- carries one, else the start of its page. The page fallback can only be EARLY (a
@@ -654,6 +646,26 @@ local function entryStartXPointer(doc, entry)
     end
     if entry.page then
         return doc:getPageXPointer(entry.page)
+    end
+    return nil
+end
+
+-- The xpointer where chapter `idx` ends: the START of the next TOC entry at the same
+-- or a shallower depth (deeper entries are the chapter's own sub-sections). A boundary
+-- entry that resolves to no xpointer (neither its own xpointer nor a page) can't anchor
+-- a stop, so it is SKIPPED to the next resolvable same-or-shallower entry -- treating its
+-- nil as "no boundary" would collapse the walk into an end-of-book read, dumping the rest
+-- of the book under this chapter's header. nil only when NO later entry resolves, i.e.
+-- the chapter genuinely runs to the end of the book.
+local function chapterEndXPointer(doc, toc, idx)
+    local depth = toc[idx].depth or 1
+    for j = idx + 1, #toc do
+        if (toc[j].depth or 1) <= depth then
+            local xp = entryStartXPointer(doc, toc[j])
+            if xp then
+                return xp
+            end
+        end
     end
     return nil
 end
@@ -699,8 +711,7 @@ end
 -- Returns (stop_xp, clamp_is_spoiler); stop_xp is nil for an unclamped last chapter
 -- (the walk then runs to the end of the book).
 local function chapterStop(doc, toc, idx, limit_xp)
-    local end_entry = chapterEndEntry(toc, idx)
-    local end_xp = end_entry and entryStartXPointer(doc, end_entry) or nil
+    local end_xp = chapterEndXPointer(doc, toc, idx)
     if limit_xp and (not end_xp or doc:compareXPointers(limit_xp, end_xp) == 1) then
         return limit_xp, true
     end
@@ -725,12 +736,13 @@ end
 
 -- Read one whole chapter -- a get_toc entry plus its sub-sections -- in a single
 -- call, from its start to the next same-or-shallower TOC entry (or the end of the
--- book). Spoiler-TRUNCATED rather than all-or-nothing: a chapter that spans the
--- reader's position is cut at their current page (read's clamp), and only a chapter
--- starting past it is refused, unless spoiler=true. A chapter longer than `limit`
--- ends with a continuation locator the model passes back as `from` to resume
--- mid-chapter. Reflowable (EPUB) only, exactly like read, whose xpointer machinery
--- (resolve_start / spoiler_limit / advance_chunk) this reuses.
+-- book). The default budget is chapter-scale, so the WHOLE chapter comes back in one
+-- call for all but the longest chapters; only a chapter exceeding the budget ends in a
+-- continuation locator the model passes back as `from` to resume mid-chapter. Spoiler-
+-- TRUNCATED rather than all-or-nothing: a chapter that spans the reader's position is
+-- cut at their current page (read's clamp), and only a chapter starting past it is
+-- refused, unless spoiler=true. Reflowable (EPUB) only, exactly like read, whose
+-- xpointer machinery (resolve_start / spoiler_limit / advance_chunk) this reuses.
 local function tool_read_chapter(ui, input)
     input = input or {}
     local doc = ui.document
@@ -792,6 +804,15 @@ local function tool_read_chapter(ui, input)
 
     local trailer = chapterTrailer(ui, eob, clamped, clamp_is_spoiler, xp_end)
     local title = (entry.title and entry.title ~= "") and entry.title or ("#" .. idx)
+    -- Cap the raw, length-uncapped TOC title so the frame overhead (header + prefix +
+    -- trailer) stays well inside the truncate ceiling's headroom below. Left uncapped, a
+    -- multi-hundred-char title pushes the ~budget-sized body plus the frame past
+    -- budget+600, and truncate -- which cuts from the tail -- would strip the trailer's
+    -- continuation "from: loc:N" token, stranding a long chapter (the model then re-calls
+    -- without `from` and restarts at the chapter's beginning).
+    if #title > 200 then
+        title = title:sub(1, 200) .. "…"
+    end
     local header = T(_("[Chapter %1: %2] reading from page %3:"), tostring(idx), title, tostring(start_page or "?"))
     -- Our own truncate ceiling: the body was already bounded to ~budget chars (which
     -- may legitimately exceed the default MAX_RESULT_CHARS), so only backstop runaway
@@ -1363,16 +1384,20 @@ function Tools.getSpecs()
         },
         {
             name = "read_chapter",
-            description = "Read a whole chapter of the book in one call, picked by its number from get_toc "
-                .. "(call that first). Reads from the chapter's start to the next entry at the same or a "
-                .. "shallower TOC level, so the chapter's own sub-sections are included. The text ends in a "
+            description = "Read an ENTIRE chapter of the book in one call, picked by its number from get_toc "
+                .. "(call that first). Returns the complete chapter -- its start through the next entry at the "
+                .. "same or a shallower TOC level, so the chapter's own sub-sections are included -- as a single "
+                .. "result. That result is normally LARGE (often tens of thousands of characters, a whole "
+                .. "chapter's worth); that is expected, not an error, and you do not need to cap or paginate it. "
+                .. "In almost all cases this one call gives you the whole chapter. The text ends in a "
                 .. 'trailer telling you what happened: "(End of chapter.)" or "(End of book reached …)" means '
-                .. 'you have the whole chapter; "(Chapter truncated at your current page …)" means the rest '
+                .. 'you have the entire chapter; "(Chapter truncated at your current page …)" means the rest '
                 .. "is past the reader's position and stays hidden unless you pass spoiler=true; "
-                .. '"(Chapter not finished — …)" carries a from locator for a chapter longer than limit — '
-                .. "call read_chapter again with the same chapter_index and that locator to continue. "
+                .. '"(Chapter not finished — …)", only for an unusually long chapter that overflows even a '
+                .. "full-chapter budget, carries a from locator -- call read_chapter again with the same "
+                .. "chapter_index and that locator to read the remainder. "
                 .. "A chapter that starts past the reader's current page is refused without spoiler=true. "
-                .. "Prefer this over a chain of read calls when asked about a chapter as a whole. "
+                .. "Prefer this over a chain of read calls whenever you want a chapter as a whole. "
                 .. "Reflowable (EPUB) books only.",
             input_schema = {
                 type = "object",
@@ -1387,7 +1412,7 @@ function Tools.getSpecs()
                     },
                     limit = {
                         type = "integer",
-                        description = "Approximate characters to return per call (default 8000, max 24000). Smaller is cheaper.",
+                        description = "Optional cap on characters returned in this call. You do NOT need to set it: it defaults to a full chapter (32000, max 48000), so the whole chapter normally comes back at once. Pass a SMALLER value only if you deliberately want the chapter in smaller pieces.",
                     },
                     spoiler = {
                         type = "boolean",
