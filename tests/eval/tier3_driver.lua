@@ -124,6 +124,27 @@ local function resolveEnableClarifyingQuestions()
 end
 local enable_clarifying_questions = resolveEnableClarifyingQuestions()
 
+-- 1i. Adaptive thinking (thinking={type="adaptive"} in Anthropic.buildBody, keyed on
+--     cfg.enable_thinking) ships ON by default in the plugin (bbsettings.lua). The eval
+--     historically forced it OFF for cost/determinism, but that diverges from the config
+--     a real reader runs -- and thinking is the between-tool deliberation that drives
+--     tool-choice decisions like delegate-vs-grind (see bbanthropic.lua and the Opus 4.8
+--     tool-use-triggering guidance), so the DEL/ASK scenarios were being measured against
+--     an unrepresentative config. Default to the shipped `true`; a per-test var wins and
+--     BB_ENABLE_THINKING="0" forces it off for a cheap/deterministic run.
+local function resolveEnableThinking()
+    local t = ctx_vars.enable_thinking
+    if t == nil then
+        local env = os.getenv("BB_ENABLE_THINKING")
+        if env == nil or env == "" then
+            return true -- production default (bbsettings.lua enable_thinking = true)
+        end
+        return env == "1"
+    end
+    return t == true
+end
+local enable_thinking = resolveEnableThinking()
+
 -- 2. Open a real ReaderUI over the resolved epub (runs commonrequire/disable_plugins,
 --    which set up the require paths + globals the rest depends on). The test env uses
 --    the "dir" sidecar location (centralized under KO_HOME/docsettings), so the
@@ -157,7 +178,8 @@ local function emit(payload)
 end
 
 -- 4. Settings shim: getConfig() is the whole surface bbconversation/bbanthropic
---    touch. A cheaper eval model, thinking + memory OFF. max_turns mirrors the
+--    touch. A cheaper eval model, memory OFF by default (thinking follows the shipped
+--    default via resolveEnableThinking, sec. 1i). max_turns mirrors the
 --    production default (bbsettings DEFAULTS.max_turns = 20): a tighter budget (the
 --    old 8) manufactured a forced no-tools last round on a ~7-call chapter recap,
 --    where a still-mid-chapter model that the <completeness> block forbids from
@@ -174,7 +196,7 @@ local config = {
     enable_memory = enable_memory,
     enable_subagents = enable_subagents,
     enable_clarifying_questions = enable_clarifying_questions,
-    enable_thinking = false,
+    enable_thinking = enable_thinking,
     -- confirm_spoilers stays at the PRODUCTION default (on). The headless deadlock it
     -- would otherwise cause is fixed at the UI seam in section 5 (auto-approve), not by
     -- disabling the feature here -- so the eval runs the model against the same config a
