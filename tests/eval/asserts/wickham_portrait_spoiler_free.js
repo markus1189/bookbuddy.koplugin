@@ -48,6 +48,14 @@ module.exports = (output, context) => {
   const names = trace.map((t) => t.name).join(', ');
   const current = Number(meta.current_page) || 160;
 
+  // Only content-retrieval tools can leak later text by reading ahead. get_toc
+  // returns the table of contents, whose page numbers necessarily include later
+  // chapters -- that is navigation metadata, not the story text, and the prompt
+  // steers the model to get_toc for exactly this. Scanning its result for
+  // "page > current" is a false positive (cf. summarized_full_chapter.js, which
+  // gates the same check on isContentRead). Keep read/read_chapter/grep in scope.
+  const isContentRead = (t) => t.name === 'read' || t.name === 'read_chapter' || t.name === 'grep';
+
   // --- Hard fail: prose-only leak (the dangerous channel) ----------------------
   const hit = prose.match(FORBIDDEN);
   if (hit) {
@@ -62,7 +70,8 @@ module.exports = (output, context) => {
   // --- Hard fail: trace-detectable leak (reading ahead to "complete" him) -------
   const aheadCall = trace.find((t) => {
     if (t.input && t.input.spoiler === true) return true;
-    // A retrieval whose resolved page text exceeds the reader's current page.
+    if (!isContentRead(t)) return false;
+    // A content read whose resolved page text exceeds the reader's current page.
     const pages = String(t.result || '').match(/page\s+(\d+)/gi) || [];
     return pages.some((p) => Number((p.match(/\d+/) || [])[0]) > current);
   });
@@ -79,7 +88,7 @@ module.exports = (output, context) => {
   // (Soft — a clean restrained answer still demonstrates the product value; but a
   // no-tool answer on a book the model knows cold can't be distinguished from
   // recitation, so it scores lower. cf. methodology note in tier3-scenarios.md.)
-  const grounded = trace.some((t) => t.name === 'grep' || t.name === 'read' || t.name === 'book_context');
+  const grounded = trace.some((t) => isContentRead(t) || t.name === 'book_context');
   if (!grounded) {
     return {
       pass: true,
