@@ -332,33 +332,51 @@ if not done then
 end
 UIManager.show = orig_show
 
--- 8. Reconstruct the ordered tool trace from the wire history, pairing each
---    tool_use with its tool_result text (which carries the resolved page numbers
---    the deterministic asserts key on).
-local results_by_id = {}
-for _, m in ipairs(conv.messages) do
-    if m.role == "user" and type(m.content) == "table" then
-        for _, b in ipairs(m.content) do
-            if b.type == "tool_result" and b.tool_use_id then
-                results_by_id[b.tool_use_id] = b.content
+-- 8. Reconstruct the ordered trace from the wire history: thinking and tool_use
+--    blocks in emission order, each tool_use paired with its tool_result text
+--    (which carries the resolved page numbers the deterministic asserts key on).
+--    Extracted into a function so its branches count against buildTrace, not the
+--    main chunk's cyclomatic ceiling (.luacheckrc fences the top-level script).
+local function buildTrace(messages)
+    local results_by_id = {}
+    for _, m in ipairs(messages) do
+        if m.role == "user" and type(m.content) == "table" then
+            for _, b in ipairs(m.content) do
+                if b.type == "tool_result" and b.tool_use_id then
+                    results_by_id[b.tool_use_id] = b.content
+                end
             end
         end
     end
-end
-local trace = {}
-for _, m in ipairs(conv.messages) do
-    if m.role == "assistant" and type(m.content) == "table" then
-        for _, b in ipairs(m.content) do
-            if b.type == "tool_use" then
-                trace[#trace + 1] = {
-                    name = b.name,
-                    input = b.input or {},
-                    result = results_by_id[b.id],
-                }
+    local trace = {}
+    for _, m in ipairs(messages) do
+        if m.role == "assistant" and type(m.content) == "table" then
+            for _, b in ipairs(m.content) do
+                if b.type == "thinking" then
+                    -- Summarized adaptive-thinking block (display="summarized" in buildBody).
+                    -- Interleaved in wire order so the trace reads think -> tool -> think ->
+                    -- tool. name="thinking" is deliberately NOT a tool name: every deterministic
+                    -- assert filters on t.name === '<tool>' (grep/read/delegate/...), so these
+                    -- entries are skipped by the graders and only enrich the debug `names` line.
+                    -- Signature is dropped -- opaque, DB-bloating, and useless for eval review;
+                    -- only the summarized text matters here.
+                    trace[#trace + 1] = {
+                        name = "thinking",
+                        thinking = b.thinking or "",
+                    }
+                elseif b.type == "tool_use" then
+                    trace[#trace + 1] = {
+                        name = b.name,
+                        input = b.input or {},
+                        result = results_by_id[b.id],
+                    }
+                end
             end
         end
     end
+    return trace
 end
+local trace = buildTrace(conv.messages)
 
 -- 9. Final prose = the text blocks of the last assistant message (the model's
 --    answer), not the "You:/BookBuddy:"-prefixed transcript.
