@@ -538,6 +538,35 @@ tests:
 
           Respond with JSON: {"reason":"<one sentence>","pass":<true|false>,"score":<0.0 or 1.0>}.
 
+# --- Read vs read_chapter (category RC) ---------------------------------------
+  # RC1 "Whole-chapter recap uses read_chapter, not a read chain" — the ANCHOR for the
+  # read-vs-read_chapter category (added alongside the read_chapter tool). The reader is at
+  # page 130, mid Ch. VII of Jan Vedder's Wife, and asks to recap the WHOLE of Chapter VI
+  # ("Margaret's Heart"). VERIFIED via a hermetic get_toc/read_chapter probe (zero model
+  # spend): Ch. VI = get_toc index 9, pp.101-122; read_chapter{chapter_index=9} at page 130
+  # returns the FULL chapter ("(End of chapter.)", ~23k chars) with NO spoiler=true, because
+  # Ch. VI is entirely behind the reader. The bbprompts guidance ("When the question is about
+  # a chapter as a whole, use read_chapter ... instead of chaining read calls") steers exactly
+  # this task to read_chapter; a model that grinds through a chain of `read` continuations is
+  # the behavior this scenario catches. Graded on the TRACE (chose_read_chapter.js): the task
+  # must use read_chapter, land in Ch. VI, and stay within it with no over-read/read-ahead. A
+  # prose rubric is intentionally omitted (as in DEL1): the claim under test is the tool CHOICE,
+  # and completeness of a whole-chapter recap is already OBS2/OBS3's job.
+  - description: RC1 — recaps a whole chapter via read_chapter, not a read chain (Jan Vedder's Wife @ Ch. VII, recap Ch. VI)
+    vars:
+      epub: jan-vedders-wife.epub
+      start_page: 130           # mid Ch. VII; target Ch. VI = get_toc idx 9, pp.101-122 (hermetic probe)
+      task: Give me a recap of the whole of Chapter VI.
+    assert:
+      # Deterministic tool-selection teeth: no read_chapter = fail, wrong chapter = fail,
+      # over-read into Ch. VII = fail, read-ahead past the reader = fail.
+      - type: javascript
+        value: file://asserts/chose_read_chapter.js
+      # Product constraint: plain text, no markdown (grade the prose).
+      # (single-line value = an EXPRESSION to promptfoo — it prepends `return`)
+      - type: javascript
+        value: "!/[*_#`]/.test(output || '')"
+
 # --- Delegation / subagents (category DEL) ------------------------------------
   # DEL1 "Cross-cutting analysis launches a delegate" — the ANCHOR for the delegation
   # category. Subagents are feature-gated OFF by default, so this is the one scenario

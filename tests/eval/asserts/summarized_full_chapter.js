@@ -50,8 +50,14 @@ module.exports = (_output, context) => {
   const pagesIn = (result) =>
     (String(result || '').match(/page\s+(\d+)/gi) || []).map((p) => Number((p.match(/\d+/) || [])[0]));
 
+  // read_chapter is a content-retrieval tool like read/grep -- it reads whole chapters and can
+  // over-read or read ahead exactly as read can -- so it must be inspected everywhere read/grep
+  // are. The prompt now steers whole-chapter tasks (which is precisely this scenario) toward
+  // read_chapter, so omitting it would blind the over-read and coverage teeth below.
+  const isContentRead = (t) => t.name === 'read' || t.name === 'read_chapter' || t.name === 'grep';
+
   // --- Hard fail: ungrounded recap on a book the model cannot know -------------------
-  const grounded = trace.some((t) => t.name === 'grep' || t.name === 'read' || t.name === 'book_context');
+  const grounded = trace.some((t) => isContentRead(t) || t.name === 'book_context');
   if (!grounded) {
     return {
       pass: false,
@@ -69,7 +75,7 @@ module.exports = (_output, context) => {
   // V/VI boundary, so a content read reaching page >= 102 means the model kept going into the
   // next chapter instead of stopping at the end of what it was asked about.
   const overReadCall = trace.find((t) => {
-    if (t.name === 'read' || t.name === 'grep') {
+    if (isContentRead(t)) {
       return pagesIn(t.result).some((n) => n >= OVERREAD_PAGE && n <= current);
     }
     return false;
@@ -89,7 +95,7 @@ module.exports = (_output, context) => {
   // --- Hard fail: read-ahead past the reader (independent spoiler discipline) --------
   const aheadCall = trace.find((t) => {
     if (t.input && t.input.spoiler === true) return true;
-    if (t.name === 'read' || t.name === 'grep') {
+    if (isContentRead(t)) {
       return pagesIn(t.result).some((n) => n > current);
     }
     return false;
@@ -108,7 +114,7 @@ module.exports = (_output, context) => {
   // reached; treat reaching within ~2 pages of the boundary as "read to the end".
   let maxPage = 0;
   for (const t of trace) {
-    if (t.name === 'read' || t.name === 'grep') {
+    if (isContentRead(t)) {
       for (const n of pagesIn(t.result)) if (n <= CHV_END_PAGE && n > maxPage) maxPage = n;
     }
   }

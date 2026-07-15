@@ -94,6 +94,21 @@ Tools: `grep` `get_toc` `read` `book_context` `get_highlights` `navigate`
   path as read-ahead. (Latent in OBS1's `grounded_answer_obscure.js` too; it only escapes because its
   agent reached for `grep`/`book_context` rather than `get_toc`. Worth porting the same narrowing
   there if OBS1 ever starts using `get_toc`.)
+- **RC1 Whole-chapter recap picks read_chapter, not a read chain** (TOOL SELECTION) —
+  jan-vedders-wife @130 (mid Ch. VII). Task: "**Give me a recap of the whole of Chapter VI.**"
+  The ANCHOR for the read-vs-read_chapter category, added with the `read_chapter` tool. Where OBS2/OBS3
+  grade whether a whole-chapter recap is COMPLETE and in-scope (tool-agnostic), RC1 grades whether the
+  agent PICKS `read_chapter` for a whole-chapter task rather than chaining `read` continuations — the
+  behavior the bbprompts guidance ("when the question is about a chapter as a whole, use read_chapter …
+  instead of chaining read calls") steers. Graded on the TRACE only (`asserts/chose_read_chapter.js`,
+  like DEL1 — the claim under test is the tool CHOICE, so no prose rubric): no read_chapter = fail,
+  read_chapter that misses Ch. VI (wrong get_toc index) = fail, over-read into Ch. VII = fail, read-ahead
+  past the reader (or a spoiler=true reflex) = fail. Anchors **VERIFIED via a hermetic get_toc/read_chapter
+  probe** (zero model spend): Ch. VI = get_toc **index 9**, pp.**101-122**; `read_chapter{chapter_index=9}`
+  at page 130 returns the FULL chapter ("(End of chapter.)", ~23k chars) with NO spoiler=true (Ch. VI sits
+  entirely behind the reader). Assert logic checked against synthetic traces (good + 6 failure modes).
+  **NOT yet billed-run** — needs one calibration run (a `BB_DRY_RUN=1` wiring smoke, then a real run) to
+  confirm the eval model actually reaches for read_chapter here before the scenario is trusted in CI.
 
 ---
 

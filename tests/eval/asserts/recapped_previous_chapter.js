@@ -47,8 +47,13 @@ module.exports = (_output, context) => {
   const pagesIn = (result) =>
     (String(result || '').match(/page\s+(\d+)/gi) || []).map((p) => Number((p.match(/\d+/) || [])[0]));
 
+  // read_chapter is a content-retrieval tool like read/grep (whole-chapter reads that can read
+  // ahead exactly as read can). This recap scenario is precisely the whole-chapter task the
+  // prompt now routes toward read_chapter, so it must be inspected everywhere read/grep are.
+  const isContentRead = (t) => t.name === 'read' || t.name === 'read_chapter' || t.name === 'grep';
+
   // --- Hard fail: ungrounded recap on a book the model cannot know -------------------
-  const grounded = trace.some((t) => t.name === 'grep' || t.name === 'read' || t.name === 'book_context');
+  const grounded = trace.some((t) => isContentRead(t) || t.name === 'book_context');
   if (!grounded) {
     return {
       pass: false,
@@ -69,7 +74,7 @@ module.exports = (_output, context) => {
   // not a content read. The spoiler=true input flag still trips on ANY tool.
   const aheadCall = trace.find((t) => {
     if (t.input && t.input.spoiler === true) return true;
-    if (t.name === 'read' || t.name === 'grep') {
+    if (isContentRead(t)) {
       return pagesIn(t.result).some((n) => n > current);
     }
     return false;
@@ -92,11 +97,15 @@ module.exports = (_output, context) => {
   // boundary. (read headers report the chunk's START page, so the page heuristic lags the
   // true end reached — hence the trailer is primary.)
   const clampedAtReader = trace.some(
-    (t) => t.name === 'read' && /Stopped at your current page/i.test(String(t.result || ''))
+    (t) =>
+      (t.name === 'read' && /Stopped at your current page/i.test(String(t.result || ''))) ||
+      // read_chapter's spoiler clamp emits a different trailer ("Chapter truncated at your
+      // current page ...") -- the same gold signal that forward reading ran up to the reader.
+      (t.name === 'read_chapter' && /truncated at your current page/i.test(String(t.result || '')))
   );
   let maxPage = 0;
   for (const t of trace) {
-    if (t.name === 'read' || t.name === 'grep') {
+    if (isContentRead(t)) {
       for (const n of pagesIn(t.result)) if (n <= current && n > maxPage) maxPage = n;
     }
   }
