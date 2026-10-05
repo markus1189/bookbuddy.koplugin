@@ -2,6 +2,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 local _ = require("gettext")
 local T = require("ffi/util").template
 
@@ -164,107 +165,195 @@ function Updater.check()
     end)
 end
 
-function Updater.install(old_version, new_version)
-    local DataStorage = require("datastorage")
+-- Unpack the zipball into a sibling staging folder, then swap it in for the live
+-- plugin folder, so a failed extraction never leaves a half-updated install.
+-- KOReader v2026.07 dropped Device:unpackArchive (koreader 751b49784) and calling
+-- it took KOReader down; ffi/archiver replaces it from v2025.08 on.
+local function extractPlugin(zip_path, plugin_path)
+    local ok_arc, Archiver = pcall(require, "ffi/archiver")
+    if not ok_arc then
+        return Device:unpackArchive(zip_path, plugin_path, true)
+    end
     local lfs = require("libs/libkoreader-lfs")
+    local purgeDir = require("ffi/util").purgeDir
+    -- The plugin loader only picks up names ending in ".koplugin", so a leftover
+    -- staging or backup folder is never loaded as a second copy.
+    local staging, backup = plugin_path .. ".new", plugin_path .. ".old"
+    for _, dir in ipairs({ staging, backup }) do
+        if lfs.attributes(dir, "mode") == "directory" then
+            purgeDir(dir)
+        end
+    end
+    if not lfs.mkdir(staging) then
+        return false, "cannot create " .. staging
+    end
 
+    local err
+    local arc = Archiver.Reader:new()
+    if arc:open(zip_path) then
+        for entry in arc:iterate() do
+            -- Zipball entries sit under a single "<owner>-<repo>-<sha>/" root; strip it.
+            local rel = entry.path:match("^[^/]+/(.+)$")
+            if rel and not arc:extractToPath(entry.path, staging .. "/" .. rel) then
+                err = arc.err or ("cannot extract " .. rel)
+                break
+            end
+        end
+        err = err or arc.err
+    else
+        err = arc.err or "cannot open the downloaded archive"
+    end
+    arc:close()
+    if not err and lfs.attributes(staging .. "/_meta.lua", "mode") ~= "file" then
+        err = "the downloaded archive has no _meta.lua"
+    end
+    if err then
+        purgeDir(staging)
+        return false, err
+    end
+
+    local had_old = lfs.attributes(plugin_path, "mode") == "directory"
+    if had_old then
+        local ok, rename_err = os.rename(plugin_path, backup)
+        if not ok then
+            purgeDir(staging)
+            return false, rename_err
+        end
+    end
+    local ok, rename_err = os.rename(staging, plugin_path)
+    if not ok then
+        if had_old then
+            os.rename(backup, plugin_path)
+        end
+        purgeDir(staging)
+        return false, rename_err
+    end
+    if had_old then
+        purgeDir(backup)
+    end
+    return true
+end
+
+function Updater.install(old_version, new_version)
     UIManager:show(InfoMessage:new({
         text = _("Downloading update..."),
         timeout = 1,
     }))
 
     UIManager:scheduleIn(0.1, function()
-        -- Download zipball to a temp location
-        local cache_dir = DataStorage:getSettingsDir() .. "/bookbuddy_cache"
-        if lfs.attributes(cache_dir, "mode") ~= "directory" then
-            lfs.mkdir(cache_dir)
-        end
-        local zip_path = cache_dir .. "/bookbuddy.koplugin.zip"
-        local zip_url = composeBranchZipUrl()
-
-        -- Try LuaSocket first, fall back to curl
-        local downloaded = false
-        local ok_require, http, ltn12, socket, socketutil = pcall(function()
-            return require("socket/http"), require("ltn12"), require("socket"), require("socketutil")
-        end)
-        if ok_require then
-            local file = io.open(zip_path, "wb")
-            if file then
-                local ok_dl, code = pcall(function()
-                    socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
-                    local c = socket.skip(
-                        1,
-                        http.request({
-                            url = zip_url,
-                            method = "GET",
-                            headers = {
-                                ["User-Agent"] = "KOReader-BookBuddy/" .. old_version,
-                            },
-                            sink = ltn12.sink.file(file),
-                            redirect = true,
-                        })
-                    )
-                    socketutil:reset_timeout()
-                    return c
-                end)
-                if not ok_dl then
-                    pcall(function()
-                        socketutil:reset_timeout()
-                    end)
-                end
-                -- ltn12.sink.file only closes the handle on the terminating nil chunk;
-                -- if the transfer threw (the SSL-crash path this curl fallback exists
-                -- for) that chunk never arrives, leaking an open write handle onto the
-                -- very path curl is about to re-download. Close it explicitly first;
-                -- a double-close of an already-closed handle is harmless under pcall.
-                pcall(function()
-                    file:close()
-                end)
-                downloaded = ok_dl and code == 200
-            end
-        end
-        -- Fallback: curl. The -f flag makes curl exit non-zero on HTTP errors,
-        -- so a 404 body is not written to the zip and mis-reported as an
-        -- extraction failure later.
-        if not downloaded then
-            pcall(os.remove, zip_path)
-            local ret = os.execute(string.format("curl -sfL -o %q %q", zip_path, zip_url))
-            downloaded = ret == 0 or ret == true
-        end
-        if not downloaded then
-            pcall(os.remove, zip_path)
-            Updater.offerRepoPage(_("Download failed."))
-            return
-        end
-
-        -- Extract into the plugin directory (strip the zipball's root folder)
-        local plugin_path = DataStorage:getDataDir() .. "/plugins/bookbuddy.koplugin"
-        local ok, err = Device:unpackArchive(zip_path, plugin_path, true)
-        pcall(os.remove, zip_path)
-
-        if not ok then
+        local ok_install, install_err = pcall(Updater._doInstall, old_version, new_version)
+        if not ok_install then
+            logger.err("BookBuddy: update failed:", install_err)
             UIManager:show(InfoMessage:new({
-                text = _("Installation failed: ") .. tostring(err),
+                text = _("Installation failed: ") .. tostring(install_err),
                 timeout = 5,
             }))
-            return
         end
-
-        -- Restart KOReader to load the new version
-        UIManager:show(ConfirmBox:new({
-            text = T(_("BookBuddy updated to v%1.\n\nRestart KOReader now?"), new_version),
-            ok_text = _("Restart"),
-            ok_callback = function()
-                UIManager:restartKOReader()
-            end,
-        }))
     end)
 end
 
--- Test-only handle on the file-local semver/url helpers (parseVersion, isNewer,
+-- The download+install body of Updater.install, run from its scheduled callback.
+-- An error escaping a UIManager callback takes KOReader down, hence the pcall there.
+function Updater._doInstall(old_version, new_version)
+    local DataStorage = require("datastorage")
+    local lfs = require("libs/libkoreader-lfs")
+    -- Download zipball to a temp location
+    local cache_dir = DataStorage:getSettingsDir() .. "/bookbuddy_cache"
+    if lfs.attributes(cache_dir, "mode") ~= "directory" then
+        lfs.mkdir(cache_dir)
+    end
+    local zip_path = cache_dir .. "/bookbuddy.koplugin.zip"
+    local zip_url = composeBranchZipUrl()
+
+    -- Try LuaSocket first, fall back to curl
+    local downloaded = false
+    local ok_require, http, ltn12, socket, socketutil = pcall(function()
+        return require("socket/http"), require("ltn12"), require("socket"), require("socketutil")
+    end)
+    if ok_require then
+        local file = io.open(zip_path, "wb")
+        if file then
+            local ok_dl, code = pcall(function()
+                socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+                local c = socket.skip(
+                    1,
+                    http.request({
+                        url = zip_url,
+                        method = "GET",
+                        headers = {
+                            ["User-Agent"] = "KOReader-BookBuddy/" .. old_version,
+                        },
+                        sink = ltn12.sink.file(file),
+                        redirect = true,
+                    })
+                )
+                socketutil:reset_timeout()
+                return c
+            end)
+            if not ok_dl then
+                pcall(function()
+                    socketutil:reset_timeout()
+                end)
+            end
+            -- ltn12.sink.file only closes the handle on the terminating nil chunk;
+            -- if the transfer threw (the SSL-crash path this curl fallback exists
+            -- for) that chunk never arrives, leaking an open write handle onto the
+            -- very path curl is about to re-download. Close it explicitly first;
+            -- a double-close of an already-closed handle is harmless under pcall.
+            pcall(function()
+                file:close()
+            end)
+            downloaded = ok_dl and code == 200
+        end
+    end
+    -- Fallback: curl. The -f flag makes curl exit non-zero on HTTP errors,
+    -- so a 404 body is not written to the zip and mis-reported as an
+    -- extraction failure later.
+    if not downloaded then
+        pcall(os.remove, zip_path)
+        local ret = os.execute(string.format("curl -sfL -o %q %q", zip_path, zip_url))
+        downloaded = ret == 0 or ret == true
+    end
+    if not downloaded then
+        pcall(os.remove, zip_path)
+        Updater.offerRepoPage(_("Download failed."))
+        return
+    end
+
+    local plugin_path = DataStorage:getDataDir() .. "/plugins/bookbuddy.koplugin"
+    local ok, err = extractPlugin(zip_path, plugin_path)
+    pcall(os.remove, zip_path)
+
+    if not ok then
+        UIManager:show(InfoMessage:new({
+            text = _("Installation failed: ") .. tostring(err),
+            timeout = 5,
+        }))
+        return
+    end
+
+    -- Restart KOReader to load the new version. Where it can't restart itself
+    -- (Android: canRestart = no), restartKOReader only quits, so say so instead.
+    if not Device:canRestart() then
+        UIManager:show(InfoMessage:new({
+            text = T(_("BookBuddy updated to v%1.\n\nClose and reopen KOReader to finish."), new_version),
+        }))
+        return
+    end
+    UIManager:show(ConfirmBox:new({
+        text = T(_("BookBuddy updated to v%1.\n\nRestart KOReader now?"), new_version),
+        ok_text = _("Restart"),
+        ok_callback = function()
+            UIManager:restartKOReader()
+        end,
+    }))
+end
+
+-- Test-only handle on the file-local helpers (extractPlugin, parseVersion, isNewer,
 -- composeBranchZipUrl). Not used by the plugin at runtime; exists so the busted
 -- suite can unit-check them without a network or device.
 Updater._test = {
+    extractPlugin = extractPlugin,
     parseVersion = parseVersion,
     isNewer = isNewer,
     composeBranchZipUrl = composeBranchZipUrl,
