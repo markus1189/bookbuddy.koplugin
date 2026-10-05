@@ -24,8 +24,15 @@ local _ = require("gettext")
 
 local ChatViewer = {}
 
+-- TextViewer's ScrollTextWidget: KOReader v2026.07 (#15588) renamed the field from
+-- scroll_text_w to scroll_widget; reading only the old name crashed build() inside
+-- Trapper, which swallows the error, so Send silently did nothing.
+local function scrollWidget(viewer)
+    return viewer.scroll_widget or viewer.scroll_text_w
+end
+
 -- Splice the status row into the TextViewer frame's VerticalGroup, above the
--- button row. Layout coupling (verified against KOReader v2024.11-v2025.08):
+-- button row. Layout coupling (verified against KOReader v2024.11-v2026.07):
 -- viewer.frame[1] is VerticalGroup{ titlebar, CenterContainer(text),
 -- CenterContainer(buttons) }. Anything unexpected errors out to the pcall in
 -- build(), which flips the viewer into text-append fallback mode.
@@ -84,7 +91,7 @@ function ChatViewer.build(opts)
             text = _("Copy"),
             callback = function()
                 -- Read the live widget text so copying mid-stream isn't stale.
-                Device.input.setClipboardText(viewer.scroll_text_w.text_widget.text)
+                Device.input.setClipboardText(scrollWidget(viewer).text_widget.text)
                 UIManager:show(InfoMessage:new({
                     text = _("Conversation copied to clipboard."),
                     timeout = 2,
@@ -150,7 +157,7 @@ function ChatViewer.build(opts)
     -- so this is safe before the viewer is shown: the first paint renders at the
     -- bottom rather than flashing the top first.
     if opts.scroll_to_bottom then
-        viewer.scroll_text_w:scrollToBottom()
+        scrollWidget(viewer):scrollToBottom()
     end
     return viewer
 end
@@ -168,10 +175,10 @@ function ChatViewer.updateText(viewer, text, scroll_to_bottom)
     if not viewer._bb_status_painting then
         viewer._bb_body = text
     end
-    viewer.scroll_text_w.text_widget:setText(text)
-    viewer.scroll_text_w:updateScrollBar(true)
+    scrollWidget(viewer).text_widget:setText(text)
+    scrollWidget(viewer):updateScrollBar(true)
     if scroll_to_bottom then
-        viewer.scroll_text_w:scrollToBottom()
+        scrollWidget(viewer):scrollToBottom()
     end
     UIManager:setDirty(viewer, function()
         return "ui", viewer.frame.dimen
