@@ -240,7 +240,22 @@ function Conversation:run()
         return
     end
     Trapper:wrap(function()
-        self:_loop()
+        -- Trapper:wrap only logs an error, so without this a bug in the turn loop
+        -- (e.g. a KOReader widget API change) leaves the reader with a closed dialog
+        -- and nothing else. LuaJIT lets the loop's coroutine yields cross xpcall.
+        local ok, err = xpcall(function()
+            self:_loop()
+        end, debug.traceback)
+        if not ok then
+            logger.err("BookBuddy: turn failed:", err)
+            -- Same rollback as the give-up exits, guarded so a broken viewer can't
+            -- also eat the message below.
+            pcall(self._dropDanglingTail, self)
+            pcall(self._closeViewer, self)
+            UIManager:show(InfoMessage:new({
+                text = T(_("BookBuddy hit an internal error:\n%1"), tostring(err):match("^[^\n]*")),
+            }))
+        end
     end)
 end
 

@@ -252,7 +252,7 @@ function M.install()
         end,
         null = json.null,
     }
-    package.loaded["logger"] = { dbg = noop, warn = noop, info = noop, error = noop }
+    package.loaded["logger"] = { dbg = noop, warn = noop, info = noop, err = noop, error = noop }
     package.loaded["gettext"] = function(s)
         return s
     end

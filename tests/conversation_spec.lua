@@ -786,6 +786,27 @@ describe("conversation", function()
         assert.are.equal(0, #sse.validateMessages(conv.messages))
     end)
 
+    it("surfaces a turn-loop error instead of letting Trapper swallow it", function()
+        local shown
+        local InfoMessage = require("ui/widget/infomessage")
+        local real_new, real_build = InfoMessage.new, chatviewer.build
+        InfoMessage.new = function(self_, o)
+            shown = o and o.text
+            return real_new(self_, o)
+        end
+        chatviewer.build = function()
+            error("bbchatviewer.lua:153: attempt to index field 'scroll_text_w' (a nil value)")
+        end
+        local ok, conv = pcall(run, { responses = {} })
+        InfoMessage.new, chatviewer.build = real_new, real_build
+        assert.is_true(ok, tostring(conv))
+        assert.is_not_nil(shown)
+        assert.is_not_nil(tostring(shown):find("scroll_text_w", 1, true), "the error must reach the reader")
+        assert.is_nil(tostring(shown):find("traceback", 1, true), "only the first line, not the traceback")
+        -- The unanswered seed is rolled back, so a later ask() re-seeds cleanly.
+        assert.are.equal(0, #conv.messages)
+    end)
+
     it("R1g: three retryable 503s exhaust the cap and surface the gateway error", function()
         -- The exhausted-retryable-HTTP path: unlike read_error (R1b, generic
         -- connection message), an exhausted retryable HTTP code routes through
